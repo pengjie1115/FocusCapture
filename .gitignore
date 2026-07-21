@@ -1,0 +1,24 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.vs/
+*.DotSettings
+*.csproj.user
+
+# Python venv
+asr_venv/
+
+# Build outputs
+*.exe
+*.pdb
+*.dll
+!bin/**/*.dll
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
