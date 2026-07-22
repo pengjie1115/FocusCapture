@@ -105,7 +105,6 @@ public partial class QuickViewWindow : Window
             var fileName = NoteExportService.SanitizeFileName(baseName) + ext;
             var filePath = NoteExportService.GetUniquePath(Path.Combine(folder, fileName));
 
-            var content = svc.BuildExport(notes, config);
             Directory.CreateDirectory(folder);
 
             if (config.Format == ExportFormat.Word)
@@ -115,6 +114,7 @@ public partial class QuickViewWindow : Window
             }
             else
             {
+                var content = svc.BuildExport(notes, config);
                 File.WriteAllText(filePath, content, Encoding.UTF8);
             }
 

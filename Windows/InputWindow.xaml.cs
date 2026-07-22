@@ -82,4 +82,11 @@ public partial class InputWindow : Window
     }
 
     public new void Hide() { _idleTimer?.Stop(); base.Hide(); }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _idleTimer?.Stop();
+        _idleTimer = null;
+        base.OnClosed(e);
+    }
 }

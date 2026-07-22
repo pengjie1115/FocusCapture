@@ -46,10 +46,6 @@ public class VoiceService : IDisposable
     private static readonly string ScriptPath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory, "asr_server.py");
 
-    private static readonly string PythonPath = Path.Combine(
-        Path.GetDirectoryName(AppDomain.CurrentDomain.BaseDirectory)!,
-        "..", "asr_venv", "Scripts", "python.exe");
-
     /// <summary>启动 ASR 子进程</summary>
     public void Start()
     {

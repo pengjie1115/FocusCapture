@@ -57,7 +57,9 @@ public partial class VoiceInputWindow : Window
         });
         _voiceService.FinalText += text => Dispatcher.Invoke(() =>
         {
-            // 直接追加识别的文本（SenseVoice 自带标点）
+            // 直接追加识别的文本（SenseVoice 自带标点），多段之间加空格分隔
+            if (ContentBox.Text.Length > 0 && !ContentBox.Text.EndsWith("\n") && !ContentBox.Text.EndsWith(" "))
+                ContentBox.AppendText(" ");
             ContentBox.AppendText(text);
             ContentBox.ScrollToEnd();
         });
@@ -168,6 +170,7 @@ public partial class VoiceInputWindow : Window
         SaveWindowPosition();
         if (_isDirty && !string.IsNullOrWhiteSpace(ContentBox.Text))
             SaveContent(silent: true);
+        _voiceService.Dispose();
         DisposeTaskbarIcon();
         base.OnClosing(e);
     }
@@ -340,6 +343,9 @@ public partial class VoiceInputWindow : Window
         Hide();
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr handle);
+
     private void CreateTaskbarIcon()
     {
         if (_taskbarIcon != null) return;
@@ -347,7 +353,8 @@ public partial class VoiceInputWindow : Window
         using var bmp = new System.Drawing.Bitmap(32, 32);
         using var g = System.Drawing.Graphics.FromImage(bmp);
         g.Clear(System.Drawing.Color.FromArgb(0x4C, 0xAF, 0x50));
-        var icon = System.Drawing.Icon.FromHandle(bmp.GetHicon());
+        var hIcon = bmp.GetHicon();
+        var icon = System.Drawing.Icon.FromHandle(hIcon);
 
         _taskbarIcon = new System.Windows.Forms.NotifyIcon
         {
@@ -356,6 +363,9 @@ public partial class VoiceInputWindow : Window
             Text = "FocusCapture - 沉浸记录"
         };
         _taskbarIcon.Click += TaskbarIcon_Click;
+
+        // 释放原始 HICON 句柄，防止 GDI 泄漏
+        DestroyIcon(hIcon);
     }
 
     private void TaskbarIcon_Click(object? sender, EventArgs e)

@@ -1,5 +1,6 @@
 using FocusCapture.Services;
 using FocusCapture.Windows;
+using System.Runtime.InteropServices;
 
 namespace FocusCapture;
 
@@ -171,12 +172,16 @@ public partial class MainWindow : Window
         finally { _settingsOpen = false; }
     }
 
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr handle);
+
     private void CreateTrayIcon()
     {
         using var bmp = new System.Drawing.Bitmap(32, 32);
         using var g = System.Drawing.Graphics.FromImage(bmp);
         g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
-        var icon = System.Drawing.Icon.FromHandle(bmp.GetHicon());
+        var hIcon = bmp.GetHicon();
+        var icon = System.Drawing.Icon.FromHandle(hIcon);
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         { Icon = icon, Visible = true, Text = "FocusCapture - 专注力捕捉" };
@@ -188,6 +193,9 @@ public partial class MainWindow : Window
         cm.Items.Add("退出", null, (_, _) => ExitApp());
         _notifyIcon.ContextMenuStrip = cm;
         _notifyIcon.DoubleClick += (_, _) => OpenSettings();
+
+        // 释放原始 HICON 句柄，防止 GDI 泄漏
+        DestroyIcon(hIcon);
     }
 
     private void ExitApp()

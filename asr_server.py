@@ -12,6 +12,10 @@ import os
 import urllib.request
 from pathlib import Path
 
+# 强制 stdout/stderr 使用 UTF-8，避免 Windows 重定向管道默认 GBK 导致 C# 端乱码
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 __version__ = "2.1"
 
 MODEL_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
@@ -195,8 +199,8 @@ def main():
     vad_config = sherpa_onnx.VadModelConfig()
     vad_config.silero_vad.model = os.path.join(MODEL_DIR, VAD_FILE)
     vad_config.silero_vad.threshold = 0.5
-    vad_config.silero_vad.min_silence_duration = 1.5   # 1.5 秒静音 = 断句
-    vad_config.silero_vad.min_speech_duration = 0.3     # 最少 0.3 秒才算有效语音
+    vad_config.silero_vad.min_silence_duration = 0.5    # 0.5 秒静音 = 断句（官方推荐 0.1~0.5）
+    vad_config.silero_vad.min_speech_duration = 0.2     # 最少 0.2 秒才算有效语音
     vad_config.silero_vad.max_speech_duration = 30      # 最长 30 秒强制断句
     vad_config.sample_rate = SAMPLE_RATE
 
@@ -208,6 +212,7 @@ def main():
         tokens=os.path.join(MODEL_DIR, "tokens.txt"),
         num_threads=2,
         use_itn=True,  # 逆文本归一化 + 标点
+        language="auto",  # 自动检测语言（zh/en/ja/ko/yue）
     )
 
     emit("ready", device_name)
