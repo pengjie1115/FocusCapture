@@ -79,6 +79,10 @@ public static class Win32
     [DllImport("user32.dll")]
     public static extern IntPtr GetClipboardData(uint uFormat);
 
+    /// <summary>获取剪贴板序列号，内容每次真正变化时递增</summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetClipboardSequenceNumber();
+
     public const uint CF_UNICODETEXT = 13;
 
     [DllImport("kernel32.dll")]

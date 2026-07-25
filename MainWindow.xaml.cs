@@ -99,6 +99,7 @@ public partial class MainWindow : Window
         else if (msg == ClipboardHookService.WM_CLIPBOARDUPDATE)
         {
             _clipboardHook?.OnClipboardUpdate();
+            handled = true;
         }
         return IntPtr.Zero;
     }

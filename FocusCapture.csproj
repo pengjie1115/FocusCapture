@@ -14,7 +14,7 @@
     <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
     <_SuppressWpfTrimError>true</_SuppressWpfTrimError>
     <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>full</TrimMode>
+    <TrimMode>partial</TrimMode>
     <EventSourceSupport>false</EventSourceSupport>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>

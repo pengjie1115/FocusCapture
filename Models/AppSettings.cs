@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FocusCapture;
 
 namespace FocusCapture.Models;
 
@@ -66,7 +67,7 @@ public class AppSettings
             if (File.Exists(ConfigPath))
             {
                 var json = File.ReadAllText(ConfigPath);
-                var settings = JsonSerializer.Deserialize<AppSettings>(json);
+                var settings = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings);
                 if (settings != null) return settings;
             }
         }
@@ -80,7 +81,7 @@ public class AppSettings
         {
             var dir = Path.GetDirectoryName(ConfigPath)!;
             Directory.CreateDirectory(dir);
-            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(this, AppJsonContext.Default.AppSettings);
             File.WriteAllText(ConfigPath, json);
         }
         catch { /* best effort */ }

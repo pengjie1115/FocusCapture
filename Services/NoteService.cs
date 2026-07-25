@@ -145,7 +145,7 @@ public class NoteService
                     entries.Add(new NoteEntry
                     {
                         Timestamp = ts,
-                        Content = match.Groups[2].Value,
+                        Content = match.Groups[2].Value.Replace("\u23CE", "\n"),
                         SourceWindow = match.Groups[3].Success ? match.Groups[3].Value : "",
                         Tag = tag
                     });

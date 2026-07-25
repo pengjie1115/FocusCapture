@@ -1,3 +1,4 @@
+using FocusCapture;
 using FocusCapture.Models;
 
 namespace FocusCapture.Services;
@@ -90,7 +91,7 @@ public class DeletedNoteService
         {
             if (!File.Exists(FilePath)) return;
             var json = File.ReadAllText(FilePath);
-            _records = JsonSerializer.Deserialize<List<DeletedNote>>(json) ?? new();
+            _records = JsonSerializer.Deserialize(json, AppJsonContext.Default.ListDeletedNote) ?? new();
         }
         catch { _records = new(); }
     }
@@ -101,7 +102,7 @@ public class DeletedNoteService
         {
             Directory.CreateDirectory(BaseDir);
             File.WriteAllText(FilePath, JsonSerializer.Serialize(_records,
-                new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+                AppJsonContext.Default.ListDeletedNote), Encoding.UTF8);
         }
         catch { /* best effort */ }
     }

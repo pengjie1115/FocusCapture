@@ -139,6 +139,7 @@ public partial class QuickViewWindow : Window
 
         if (sender is Border b && b.DataContext is NoteEntryViewModel vm)
         {
+            ClipboardHookService.MarkSelfCopy(); // 抑制剪贴板监控反馈
             WpfClipboard.SetText(vm.Content);
             b.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x50, 0x3A));
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };

@@ -57,23 +57,33 @@ public class NoteExportService
 
     private string BuildJson(List<NoteEntry> notes, ExportConfig config)
     {
-        var items = notes.Select(n =>
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms, new JsonWriterOptions
         {
-            var obj = new Dictionary<string, object?>();
-            if (config.IncludeTime) obj["time"] = n.Timestamp.ToString("HH:mm");
-            if (config.IncludeContent) obj["content"] = n.Content;
-            if (config.IncludeTag && !string.IsNullOrWhiteSpace(n.Tag)) obj["tag"] = n.Tag;
-            if (config.IncludeSource && !string.IsNullOrWhiteSpace(n.SourceWindow)) obj["source"] = n.SourceWindow;
-            return obj;
-        }).ToList();
-
-        var opts = new JsonSerializerOptions
-        {
-            WriteIndented = true,
+            Indented = true,
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        };
-        return JsonSerializer.Serialize(
-            new { date = DateTime.Now.ToString("yyyy-MM-dd"), notes = items }, opts);
+        }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("date", DateTime.Now.ToString("yyyy-MM-dd"));
+            writer.WriteStartArray("notes");
+            foreach (var n in notes)
+            {
+                writer.WriteStartObject();
+                if (config.IncludeTime)
+                    writer.WriteString("time", n.Timestamp.ToString("HH:mm"));
+                if (config.IncludeContent)
+                    writer.WriteString("content", n.Content);
+                if (config.IncludeTag && !string.IsNullOrWhiteSpace(n.Tag))
+                    writer.WriteString("tag", n.Tag);
+                if (config.IncludeSource && !string.IsNullOrWhiteSpace(n.SourceWindow))
+                    writer.WriteString("source", n.SourceWindow);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     private string BuildText(List<NoteEntry> notes, ExportConfig config)
