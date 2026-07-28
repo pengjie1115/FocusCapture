@@ -9,12 +9,9 @@
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
-  <!-- 仅 Release/发布构建启用裁剪 -->
+  <!-- Release 构建：禁用 IL 裁剪（WPF/WinForms COM 互操作类型无法被静态分析，裁剪必崩） -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
-    <_SuppressWpfTrimError>true</_SuppressWpfTrimError>
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>partial</TrimMode>
+    <PublishTrimmed>false</PublishTrimmed>
     <EventSourceSupport>false</EventSourceSupport>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
