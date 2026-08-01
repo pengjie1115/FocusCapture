@@ -273,7 +273,7 @@ public partial class FloatBall : Window
             Foreground = Brushes.White,
             FontSize = 13,
         };
-        menu.Items.Add(CreateMenuItem("  今日笔记速览", () => QuickViewRequested?.Invoke()));
+        menu.Items.Add(CreateMenuItem("  灵感速览", () => QuickViewRequested?.Invoke()));
         menu.Items.Add(CreateMenuItem("  沉浸记录", () => VoiceInputRequested?.Invoke()));
         menu.Items.Add(CreateMenuItem("  设置", () => SettingsRequested?.Invoke()));
         menu.Items.Add(new Separator());

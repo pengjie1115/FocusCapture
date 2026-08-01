@@ -96,19 +96,20 @@ public class NoteService
         return text;
     }
 
-    public List<NoteEntry> LoadTodayNotes()
+    /// <summary>按指定日期加载笔记：该日灵感文件 + 所有标签文件（旧格式标签行归入“今天”）</summary>
+    public List<NoteEntry> LoadNotes(DateTime date)
     {
         var result = new List<NoteEntry>();
-        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        var day = date.ToString("yyyy-MM-dd");
 
-        // 读取今日灵感文件
-        var todayFile = Path.Combine(_settings.NotesPath, $"灵感_{today}.md");
-        if (File.Exists(todayFile))
+        // 读取该日灵感文件（无标签笔记）
+        var dayFile = Path.Combine(_settings.NotesPath, $"灵感_{day}.md");
+        if (File.Exists(dayFile))
         {
-            result.AddRange(ParseNotes(todayFile, null));
+            result.AddRange(ParseNotes(dayFile, null, date));
         }
 
-        // 也读取所有日期范围内的 tag 文件
+        // 也读取所有 tag 文件：新格式行按行内日期归类，旧格式行没有日期、统一归入“今天”
         if (Directory.Exists(_settings.NotesPath))
         {
             foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
@@ -116,9 +117,8 @@ public class NoteService
                 var fileName = Path.GetFileNameWithoutExtension(file);
                 if (fileName.StartsWith("灵感_")) continue; // already parsed
 
-                // 读取文件的所有行，筛选今天的
-                var fileEntries = ParseNotes(file, fileName);
-                result.AddRange(fileEntries.Where(e => e.Timestamp.Date == DateTime.Today));
+                var fileEntries = ParseNotes(file, fileName, DateTime.Today);
+                result.AddRange(fileEntries.Where(e => e.Timestamp.Date == date.Date));
             }
         }
 
@@ -128,7 +128,7 @@ public class NoteService
             .ToList();
     }
 
-    private List<NoteEntry> ParseNotes(string filePath, string? tag)
+    private List<NoteEntry> ParseNotes(string filePath, string? tag, DateTime dateContext)
     {
         var entries = new List<NoteEntry>();
         try
@@ -136,17 +136,21 @@ public class NoteService
             var lines = File.ReadAllLines(filePath, System.Text.Encoding.UTF8);
             foreach (var line in lines)
             {
-                // 格式: - [HH:mm] 内容 — 来源: xxx
-                var match = System.Text.RegularExpressions.Regex.Match(line, @"^- \[(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$");
+                // 新格式: - [yyyy-MM-dd HH:mm] 内容 — 来源: xxx
+                // 旧格式: - [HH:mm] 内容 — 来源: xxx（日期取 dateContext）
+                var match = Regex.Match(line, @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$");
                 if (!match.Success) continue;
 
-                if (DateTime.TryParse($"{DateTime.Today:yyyy-MM-dd} {match.Groups[1].Value}", out var ts))
+                var day = match.Groups[1].Success
+                    ? match.Groups[1].Value.Trim()
+                    : dateContext.ToString("yyyy-MM-dd");
+                if (DateTime.TryParse($"{day} {match.Groups[2].Value}", out var ts))
                 {
                     entries.Add(new NoteEntry
                     {
                         Timestamp = ts,
-                        Content = match.Groups[2].Value.Replace("\u23CE", "\n"),
-                        SourceWindow = match.Groups[3].Success ? match.Groups[3].Value : "",
+                        Content = match.Groups[3].Value.Replace("\u23CE", "\n"),
+                        SourceWindow = match.Groups[4].Success ? match.Groups[4].Value : "",
                         Tag = tag
                     });
                 }
