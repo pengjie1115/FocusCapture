@@ -189,7 +189,7 @@ public partial class MainWindow : Window
 
         var cm = new System.Windows.Forms.ContextMenuStrip();
         cm.Items.Add("显示设置", null, (_, _) => OpenSettings());
-        cm.Items.Add("今日速览", null, (_, _) => ShowQuickView());
+        cm.Items.Add("灵感速览", null, (_, _) => ShowQuickView());
         cm.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         cm.Items.Add("退出", null, (_, _) => ExitApp());
         _notifyIcon.ContextMenuStrip = cm;

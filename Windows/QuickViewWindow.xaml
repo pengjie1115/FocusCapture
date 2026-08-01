@@ -36,13 +36,99 @@
                     <!-- 标题行 -->
                     <Grid Grid.Row="0" Margin="14,0"
                           MouseLeftButtonDown="TitleBar_MouseDown">
-                        <TextBlock Text="今日灵感速览"
+                        <TextBlock Text="灵感速览"
                                    Foreground="#CCCCCC"
                                    FontSize="14" FontWeight="SemiBold"
                                    VerticalAlignment="Center"/>
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Right"
                                     VerticalAlignment="Center">
+                            <ComboBox x:Name="DaySelector"
+                                      FontSize="11"
+                                      MinWidth="150"
+                                      Height="24"
+                                      Margin="0,0,8,0"
+                                      VerticalAlignment="Center"
+                                      SelectionChanged="DaySelector_SelectionChanged"
+                                      Foreground="White"
+                                      Background="#252525"
+                                      BorderBrush="#555555">
+                                <ComboBox.Template>
+                                    <ControlTemplate TargetType="ComboBox">
+                                        <Grid SnapsToDevicePixels="True">
+                                            <Popup x:Name="PART_Popup"
+                                                   Placement="Bottom"
+                                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                                   AllowsTransparency="True"
+                                                   Focusable="False"
+                                                   PopupAnimation="Slide">
+                                                <Border Background="#252525"
+                                                        BorderBrush="#555555"
+                                                        BorderThickness="1"
+                                                        MinWidth="{TemplateBinding ActualWidth}"
+                                                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                                        SnapsToDevicePixels="True">
+                                                    <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="2">
+                                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                                    </ScrollViewer>
+                                                </Border>
+                                            </Popup>
+                                            <ToggleButton x:Name="ToggleButton"
+                                                          Focusable="False"
+                                                          ClickMode="Press"
+                                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                                <ToggleButton.Template>
+                                                    <ControlTemplate TargetType="ToggleButton">
+                                                        <Border Background="#252525"
+                                                                BorderBrush="#555555"
+                                                                BorderThickness="1"
+                                                                CornerRadius="3">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <Path Grid.Column="1"
+                                                                      Data="M 0 0 L 4 4 L 8 0 Z"
+                                                                      Fill="#CCCCCC"
+                                                                      Margin="0,0,7,0"
+                                                                      VerticalAlignment="Center"/>
+                                                            </Grid>
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </ToggleButton.Template>
+                                            </ToggleButton>
+                                            <ContentPresenter x:Name="ContentSite"
+                                                              IsHitTestVisible="False"
+                                                              Content="{TemplateBinding SelectionBoxItem}"
+                                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                              Margin="6,0,0,0"
+                                                              VerticalAlignment="Center"
+                                                              HorizontalAlignment="Left"/>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </ComboBox.Template>
+                                <ComboBox.ItemContainerStyle>
+                                    <Style TargetType="ComboBoxItem">
+                                        <Setter Property="Background" Value="#252525"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                        <Setter Property="Padding" Value="6,3"/>
+                                        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsHighlighted" Value="True">
+                                                <Setter Property="Background" Value="#3A3A3A"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ComboBox.ItemContainerStyle>
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Label}"
+                                                   Foreground="White"
+                                                   FontSize="11"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
                             <TextBlock x:Name="DateText"
                                        Text=""
                                        Foreground="#666666"
@@ -118,56 +204,65 @@
             </Border>
 
             <!-- 列表 -->
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                <ItemsControl x:Name="NotesList" Margin="8">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border Background="#252525" CornerRadius="6"
-                                    Margin="0,0,0,6" Padding="8,8,8,8"
-                                    Cursor="Hand"
-                                    MouseLeftButtonDown="NoteItem_Click">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <CheckBox Grid.Column="0"
-                                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
-                                              VerticalAlignment="Top"
-                                              Margin="0,2,10,0"
-                                              Cursor="Hand"/>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Foreground="#888888" FontSize="11"
-                                                   Text="{Binding Timestamp, StringFormat=HH:mm}"/>
-                                        <TextBlock Foreground="#E0E0E0" FontSize="13"
-                                                   Text="{Binding FirstLine}"
-                                                   TextWrapping="Wrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   MaxHeight="40"/>
-                                        <TextBlock Foreground="#555555" FontSize="11"
-                                                   Text="{Binding SourceWindow}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Margin="0,2,0,0"
-                                                   Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
-                                    </StackPanel>
-                                    <Button Grid.Column="2"
-                                            Content="×" FontSize="14"
-                                            Width="22" Height="22" Padding="0"
-                                            VerticalAlignment="Top"
-                                            Margin="6,0,0,0"
-                                            Background="Transparent"
-                                            Foreground="#666666"
-                                            BorderThickness="0"
-                                            Cursor="Hand"
-                                            Click="BtnDeleteOne_Click"
-                                            Tag="{Binding}"/>
-                                </Grid>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
+            <Grid Grid.Row="1">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="NotesList" Margin="8">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#252525" CornerRadius="6"
+                                        Margin="0,0,0,6" Padding="8,8,8,8"
+                                        Cursor="Hand"
+                                        MouseLeftButtonDown="NoteItem_Click">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox Grid.Column="0"
+                                                  IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                  VerticalAlignment="Top"
+                                                  Margin="0,2,10,0"
+                                                  Cursor="Hand"/>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Foreground="#888888" FontSize="11"
+                                                       Text="{Binding Timestamp, StringFormat=HH:mm}"/>
+                                            <TextBlock Foreground="#E0E0E0" FontSize="13"
+                                                       Text="{Binding FirstLine}"
+                                                       TextWrapping="Wrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxHeight="40"/>
+                                            <TextBlock Foreground="#555555" FontSize="11"
+                                                       Text="{Binding SourceWindow}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,2,0,0"
+                                                       Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
+                                        </StackPanel>
+                                        <Button Grid.Column="2"
+                                                Content="×" FontSize="14"
+                                                Width="22" Height="22" Padding="0"
+                                                VerticalAlignment="Top"
+                                                Margin="6,0,0,0"
+                                                Background="Transparent"
+                                                Foreground="#666666"
+                                                BorderThickness="0"
+                                                Cursor="Hand"
+                                                Click="BtnDeleteOne_Click"
+                                                Tag="{Binding}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+                <TextBlock x:Name="EmptyHint"
+                           Text="这一天还没有笔记"
+                           Foreground="#666666"
+                           FontSize="13"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Visibility="Collapsed"/>
+            </Grid>
         </Grid>
     </Border>
 </Window>

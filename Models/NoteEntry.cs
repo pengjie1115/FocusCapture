@@ -10,7 +10,8 @@ public class NoteEntry
     /// <summary>生成单行 markdown 条目，多段内容中的换行用 \u23CE 转义</summary>
     public string ToMarkdownLine()
     {
-        var time = Timestamp.ToString("HH:mm");
+        // 完整时间戳：写入日期，便于按任意日期回查；读取时兼容旧的 [HH:mm] 格式
+        var time = Timestamp.ToString("yyyy-MM-dd HH:mm");
         // 把多段内容的换行转义为单个标记，保证单行存储格式不被破坏
         var escaped = Content
             .Replace("\r\n", "\n")

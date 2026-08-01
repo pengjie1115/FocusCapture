@@ -38,12 +38,18 @@ public class NoteEntryViewModel : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
+/// <summary>日期下拉框选项：日期 + 显示文案</summary>
+public sealed record DayOption(DateTime Date, string Label);
+
 public partial class QuickViewWindow : Window
 {
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
     private ExportDialog? _exportDialog;
     private List<NoteEntryViewModel> _viewModels = new();
+    private List<DayOption> _dayOptions = new();
+    private DateTime _selectedDate = DateTime.Today;
+    private bool _suppressDaySelector;
 
     public QuickViewWindow(NoteService noteService, AppSettings settings)
     {
@@ -53,12 +59,49 @@ public partial class QuickViewWindow : Window
         Opacity = settings.QuickViewOpacity;
     }
 
+    /// <summary>打开时重建“今天/昨天/前天”选项并加载今天的笔记</summary>
     public void Refresh()
     {
-        DateText.Text = DateTime.Now.ToString("yyyy年M月d日 dddd");
-        var entries = _noteService.LoadTodayNotes();
+        BuildDayOptions();
+        ReloadNotes();
+    }
+
+    private void BuildDayOptions()
+    {
+        _suppressDaySelector = true;
+        try
+        {
+            _dayOptions = new List<DayOption>();
+            for (var i = 0; i < 3; i++)
+            {
+                var d = DateTime.Today.AddDays(-i);
+                var prefix = i switch { 0 => "今天", 1 => "昨天", _ => "前天" };
+                _dayOptions.Add(new DayOption(d, $"{prefix}（{d:yyyy年M月d日 dddd}）"));
+            }
+            DaySelector.ItemsSource = _dayOptions;
+            DaySelector.SelectedIndex = 0;
+            _selectedDate = DateTime.Today;
+        }
+        finally
+        {
+            _suppressDaySelector = false;
+        }
+    }
+
+    private void DaySelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressDaySelector || DaySelector.SelectedItem is not DayOption option) return;
+        _selectedDate = option.Date;
+        ReloadNotes();
+    }
+
+    private void ReloadNotes()
+    {
+        DateText.Text = _selectedDate.ToString("yyyy年M月d日 dddd");
+        var entries = _noteService.LoadNotes(_selectedDate);
         _viewModels = entries.Select(e => new NoteEntryViewModel(e)).ToList();
         NotesList.ItemsSource = _viewModels;
+        EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateSelectionUI();
     }
 
@@ -85,7 +128,10 @@ public partial class QuickViewWindow : Window
 
             if (notes.Count == 0)
             {
-                System.Windows.MessageBox.Show("今天还没有笔记，快去记录灵感吧。", "提示",
+                var msg = _selectedDate.Date == DateTime.Today
+                    ? "今天还没有笔记，快去记录灵感吧。"
+                    : "这一天还没有笔记。";
+                System.Windows.MessageBox.Show(msg, "提示",
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -100,8 +146,8 @@ public partial class QuickViewWindow : Window
             var folder = _exportDialog.FolderPath;
             var ext = svc.GetFileExtension(config.Format);
             var baseName = selected.Count > 0
-                ? $"今日灵感_已选{selected.Count}条_{DateTime.Now:yyyy-MM-dd}"
-                : $"今日灵感_{DateTime.Now:yyyy-MM-dd}";
+                ? $"灵感_已选{selected.Count}条_{_selectedDate:yyyy-MM-dd}"
+                : $"灵感_{_selectedDate:yyyy-MM-dd}";
             var fileName = NoteExportService.SanitizeFileName(baseName) + ext;
             var filePath = NoteExportService.GetUniquePath(Path.Combine(folder, fileName));
 
