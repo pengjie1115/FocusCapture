@@ -6,6 +6,16 @@
 
 FocusCapture 是一款 Windows 桌面端灵感捕获工具：你在任何窗口随手复制一段话、按一个热键说一句话，它就把内容存进本地笔记库，不打断你手头的工作。之后可以按最近 3 天翻阅、导出成 Markdown / JSON / TXT / Word。
 
+## 📸 预览
+
+<table>
+<tr>
+<td align="center" width="33%"><img src="docs/screenshots/settings.png" alt="设置界面" /><br /><b>设置界面</b><br />所有热键与不透明度一手掌控</td>
+<td align="center" width="33%"><img src="docs/screenshots/quickview.png" alt="灵感速览" /><br /><b>灵感速览</b><br />最近三天笔记 + 一键导出 Word/Markdown</td>
+<td align="center" width="33%"><img src="docs/screenshots/immersive-record.png" alt="沉浸记录" /><br /><b>沉浸记录</b><br />边说边记，全 C# 本地语音识别</td>
+</tr>
+</table>
+
 ---
 
 ## ✨ 功能特性
