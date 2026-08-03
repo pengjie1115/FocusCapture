@@ -22,3 +22,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# IDE
+.idea/
+.vscode/
+
+# Misc
+*.bak
+*.orig
