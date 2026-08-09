@@ -374,36 +374,56 @@
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            Visibility="Collapsed"/>
+                <!-- 浮动工具条覆盖层：Canvas 不参与内容布局（修复：原 Border 用 Margin 定位在外层 Grid，撑大标题栏行导致列表被往下挤） -->
+                <Canvas x:Name="FloatToolbarCanvas"
+                        Panel.ZIndex="99"
+                        IsHitTestVisible="False">
+                    <Border x:Name="FloatToolbar"
+                            Canvas.Left="10" Canvas.Top="10"
+                            Background="#2D2D2D"
+                            BorderBrush="#4CAF50"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="6,4"
+                            Visibility="Collapsed"
+                            IsHitTestVisible="True"
+                            Cursor="Hand">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="翻译" FontSize="11" Height="22" Padding="8,0"
+                                    Margin="0,0,4,0"
+                                    Background="#3A3A3A" Foreground="#E0E0E0"
+                                    BorderBrush="#555555" BorderThickness="1"
+                                    Cursor="Hand"
+                                    Tag="Translate"
+                                    Click="FloatToolbar_Click"/>
+                            <Button Content="搜索" FontSize="11" Height="22" Padding="8,0"
+                                    Margin="0,0,4,0"
+                                    Background="#3A3A3A" Foreground="#E0E0E0"
+                                    BorderBrush="#555555" BorderThickness="1"
+                                    Cursor="Hand"
+                                    Tag="Search"
+                                    Click="FloatToolbar_Click"/>
+                            <!-- 拖动手柄：Thumb 不拦截内部按钮点击 -->
+                            <Thumb x:Name="ToolbarDragThumb"
+                                   Width="14" Height="22"
+                                   Cursor="SizeAll"
+                                   ToolTip="拖动调整位置"
+                                   DragDelta="ToolbarDragThumb_DragDelta">
+                                <Thumb.Template>
+                                    <ControlTemplate TargetType="Thumb">
+                                        <Grid Background="Transparent">
+                                            <TextBlock Text="⠿" FontSize="12"
+                                                       Foreground="#666666"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </Thumb.Template>
+                            </Thumb>
+                        </StackPanel>
+                    </Border>
+                </Canvas>
             </Grid>
-
-            <!-- 编辑态浮动工具条：选中文字约 400ms 后出现 -->
-            <Border x:Name="FloatToolbar"
-                    Background="#2D2D2D"
-                    BorderBrush="#4CAF50"
-                    BorderThickness="1"
-                    CornerRadius="4"
-                    Padding="6,4"
-                    Visibility="Collapsed"
-                    HorizontalAlignment="Left"
-                    VerticalAlignment="Top"
-                    Panel.ZIndex="99">
-                <StackPanel Orientation="Horizontal">
-                    <Button Content="翻译" FontSize="11" Height="22" Padding="8,0"
-                            Margin="0,0,4,0"
-                            Background="#3A3A3A" Foreground="#E0E0E0"
-                            BorderBrush="#555555" BorderThickness="1"
-                            Cursor="Hand"
-                            Tag="Translate"
-                            Click="FloatToolbar_Click"/>
-                    <Button Content="搜索" FontSize="11" Height="22" Padding="8,0"
-                            Margin="0,0,4,0"
-                            Background="#3A3A3A" Foreground="#E0E0E0"
-                            BorderBrush="#555555" BorderThickness="1"
-                            Cursor="Hand"
-                            Tag="Search"
-                            Click="FloatToolbar_Click"/>
-                </StackPanel>
-            </Border>
         </Grid>
     </Border>
 </Window>

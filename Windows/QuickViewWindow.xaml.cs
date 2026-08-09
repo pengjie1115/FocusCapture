@@ -528,28 +528,40 @@ public partial class QuickViewWindow : Window
         }), DispatcherPriority.Background);
     }
 
-    /// <summary>在选中文字附近显示浮动工具条（超界时靠边）</summary>
+    /// <summary>在选中文字附近显示浮动工具条（Canvas 浮层定位，不参与布局；超界时靠边）</summary>
     private void ShowFloatToolbar()
     {
         var box = _activeEditBox;
         if (box == null || _activeEditVm == null) return;
         if (box.SelectionLength <= 0) return;
 
-        // 选中起点在窗口内的坐标
+        // 选中起点相对覆盖层 Canvas 的坐标（修复：原用 TransformToAncestor(this)+Margin，会把外层 Grid 标题栏行撑大导致列表被往下挤）
         var rect = box.GetRectFromCharacterIndex(box.SelectionStart, false);
-        var point = box.TransformToAncestor(this).Transform(new Point(rect.Left, rect.Bottom));
+        var point = box.TransformToAncestor(FloatToolbarCanvas).Transform(new Point(rect.Left, rect.Bottom));
 
         FloatToolbar.Visibility = Visibility.Visible;
         FloatToolbar.UpdateLayout();
 
-        var left = Math.Min(Math.Max(0, point.X), ActualWidth - FloatToolbar.ActualWidth - 4);
-        var top = Math.Min(Math.Max(0, point.Y + 4), ActualHeight - FloatToolbar.ActualHeight - 4);
-        FloatToolbar.Margin = new Thickness(left, top, 0, 0);
+        var left = Math.Min(Math.Max(0, point.X), FloatToolbarCanvas.ActualWidth - FloatToolbar.ActualWidth - 4);
+        var top = Math.Min(Math.Max(0, point.Y + 4), FloatToolbarCanvas.ActualHeight - FloatToolbar.ActualHeight - 4);
+        Canvas.SetLeft(FloatToolbar, left);
+        Canvas.SetTop(FloatToolbar, top);
     }
 
     private void HideFloatToolbar()
     {
         FloatToolbar.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>工具条拖动手柄：Thumb 拖动时限制在 Canvas 范围内</summary>
+    private void ToolbarDragThumb_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var left = Canvas.GetLeft(FloatToolbar) + e.HorizontalChange;
+        var top = Canvas.GetTop(FloatToolbar) + e.VerticalChange;
+        left = Math.Max(0, Math.Min(left, FloatToolbarCanvas.ActualWidth - FloatToolbar.ActualWidth));
+        top = Math.Max(0, Math.Min(top, FloatToolbarCanvas.ActualHeight - FloatToolbar.ActualHeight));
+        Canvas.SetLeft(FloatToolbar, left);
+        Canvas.SetTop(FloatToolbar, top);
     }
 
     private void FloatToolbar_Click(object sender, RoutedEventArgs e)
