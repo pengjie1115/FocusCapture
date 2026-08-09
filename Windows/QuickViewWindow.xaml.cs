@@ -170,11 +170,14 @@ public partial class QuickViewWindow : Window
     /// <summary>日历按钮：打开热力图弹窗，选中日期后切换到当天笔记</summary>
     private void BtnCalendar_Click(object sender, RoutedEventArgs e)
     {
+        // 非模态 Show：点击日历弹窗以外的任何区域 → 窗口失活 → Deactivated 自动收起
         var cal = new CalendarWindow(_noteService, _selectedDate) { Owner = this };
-        cal.DateSelected += d => _selectedDate = d;
-        if (cal.ShowDialog() == true && cal.SelectedDate.HasValue)
-            _selectedDate = cal.SelectedDate.Value;
-        ReloadNotes();
+        cal.DateSelected += d =>
+        {
+            _selectedDate = d;
+            ReloadNotes();
+        };
+        cal.Show();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)

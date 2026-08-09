@@ -4,7 +4,7 @@ namespace FocusCapture.Windows;
 
 /// <summary>
 /// 日历热力图弹窗：单月视图 + 4 档热力色（数据来自 MD 文件真实统计），
-/// 点击日期返回选中日期（DateSelected 事件 + DialogResult）。
+/// 点击日期返回选中日期（DateSelected 事件）；点击弹窗外部自动收起。
 /// </summary>
 public partial class CalendarWindow : Window
 {
@@ -12,11 +12,12 @@ public partial class CalendarWindow : Window
     private readonly ThemeColors _theme;
     private DateTime _displayMonth;   // 当月 1 号
     private DateTime? _selectedDate;
+    private bool _closed;             // 窗口已关闭标志（防止 Deactivated 重入 Close）
 
     /// <summary>选中日期事件（点击日期即触发）</summary>
     public event Action<DateTime>? DateSelected;
 
-    /// <summary>本次打开的选中日期（ShowDialog 返回后读取）</summary>
+    /// <summary>本次打开的选中日期（ShowDialog 返回后读取；现已改非模态 Show，此属性仅供外部读取）</summary>
     public DateTime? SelectedDate => _selectedDate;
 
     public CalendarWindow(NoteService noteService, DateTime currentDate)
@@ -26,6 +27,12 @@ public partial class CalendarWindow : Window
         _theme = new ThemeService().GetColors(); // 热力色接主题（默认 Dark，切换主题后取当前）
         _selectedDate = currentDate.Date;
         _displayMonth = new DateTime(currentDate.Year, currentDate.Month, 1);
+
+        // 点击日历弹窗以外的任何区域 → 自动收起（模态窗口失去激活时触发）
+        // 防重入：窗口关闭过程中 Deactivated 可能再次触发，_closed 标志拦截
+        Closed += (_, _) => _closed = true;
+        Deactivated += (_, _) => { if (IsVisible && !_closed) Close(); };
+
         Render();
     }
 
@@ -99,7 +106,7 @@ public partial class CalendarWindow : Window
     {
         _selectedDate = date;
         DateSelected?.Invoke(date);
-        DialogResult = true; // ShowDialog 下自动关闭
+        Close(); // 非模态打开：选中后立即关闭（QuickViewWindow 回调负责刷新列表）
     }
 
     private void BtnPrev_Click(object sender, RoutedEventArgs e)
@@ -116,9 +123,9 @@ public partial class CalendarWindow : Window
 
     private void BtnToday_Click(object sender, RoutedEventArgs e)
     {
+        // 点击"今天"= 跳转到今天：翻到当月并选中今天（触发 DateSelected + 关闭弹窗）
         _displayMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
-        _selectedDate = DateTime.Today;
-        Render();
+        SelectDate(DateTime.Today);
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
