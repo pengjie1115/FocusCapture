@@ -384,6 +384,37 @@ public partial class QuickViewWindow : Window
         }
     }
 
+    /// <summary>全屏编辑：独立 Window，与行内编辑共享 EditText（双向同步）</summary>
+    private void BtnFullEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NoteEntryViewModel vm }) OpenFullEdit(vm);
+    }
+
+    private void OpenFullEdit(NoteEntryViewModel vm)
+    {
+        if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
+        {
+            System.Windows.MessageBox.Show("沉浸式输入进行中，暂不可编辑", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // 若未在行内编辑，先同步 EditText = 原始内容；若在行内编辑过，保留行内最新内容
+        if (!vm.IsEditing)
+            vm.EditText = vm.Entry.Content;
+
+        // 关闭行内编辑态（EditText 值保留给全屏窗口）
+        CancelEditState(vm);
+        vm.CancelEdit();
+
+        var win = new NoteEditWindow(_noteService, vm,
+            $"编辑笔记 · {vm.Entry.Timestamp:yyyy-MM-dd HH:mm}")
+        { Owner = this };
+
+        if (win.ShowDialog() == true)
+            Refresh();
+    }
+
     /// <summary>保存编辑：保存前检查沉浸式锁定，成功后重新加载面板</summary>
     private void SaveEditNote(NoteEntryViewModel vm)
     {

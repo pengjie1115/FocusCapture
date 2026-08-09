@@ -262,18 +262,20 @@
                                             </StackPanel.Style>
                                             <TextBlock Foreground="#888888" FontSize="11"
                                                        Text="{Binding Timestamp, StringFormat=HH:mm}"/>
+                                            <!-- 等高设计：内容区固定 52px，单行截断预览（NoWrap），双击编辑不撑高列表 -->
                                             <TextBlock Foreground="#E0E0E0" FontSize="13"
                                                        Text="{Binding FirstLine}"
-                                                       TextWrapping="Wrap"
+                                                       TextWrapping="NoWrap"
                                                        TextTrimming="CharacterEllipsis"
-                                                       MaxHeight="40"/>
+                                                       Height="52"
+                                                       VerticalAlignment="Top"/>
                                             <TextBlock Foreground="#555555" FontSize="11"
                                                        Text="{Binding SourceWindow}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="0,2,0,0"
                                                        Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
                                         </StackPanel>
-                                        <!-- 编辑态：内容区变为 TextBox + 保存/取消 -->
+                                        <!-- 编辑态：内容区 TextBox 固定 52px（与非编辑态等高，列表零跳动），内部滚动看全文 -->
                                         <Grid Grid.Column="1">
                                             <Grid.Style>
                                                 <Style TargetType="Grid">
@@ -288,22 +290,58 @@
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
-                                            <TextBox x:Name="EditBox"
+                                            <TextBlock Grid.Row="0" Foreground="#888888" FontSize="11"
+                                                       Text="{Binding Timestamp, StringFormat=HH:mm}"/>
+                                            <TextBox Grid.Row="1" x:Name="EditBox"
                                                      Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="True"
                                                      TextWrapping="Wrap"
-                                                     MinHeight="42" MaxHeight="140"
+                                                     Height="52"
                                                      VerticalScrollBarVisibility="Auto"
                                                      Background="#2D2D2D"
                                                      Foreground="#E0E0E0"
                                                      BorderBrush="#555555"
                                                      Padding="6,4"
                                                      Cursor="IBeam"/>
-                                            <StackPanel Grid.Row="1" Orientation="Horizontal"
-                                                        HorizontalAlignment="Right" Margin="0,4,0,0">
+                                            <TextBlock Grid.Row="2" Foreground="#555555" FontSize="11"
+                                                       Text="{Binding SourceWindow}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,2,0,0"
+                                                       Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
+                                        </Grid>
+                                        <!-- 右侧按钮区：全屏（常驻）+ 删除（常驻）+ 保存/取消（仅编辑态） -->
+                                        <StackPanel Grid.Column="2" VerticalAlignment="Top" Margin="6,0,0,0">
+                                            <Button Content="⛶" FontSize="13" Width="22" Height="22" Padding="0"
+                                                    VerticalAlignment="Top"
+                                                    Background="Transparent" Foreground="#888888"
+                                                    BorderThickness="0"
+                                                    ToolTip="全屏编辑"
+                                                    Cursor="Hand"
+                                                    Click="BtnFullEdit_Click"
+                                                    Tag="{Binding}"/>
+                                            <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
+                                                    Margin="0,2,0,0"
+                                                    Background="Transparent"
+                                                    Foreground="#666666"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    Click="BtnDeleteOne_Click"
+                                                    Tag="{Binding}"/>
+                                            <StackPanel Margin="0,6,0,0">
+                                                <StackPanel.Style>
+                                                    <Style TargetType="StackPanel">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </StackPanel.Style>
                                                 <Button Content="保存" FontSize="11" Height="24" Padding="10,0"
-                                                        Margin="0,0,6,0"
+                                                        Margin="0,0,0,4"
                                                         Background="#3A3A3A" Foreground="#4CAF50"
                                                         BorderBrush="#4CAF50" BorderThickness="1"
                                                         Cursor="Hand"
@@ -316,18 +354,7 @@
                                                         Tag="{Binding}"
                                                         Click="BtnEditCancel_Click"/>
                                             </StackPanel>
-                                        </Grid>
-                                        <Button Grid.Column="2"
-                                                Content="×" FontSize="14"
-                                                Width="22" Height="22" Padding="0"
-                                                VerticalAlignment="Top"
-                                                Margin="6,0,0,0"
-                                                Background="Transparent"
-                                                Foreground="#666666"
-                                                BorderThickness="0"
-                                                Cursor="Hand"
-                                                Click="BtnDeleteOne_Click"
-                                                Tag="{Binding}"/>
+                                        </StackPanel>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
