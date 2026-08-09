@@ -62,23 +62,35 @@ public partial class NoteEditWindow : Window
             return;
         }
 
-        var newContent = EditBox.Text.Trim();
-        if (string.IsNullOrEmpty(newContent))
+        // 分离 AI 释义块（编辑框可能含行内编辑带入的释义预览），只保存主内容
+        var (content, _) = NoteEntryViewModel.SplitEditText(EditBox.Text.Trim());
+        if (string.IsNullOrEmpty(content))
         {
             System.Windows.MessageBox.Show(this, "内容不能为空", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        _vm.EditText = newContent;
-        if (_noteService.UpdateNote(_vm.Entry, newContent))
+        _vm.EditText = content;
+
+        // 内容未变化：不追加冗余【编辑】行
+        var displayBase = _vm.Entry.EditedContent ?? _vm.Entry.Content;
+        if (content == displayBase)
         {
+            DialogResult = true;
+            Close();
+            return;
+        }
+
+        if (_noteService.AppendEdit(_vm.Entry, content))
+        {
+            _vm.Entry.EditedContent = content;
             DialogResult = true;
             Close();
         }
         else
         {
-            System.Windows.MessageBox.Show(this, "保存失败：未在笔记文件中找到该条目", "错误",
+            System.Windows.MessageBox.Show(this, "保存失败：未在笔记文件中找到该条目，可能已被外部修改", "错误",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

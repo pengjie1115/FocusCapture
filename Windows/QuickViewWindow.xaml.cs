@@ -18,19 +18,21 @@ public class NoteEntryViewModel : INotifyPropertyChanged
 {
     public NoteEntry Entry { get; }
     public DateTime Timestamp => Entry.Timestamp;
-    public string FirstLine => Entry.FirstLine;
+    public string FirstLine => (Entry.EditedContent ?? Entry.Content).Split('\n')[0].Trim();
     public string SourceWindow => Entry.SourceWindow;
     public string? Tag => Entry.Tag;
-    public string Content => Entry.Content;
+
+    /// <summary>展示内容：编辑过的笔记优先显示编辑后内容（存储层仍保留原行）</summary>
+    public string Content => Entry.EditedContent ?? Entry.Content;
 
     /// <summary>面板预览：原文首行 +（如有）最近一条 AI 释义首行（等高保持，40px 内容区截断）</summary>
     public string DisplayPreview
     {
         get
         {
-            if (Entry.AiFills.Count == 0) return Entry.FirstLine;
+            if (Entry.AiFills.Count == 0) return FirstLine;
             var lastFill = Entry.AiFills[^1].Split('\n')[0].Trim();
-            return $"{Entry.FirstLine}\n【AI 释义】{lastFill}";
+            return $"{FirstLine}\n【AI 释义】{lastFill}";
         }
     }
 
@@ -76,7 +78,7 @@ public class NoteEntryViewModel : INotifyPropertyChanged
     public void BeginEdit()
     {
         // 编辑时把 AiFills 拼接到 EditText（用户能看到+编辑全部内容）；保存时 SaveEditNote 会检测并分离
-        var sb = new System.Text.StringBuilder(Entry.Content);
+        var sb = new System.Text.StringBuilder(Entry.EditedContent ?? Entry.Content);
         if (Entry.AiFills.Count > 0)
         {
             sb.Append("\n\n—— AI 释义 ——\n");
@@ -89,12 +91,26 @@ public class NoteEntryViewModel : INotifyPropertyChanged
 
     public void CancelEdit() => IsEditing = false;
 
+    /// <summary>从编辑框全文分离主内容与 AI 释义块；无分隔符时全文视为内容</summary>
+    public static (string Content, List<string> Fills) SplitEditText(string text)
+    {
+        const string separator = "\n\n—— AI 释义 ——\n";
+        var idx = text.IndexOf(separator, StringComparison.Ordinal);
+        if (idx < 0) return (text, new List<string>());
+
+        var content = text[..idx].TrimEnd();
+        var fills = text[(idx + separator.Length)..].Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.StartsWith("【AI 释义】", StringComparison.Ordinal))
+            .Select(l => l.Substring("【AI 释义】".Length).Trim())
+            .Where(l => l.Length > 0)
+            .ToList();
+        return (content, fills);
+    }
+
     public NoteEntryViewModel(NoteEntry entry) { Entry = entry; }
     public event PropertyChangedEventHandler? PropertyChanged;
 }
-
-/// <summary>日期下拉框选项：日期 + 显示文案</summary>
-public sealed record DayOption(DateTime Date, string Label);
 
 public partial class QuickViewWindow : Window
 {
@@ -102,9 +118,7 @@ public partial class QuickViewWindow : Window
     private readonly AppSettings _settings;
     private ExportDialog? _exportDialog;
     private List<NoteEntryViewModel> _viewModels = new();
-    private List<DayOption> _dayOptions = new();
     private DateTime _selectedDate = DateTime.Today;
-    private bool _suppressDaySelector;
     private DispatcherTimer? _selectionTimer;
     private TextBox? _activeEditBox;
     private NoteEntryViewModel? _activeEditVm;
@@ -117,50 +131,39 @@ public partial class QuickViewWindow : Window
         Opacity = settings.QuickViewOpacity;
     }
 
-    /// <summary>打开时重建“今天/昨天/前天”选项并加载今天的笔记</summary>
+    /// <summary>重新加载当前选中日期的笔记（打开时与刷新按钮共用）</summary>
     public void Refresh()
     {
-        BuildDayOptions();
-        ReloadNotes();
-    }
-
-    private void BuildDayOptions()
-    {
-        _suppressDaySelector = true;
-        try
-        {
-            _dayOptions = new List<DayOption>();
-            for (var i = 0; i < 3; i++)
-            {
-                var d = DateTime.Today.AddDays(-i);
-                var prefix = i switch { 0 => "今天", 1 => "昨天", _ => "前天" };
-                _dayOptions.Add(new DayOption(d, $"{prefix}（{d:yyyy年M月d日 dddd}）"));
-            }
-            DaySelector.ItemsSource = _dayOptions;
-            DaySelector.SelectedIndex = 0;
-            _selectedDate = DateTime.Today;
-        }
-        finally
-        {
-            _suppressDaySelector = false;
-        }
-    }
-
-    private void DaySelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_suppressDaySelector || DaySelector.SelectedItem is not DayOption option) return;
-        _selectedDate = option.Date;
         ReloadNotes();
     }
 
     private void ReloadNotes()
     {
-        DateText.Text = _selectedDate.ToString("yyyy年M月d日 dddd");
         var entries = _noteService.LoadNotes(_selectedDate);
         _viewModels = entries.Select(e => new NoteEntryViewModel(e)).ToList();
         NotesList.ItemsSource = _viewModels;
         EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateSelectionUI();
+    }
+
+    /// <summary>焦点回归自动刷新（切回面板/关闭弹窗后列表同步最新笔记）</summary>
+    private void Window_Activated(object sender, EventArgs e)
+    {
+        try { Refresh(); }
+        catch { /* 刷新失败不阻塞窗口激活 */ }
+    }
+
+    /// <summary>标题栏刷新按钮：立即重新加载列表</summary>
+    private void BtnRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    /// <summary>日历按钮：打开热力图弹窗，选中日期后切换到当天笔记</summary>
+    private void BtnCalendar_Click(object sender, RoutedEventArgs e)
+    {
+        var cal = new CalendarWindow(_noteService, _selectedDate) { Owner = this };
+        cal.DateSelected += d => _selectedDate = d;
+        if (cal.ShowDialog() == true && cal.SelectedDate.HasValue)
+            _selectedDate = cal.SelectedDate.Value;
+        ReloadNotes();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -280,7 +283,7 @@ public partial class QuickViewWindow : Window
             if (vm.IsEditing) return;
 
             ClipboardHookService.MarkSelfCopy(); // 抑制剪贴板监控反馈
-            WpfClipboard.SetText(vm.Content);
+            WpfClipboard.SetText(vm.Content); // 复制展示内容（编辑过则复制编辑后内容）
             b.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x50, 0x3A));
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
             t.Tick += (_, _) => { b.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)); t.Stop(); };
@@ -308,13 +311,13 @@ public partial class QuickViewWindow : Window
     {
         var vm = GetContextTarget(sender);
         // 传整条笔记作为 selectedText，让 OpenSession 走 selectedText 路径自动发起第一轮（修复：之前漏传，对话框空白）
-        if (vm != null) AIDialogHelper.Open(ExplainMode.Translate, vm.Entry, vm.Entry.Content);
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Translate, vm.Entry, vm.Content);
     }
 
     private void CtxAiSearch_Click(object sender, RoutedEventArgs e)
     {
         var vm = GetContextTarget(sender);
-        if (vm != null) AIDialogHelper.Open(ExplainMode.Search, vm.Entry, vm.Entry.Content);
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Search, vm.Entry, vm.Content);
     }
 
     private void CtxCopy_Click(object sender, RoutedEventArgs e)
@@ -338,11 +341,16 @@ public partial class QuickViewWindow : Window
 
         var confirm = System.Windows.MessageBox.Show(
             $"确认删除这条笔记？\n\n时间：{vm.Timestamp:HH:mm}\n内容：{vm.FirstLine}\n\n" +
-            "（源 .md 文件未修改，可从源文件回溯）",
+            "（对应行将从 .md 源文件删除，软删除记录保留）",
             "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        _noteService.DeletedService.MarkDeleted(vm.Entry);
+        if (!_noteService.DeleteNote(vm.Entry))
+        {
+            System.Windows.MessageBox.Show("删除失败：未在笔记文件中找到该条目，可能已被外部修改", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         CancelEditState(vm);
         _viewModels.Remove(vm);
         NotesList.Items.Refresh();
@@ -427,7 +435,7 @@ public partial class QuickViewWindow : Window
 
         // 若未在行内编辑，先同步 EditText = 原始内容；若在行内编辑过，保留行内最新内容
         if (!vm.IsEditing)
-            vm.EditText = vm.Entry.Content;
+            vm.EditText = vm.Content;
 
         // 关闭行内编辑态（EditText 值保留给全屏窗口）
         CancelEditState(vm);
@@ -441,7 +449,7 @@ public partial class QuickViewWindow : Window
             Refresh();
     }
 
-    /// <summary>保存编辑：保存前检查沉浸式锁定，成功后重新加载面板</summary>
+    /// <summary>保存编辑：追加【编辑】标记行（MD 只增不减），成功后重新加载面板</summary>
     private void SaveEditNote(NoteEntryViewModel vm)
     {
         if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
@@ -452,51 +460,32 @@ public partial class QuickViewWindow : Window
             return;
         }
 
-        var newContent = vm.EditText?.Trim() ?? "";
-        if (string.IsNullOrEmpty(newContent))
+        // 分离 AI 释义块（编辑时拼接显示，保存时剥离开来保持"MD 只增不减"结构）：
+        // 只保存主内容为【编辑】行；释义行只能由 AI 对话框追加，编辑框内改动不写回存储
+        var (contentToSave, _) = NoteEntryViewModel.SplitEditText(vm.EditText?.Trim() ?? "");
+        if (string.IsNullOrEmpty(contentToSave))
         {
             System.Windows.MessageBox.Show("内容不能为空", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        // 分离 AI 释义块（编辑时拼接显示，保存时剥离开来保持"MD 只增不减"结构）：
-        // 用户编辑了原文 → 写入新 Content；释义按"【AI 释义】xxx"逐行重建成 AiFills
-        const string separator = "\n\n—— AI 释义 ——\n";
-        var idx = newContent.IndexOf(separator);
-        string contentToSave;
-        List<string> fillsToSave;
-        if (idx >= 0)
+        // 内容未变化：不追加冗余【编辑】行
+        var displayBase = vm.Entry.EditedContent ?? vm.Entry.Content;
+        if (contentToSave != displayBase)
         {
-            contentToSave = newContent[..idx].TrimEnd();
-            var fillsBlock = newContent[(idx + separator.Length)..];
-            fillsToSave = fillsBlock.Split('\n')
-                .Select(l => l.Trim())
-                .Where(l => l.StartsWith("【AI 释义】"))
-                .Select(l => l.Substring("【AI 释义】".Length).Trim())
-                .Where(l => l.Length > 0)
-                .ToList();
-        }
-        else
-        {
-            contentToSave = newContent;
-            fillsToSave = new List<string>(vm.Entry.AiFills);
+            if (!_noteService.AppendEdit(vm.Entry, contentToSave))
+            {
+                System.Windows.MessageBox.Show("保存失败：未在笔记文件中找到该条目，可能已被外部修改", "错误",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                vm.CancelEdit();
+                return;
+            }
+            vm.Entry.EditedContent = contentToSave;
         }
 
-        if (_noteService.UpdateNote(vm.Entry, contentToSave))
-        {
-            // 内存 AiFills 同步（MD 文件中 AiFills 标记行不变，UpdateNote 只覆盖原 Content 行）
-            vm.Entry.AiFills.Clear();
-            vm.Entry.AiFills.AddRange(fillsToSave);
-            CancelEditState(vm);
-            Refresh();
-        }
-        else
-        {
-            System.Windows.MessageBox.Show("保存失败：未在笔记文件中找到该条目", "错误",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            vm.CancelEdit();
-        }
+        CancelEditState(vm);
+        Refresh();
     }
 
     // ── 编辑态浮动工具条 ──
@@ -720,11 +709,16 @@ public partial class QuickViewWindow : Window
         {
             var confirm = System.Windows.MessageBox.Show(
                 $"确认删除这条笔记？\n\n时间：{vm.Timestamp:HH:mm}\n内容：{vm.FirstLine}\n\n" +
-                "（源 .md 文件未修改，可从源文件回溯）",
+                "（对应行将从 .md 源文件删除，软删除记录保留）",
                 "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (confirm != MessageBoxResult.Yes) return;
 
-            _noteService.DeletedService.MarkDeleted(vm.Entry);
+            if (!_noteService.DeleteNote(vm.Entry))
+            {
+                System.Windows.MessageBox.Show("删除失败：未在笔记文件中找到该条目，可能已被外部修改", "错误",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
             _viewModels.Remove(vm);
             NotesList.Items.Refresh();
             UpdateSelectionUI();
@@ -738,21 +732,24 @@ public partial class QuickViewWindow : Window
 
         var confirm = System.Windows.MessageBox.Show(
             $"确认删除选中的 {selected.Count} 条笔记？\n\n" +
-            "（源 .md 文件未修改，可从源文件回溯）",
+            "（对应行将从 .md 源文件删除，软删除记录保留）",
             "批量删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        _noteService.DeletedService.MarkDeletedRange(selected);
-        // 反向遍历删除，避免索引错位
-        for (var i = _viewModels.Count - 1; i >= 0; i--)
+        var failed = 0;
+        foreach (var entry in selected)
         {
-            if (_viewModels[i].IsSelected) _viewModels.RemoveAt(i);
+            if (!_noteService.DeleteNote(entry)) failed++;
         }
-        NotesList.Items.Refresh();
-        UpdateSelectionUI();
+        Refresh(); // 重载后已删除项自然消失，失败项保留
+        if (failed > 0)
+        {
+            System.Windows.MessageBox.Show($"{failed} 条笔记删除失败（未在笔记文件中找到，可能已被外部修改）", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
-    /// <summary>更新选择工具栏的可见性 + 计数 + 导出按钮文案</summary>
+    /// <summary>任一勾选即显示"删除已选"按钮（勾选/取消由 NoteCheckBox_Click 同步触发）</summary>
     private void UpdateSelectionUI()
     {
         var count = _viewModels.Count(vm => vm.IsSelected);
@@ -769,6 +766,14 @@ public partial class QuickViewWindow : Window
             BtnDeleteSelected.Visibility = Visibility.Collapsed;
             BtnExport.Content = "▼ 导出";
         }
+    }
+
+    /// <summary>CheckBox 勾选/取消 → 同步选中状态并更新删除按钮可见性</summary>
+    private void NoteCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is CheckBox { DataContext: NoteEntryViewModel vm } cb)
+            vm.IsSelected = cb.IsChecked == true;
+        UpdateSelectionUI();
     }
 
     private List<NoteEntry> GetSelectedEntries()

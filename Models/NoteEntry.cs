@@ -10,6 +10,9 @@ public class NoteEntry
     /// <summary>AI 回填追加的释义列表（展示层用，解析【AI 释义】标记行关联到原笔记时填充；不参与存储序列化）</summary>
     public List<string> AiFills { get; set; } = new();
 
+    /// <summary>编辑后的内容（展示层优先显示；解析【编辑】标记行关联到原笔记时填充；不参与存储序列化）</summary>
+    public string? EditedContent { get; set; }
+
     /// <summary>生成单行 markdown 条目，多段内容中的换行用 \u23CE 转义</summary>
     public string ToMarkdownLine()
     {
