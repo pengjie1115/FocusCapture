@@ -85,6 +85,7 @@ public partial class AIDialogWindow : Window
         if (!isGlobalAskReopen)
         {
             _sessionGeneration++;
+            _isStreaming = false; // 新会话强制复位：防止上次异常对话把 _isStreaming 卡在 true 导致新会话 SendAsync 直接 return（空白/无反应）
             _targetNote = targetNote;
             _mode = mode;
 
@@ -306,15 +307,28 @@ public static class AIDialogHelper
             return;
         }
 
-        if (_dialog == null || _dialog.IsClosed)
+        // 旧实例不可用（null / 已关闭 / 已关闭但标志未更新的 IsVisible=false）一律重建——
+        // 否则复用已关闭的 Window 调 OpenSession 会抛异常，导致对话框完全弹不出来（"点了没反应"）
+        if (_dialog == null || _dialog.IsClosed || !_dialog.IsVisible)
         {
             _dialog = new AIDialogWindow(_noteService, _settings);
             if (_owner != null && _owner.IsVisible)
                 _dialog.Owner = _owner;
         }
 
-        _dialog.OpenSession(mode, targetNote, selectedText);
-        if (!_dialog.IsVisible) _dialog.Show();
+        try
+        {
+            _dialog.OpenSession(mode, targetNote, selectedText);
+        }
+        catch
+        {
+            // OpenSession 异常（旧窗口状态异常等）→ 重建后重试一次，绝不静默失败
+            _dialog = new AIDialogWindow(_noteService, _settings);
+            if (_owner != null && _owner.IsVisible) _dialog.Owner = _owner;
+            _dialog.OpenSession(mode, targetNote, selectedText);
+        }
+
+        _dialog.Show();
         if (_dialog.WindowState == WindowState.Minimized) _dialog.WindowState = WindowState.Normal;
         _dialog.Activate();
         _dialog.Focus();

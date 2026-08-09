@@ -587,7 +587,10 @@ public partial class QuickViewWindow : Window
     {
         if (sender is not Button { Tag: string mode }) return;
         var vm = _activeEditVm;
-        var selected = _activeEditBox?.SelectedText?.Trim() ?? "";
+        // 优先选中文字；若点击瞬间选区丢失（失焦等），兜底用编辑框全文——保证点翻译/搜索一定有内容可发
+        var selected = _activeEditBox?.SelectedText?.Trim();
+        if (string.IsNullOrEmpty(selected))
+            selected = vm?.EditText?.Trim();
         if (vm == null || string.IsNullOrEmpty(selected)) { HideFloatToolbar(); return; }
 
         var explainMode = mode switch

@@ -234,7 +234,7 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border Background="#252525" CornerRadius="6"
-                                        Margin="0,0,0,3" Padding="4,4,4,4"
+                                        Margin="0,0,0,3" Padding="6,6,6,6"
                                         Cursor="Hand"
                                         MouseLeftButtonDown="NoteItem_Click"
                                         ContextMenu="{StaticResource NoteContextMenu}">
@@ -267,7 +267,7 @@
                                                        Text="{Binding FirstLine}"
                                                        TextWrapping="NoWrap"
                                                        TextTrimming="CharacterEllipsis"
-                                                       Height="34"
+                                                       Height="40"
                                                        VerticalAlignment="Top"/>
                                             <TextBlock Foreground="#555555" FontSize="11"
                                                        Text="{Binding SourceWindow}"
@@ -299,7 +299,7 @@
                                                          Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                          AcceptsReturn="True"
                                                          TextWrapping="Wrap"
-                                                         Height="34"
+                                                         Height="40"
                                                          BorderThickness="0"
                                                          VerticalScrollBarVisibility="Hidden"
                                                          Background="#2D2D2D"
