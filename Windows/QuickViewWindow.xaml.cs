@@ -520,11 +520,19 @@ public partial class QuickViewWindow : Window
     private void EditBox_LostFocus(object sender, RoutedEventArgs e)
     {
         _selectionTimer?.Stop();
-        // 延迟隐藏：避免点击浮动工具条按钮时 TextBox 失焦导致按钮 IsHitTestVisible=false（Collapsed）收不到 Click
+        // 延迟：避免点击浮动工具条按钮时 TextBox 失焦导致按钮 IsHitTestVisible=false（Collapsed）收不到 Click
         Dispatcher.BeginInvoke(new Action(() =>
         {
             if (!FloatToolbar.IsKeyboardFocusWithin)
+            {
+                // 焦点离开 EditBox 且不在工具条：自动保存退出（用户期望：点击被编辑笔记以外的任何位置都默认保存退出）
+                if (_activeEditVm != null && _activeEditVm.IsEditing)
+                {
+                    try { SaveEditNote(_activeEditVm); }
+                    catch { /* 已被外部流程处理（如删除/刷新）则忽略 */ }
+                }
                 HideFloatToolbar();
+            }
         }), DispatcherPriority.Background);
     }
 

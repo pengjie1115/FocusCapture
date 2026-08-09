@@ -403,23 +403,6 @@
                                     Cursor="Hand"
                                     Tag="Search"
                                     Click="FloatToolbar_Click"/>
-                            <!-- 拖动手柄：Thumb 不拦截内部按钮点击 -->
-                            <Thumb x:Name="ToolbarDragThumb"
-                                   Width="14" Height="22"
-                                   Cursor="SizeAll"
-                                   ToolTip="拖动调整位置"
-                                   DragDelta="ToolbarDragThumb_DragDelta">
-                                <Thumb.Template>
-                                    <ControlTemplate TargetType="Thumb">
-                                        <Grid Background="Transparent">
-                                            <TextBlock Text="⠿" FontSize="12"
-                                                       Foreground="#666666"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center"/>
-                                        </Grid>
-                                    </ControlTemplate>
-                                </Thumb.Template>
-                            </Thumb>
                         </StackPanel>
                     </Border>
                 </Canvas>
