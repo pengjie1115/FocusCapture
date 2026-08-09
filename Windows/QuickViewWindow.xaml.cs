@@ -34,6 +34,38 @@ public class NoteEntryViewModel : INotifyPropertyChanged
         }
     }
 
+    private bool _isEditing;
+    public bool IsEditing
+    {
+        get => _isEditing;
+        set
+        {
+            if (_isEditing == value) return;
+            _isEditing = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsEditing)));
+        }
+    }
+
+    private string _editText = string.Empty;
+    public string EditText
+    {
+        get => _editText;
+        set
+        {
+            if (_editText == value) return;
+            _editText = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(EditText)));
+        }
+    }
+
+    public void BeginEdit()
+    {
+        EditText = Entry.Content;
+        IsEditing = true;
+    }
+
+    public void CancelEdit() => IsEditing = false;
+
     public NoteEntryViewModel(NoteEntry entry) { Entry = entry; }
     public event PropertyChangedEventHandler? PropertyChanged;
 }
@@ -105,7 +137,27 @@ public partial class QuickViewWindow : Window
         UpdateSelectionUI();
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Escape) Hide(); }
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // 编辑态优先：Esc 取消编辑，Ctrl+S 保存
+        var editing = _viewModels.FirstOrDefault(vm => vm.IsEditing);
+        if (editing != null)
+        {
+            if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                editing.CancelEdit();
+                return;
+            }
+            if (e.Key == Key.S && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                e.Handled = true;
+                SaveEditNote(editing);
+                return;
+            }
+        }
+        if (e.Key == Key.Escape) Hide();
+    }
 
     private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -185,6 +237,16 @@ public partial class QuickViewWindow : Window
 
         if (sender is Border b && b.DataContext is NoteEntryViewModel vm)
         {
+            // 双击 → 进入编辑态
+            if (e.ClickCount == 2)
+            {
+                BeginEditNote(vm);
+                return;
+            }
+
+            // 编辑态内的点击不触发复制
+            if (vm.IsEditing) return;
+
             ClipboardHookService.MarkSelfCopy(); // 抑制剪贴板监控反馈
             WpfClipboard.SetText(vm.Content);
             b.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x50, 0x3A));
@@ -192,6 +254,87 @@ public partial class QuickViewWindow : Window
             t.Tick += (_, _) => { b.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)); t.Stop(); };
             t.Start();
         }
+    }
+
+    /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
+    private void BeginEditNote(NoteEntryViewModel vm)
+    {
+        if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
+        {
+            System.Windows.MessageBox.Show("沉浸式输入进行中，暂不可编辑", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // 同一时间只允许编辑一条
+        foreach (var other in _viewModels.Where(v => v.IsEditing && !ReferenceEquals(v, vm)))
+            other.CancelEdit();
+
+        vm.BeginEdit();
+        // 等模板切换完成后聚焦编辑框
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (NotesList.ItemContainerGenerator.ContainerFromItem(vm) is FrameworkElement container)
+            {
+                var box = FindVisualChild<TextBox>(container);
+                box?.Focus();
+                box?.SelectAll();
+            }
+        }), DispatcherPriority.Background);
+    }
+
+    private void BtnEditSave_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is NoteEntryViewModel vm) SaveEditNote(vm);
+    }
+
+    private void BtnEditCancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is NoteEntryViewModel vm) vm.CancelEdit();
+    }
+
+    /// <summary>保存编辑：保存前检查沉浸式锁定，成功后重新加载面板</summary>
+    private void SaveEditNote(NoteEntryViewModel vm)
+    {
+        if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
+        {
+            System.Windows.MessageBox.Show("沉浸式输入进行中，暂不可编辑", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            vm.CancelEdit();
+            return;
+        }
+
+        var newContent = vm.EditText?.Trim() ?? "";
+        if (string.IsNullOrEmpty(newContent))
+        {
+            System.Windows.MessageBox.Show("内容不能为空", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_noteService.UpdateNote(vm.Entry, newContent))
+        {
+            Refresh();
+        }
+        else
+        {
+            System.Windows.MessageBox.Show("保存失败：未在笔记文件中找到该条目", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            vm.CancelEdit();
+        }
+    }
+
+    /// <summary>在可视树中查找指定类型的第一个后代</summary>
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed) return typed;
+            var result = FindVisualChild<T>(child);
+            if (result != null) return result;
+        }
+        return null;
     }
 
     /// <summary>从原始点击源向上回溯，判断是否落在 CheckBox 上</summary>

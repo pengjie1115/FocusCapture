@@ -170,6 +170,7 @@ public partial class VoiceInputWindow : Window
         SaveWindowPosition();
         if (_isDirty && !string.IsNullOrWhiteSpace(ContentBox.Text))
             SaveContent(silent: true);
+        ImmersiveSessionService.Stop();
         _voiceService.Dispose();
         DisposeTaskbarIcon();
         base.OnClosing(e);
@@ -182,6 +183,13 @@ public partial class VoiceInputWindow : Window
         base.Show();
         Activate();
         ContentBox.Focus();
+    }
+
+    /// <summary>窗口关闭（隐藏）即结束沉浸式会话，解除笔记编辑锁定</summary>
+    public new void Hide()
+    {
+        ImmersiveSessionService.Stop();
+        base.Hide();
     }
 
     /// <summary>同步最大化按钮图标（Aero Snap / 双击 / 按钮都可能触发 WindowState 变化）</summary>
@@ -275,6 +283,7 @@ public partial class VoiceInputWindow : Window
         ContentBox.Text = "";
         _isDirty = false;
         _currentNoteTimestamp = null; // 重置：下一条笔记将用新时间戳
+        ImmersiveSessionService.Stop(); // 结束当前会话，解除笔记编辑锁定
         ContentBox.Focus();
     }
 
@@ -500,6 +509,7 @@ public partial class VoiceInputWindow : Window
 
         // 首次保存时记下时间戳，后续用相同时间戳覆盖
         _currentNoteTimestamp ??= DateTime.Now;
+        ImmersiveSessionService.Start(_currentNoteTimestamp.Value);
 
         var ok = _longNoteService.SaveLongNote(text, _currentNoteTimestamp);
         if (ok)

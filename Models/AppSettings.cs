@@ -45,6 +45,12 @@ public class AppSettings
     public string ExportFolderPath { get; set; } = "";
     public ExportConfig? LastExportConfig { get; set; }
 
+    // ── AI 模型 ──
+    public string AiBaseUrl { get; set; } = "https://apihub.agnes-ai.cn/v1";
+    public string AiApiKey { get; set; } = "";
+    public string AiModel { get; set; } = "agnes-2.5-flash";
+    public string AiAssistantName { get; set; } = "AI 问答";
+
     // ── 沉浸式语音输入 ──
     public HotkeyBinding VoiceInputHotkey { get; set; } = new() { Modifiers = 3, Key = 0x52 }; // Ctrl+Alt+R
     public HotkeyBinding SaveHotkey { get; set; } = new() { Modifiers = 2, Key = 0x53 };       // Ctrl+S

@@ -96,6 +96,93 @@ public class NoteService
         return text;
     }
 
+    /// <summary>更新一条笔记内容（Phase 1 临时语义：行内覆盖）。行级定位，不动其他行。</summary>
+    public bool UpdateNote(NoteEntry entry, string newContent)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(newContent)) return false;
+
+        // 用新内容生成完整行（保留原时间戳与来源，多段换行仍转义为单行标记）
+        var updated = new NoteEntry
+        {
+            Timestamp = entry.Timestamp,
+            Content = newContent.Trim(),
+            SourceWindow = entry.SourceWindow,
+            Tag = entry.Tag
+        };
+        var newLine = updated.ToMarkdownLine();
+
+        // 行前缀：完整日期（新格式）；旧格式 [HH:mm] 行作为兼容回退
+        var fullPrefix = $"- [{entry.Timestamp:yyyy-MM-dd HH:mm}]";
+        var timePrefix = $"- [{entry.Timestamp:HH:mm}]";
+
+        // 候选文件：当天灵感文件 + 所有标签文件（与 LoadNotes 读取范围一致）
+        var dayFile = Path.Combine(_settings.NotesPath, $"灵感_{entry.Timestamp:yyyy-MM-dd}.md");
+        var candidates = new List<string>();
+        if (File.Exists(dayFile)) candidates.Add(dayFile);
+
+        if (Directory.Exists(_settings.NotesPath))
+        {
+            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                if (fileName.StartsWith("灵感_")) continue; // 当天灵感文件已处理
+                if (!candidates.Contains(file)) candidates.Add(file);
+            }
+        }
+
+        foreach (var file in candidates)
+        {
+            if (TryReplaceLine(file, fullPrefix, newLine)) return true;
+            if (TryReplaceLine(file, timePrefix, newLine)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>行级定位替换：只替换行首匹配 prefix 的那一行，其余内容原样写回</summary>
+    private static bool TryReplaceLine(string filePath, string linePrefix, string newLine)
+    {
+        try
+        {
+            var text = File.ReadAllText(filePath, Encoding.UTF8);
+            var lineStart = FindLineStart(text, linePrefix);
+            if (lineStart < 0) return false;
+
+            var lineEnd = text.IndexOf('\n', lineStart);
+            string tail;
+            if (lineEnd < 0)
+            {
+                lineEnd = text.Length;
+                tail = ""; // 原文件末尾无换行，替换后也保持无换行
+            }
+            else
+            {
+                tail = text.Substring(lineEnd, 1); // 保留原换行符，其余文件内容不动
+                lineEnd += 1;
+            }
+
+            var updated = text[..lineStart] + newLine + tail + text[lineEnd..];
+            File.WriteAllText(filePath, updated, Encoding.UTF8);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 更新笔记失败 ({filePath}): {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>查找行首匹配 prefix 的位置（行首 = 文件开头或前一个换行之后）</summary>
+    private static int FindLineStart(string text, string prefix)
+    {
+        var idx = text.IndexOf(prefix, StringComparison.Ordinal);
+        while (idx >= 0)
+        {
+            if (idx == 0 || text[idx - 1] == '\n') return idx;
+            idx = text.IndexOf(prefix, idx + 1, StringComparison.Ordinal);
+        }
+        return -1;
+    }
+
     /// <summary>按指定日期加载笔记：该日灵感文件 + 所有标签文件（旧格式标签行归入“今天”）</summary>
     public List<NoteEntry> LoadNotes(DateTime date)
     {

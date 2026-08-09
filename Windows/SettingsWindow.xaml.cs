@@ -1,4 +1,5 @@
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 using Microsoft.Win32;
 
 namespace FocusCapture.Windows;
@@ -11,6 +12,7 @@ public partial class SettingsWindow : Window
     private bool _capturing;
     private Action<Models.HotkeyBinding>? _onCaptureDone;
     private bool _suppressEvents = true; // 抑制 InitializeComponent 期间的 ValueChanged 事件
+    private bool _testingAi;
 
     public SettingsWindow(Models.AppSettings s, HotkeyService? hk = null, Action? onChanged = null)
     {
@@ -35,6 +37,11 @@ public partial class SettingsWindow : Window
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
         NotesPathText.Text = _settings.NotesPath;
         AutoStartCheck.IsChecked = _settings.AutoStart;
+        AiBaseUrlInput.Text = _settings.AiBaseUrl;
+        AiApiKeyInput.Text = _settings.AiApiKey;
+        AiModelInput.Text = _settings.AiModel;
+        AiTestResult.Text = "";
+        AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
         _suppressEvents = false;
     }
 
@@ -100,6 +107,51 @@ public partial class SettingsWindow : Window
 
     private void AutoStart_Changed(object sender, RoutedEventArgs e)
     { if (_suppressEvents) return; _settings.AutoStart = AutoStartCheck.IsChecked == true; SetAutoStart(_settings.AutoStart); _settings.Save(); }
+
+    private void AiBaseUrl_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim(); _settings.Save(); }
+
+    private void AiApiKey_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyInput.Text.Trim(); _settings.Save(); }
+
+    private void AiModel_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiModel = AiModelInput.Text.Trim(); _settings.Save(); }
+
+    private async void BtnTestAi_Click(object sender, RoutedEventArgs e)
+    {
+        if (_testingAi) return;
+        _testingAi = true;
+        try
+        {
+            // 先落盘当前输入框内容，确保用所见即所得的配置测试
+            _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
+            _settings.AiApiKey = AiApiKeyInput.Text.Trim();
+            _settings.AiModel = AiModelInput.Text.Trim();
+            _settings.Save();
+
+            BtnTestAi.IsEnabled = false;
+            AiTestResult.Text = "连接中...";
+            AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+
+            var provider = new OpenAICompatibleProvider(
+                _settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+            var ok = await provider.TestConnectionAsync();
+
+            AiTestResult.Text = ok ? "连接成功" : "连接失败";
+            AiTestResult.Foreground = new SolidColorBrush(
+                ok ? Color.FromRgb(0x4C, 0xAF, 0x50) : Color.FromRgb(0xE5, 0x39, 0x35));
+        }
+        catch (Exception ex)
+        {
+            AiTestResult.Text = ex.Message;
+            AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+        }
+        finally
+        {
+            _testingAi = false;
+            BtnTestAi.IsEnabled = true;
+        }
+    }
 
     private static void SetAutoStart(bool enable)
     {
