@@ -507,7 +507,8 @@ public partial class QuickViewWindow : Window
             _selectionTimer.Tick += (_, _) =>
             {
                 _selectionTimer.Stop();
-                ShowFloatToolbar();
+                try { ShowFloatToolbar(); }
+                catch { HideFloatToolbar(); } // 编辑框已失效等异常，兜底隐藏不崩
             };
             _selectionTimer.Start();
         }
@@ -543,17 +544,27 @@ public partial class QuickViewWindow : Window
         if (box == null || _activeEditVm == null) return;
         if (box.SelectionLength <= 0) return;
 
-        // 选中起点相对覆盖层 Canvas 的坐标（修复：原用 TransformToAncestor(this)+Margin，会把外层 Grid 标题栏行撑大导致列表被往下挤）
-        var rect = box.GetRectFromCharacterIndex(box.SelectionStart, false);
-        var point = box.TransformToAncestor(FloatToolbarCanvas).Transform(new Point(rect.Left, rect.Bottom));
+        try
+        {
+            // 选中起点相对覆盖层 Canvas 的坐标
+            // 注意：必须用 TransformToVisual（不要求祖先关系）——FloatToolbarCanvas 是 ScrollViewer 的兄弟，不是 EditBox 的祖先，
+            // 用 TransformToAncestor 会抛 InvalidOperationException 导致闪退
+            var rect = box.GetRectFromCharacterIndex(box.SelectionStart, false);
+            var point = box.TransformToVisual(FloatToolbarCanvas).Transform(new Point(rect.Left, rect.Bottom));
 
-        FloatToolbar.Visibility = Visibility.Visible;
-        FloatToolbar.UpdateLayout();
+            FloatToolbar.Visibility = Visibility.Visible;
+            FloatToolbar.UpdateLayout();
 
-        var left = Math.Min(Math.Max(0, point.X), FloatToolbarCanvas.ActualWidth - FloatToolbar.ActualWidth - 4);
-        var top = Math.Min(Math.Max(0, point.Y + 4), FloatToolbarCanvas.ActualHeight - FloatToolbar.ActualHeight - 4);
-        Canvas.SetLeft(FloatToolbar, left);
-        Canvas.SetTop(FloatToolbar, top);
+            var left = Math.Min(Math.Max(0, point.X), FloatToolbarCanvas.ActualWidth - FloatToolbar.ActualWidth - 4);
+            var top = Math.Min(Math.Max(0, point.Y + 4), FloatToolbarCanvas.ActualHeight - FloatToolbar.ActualHeight - 4);
+            Canvas.SetLeft(FloatToolbar, left);
+            Canvas.SetTop(FloatToolbar, top);
+        }
+        catch
+        {
+            // 编辑框可能已从可视树移除（退出编辑/删除等），任何布局异常都不崩，直接隐藏
+            HideFloatToolbar();
+        }
     }
 
     private void HideFloatToolbar()
