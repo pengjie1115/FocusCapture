@@ -7,6 +7,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- QUEST-4：exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- Release 构建：禁用 IL 裁剪（WPF/WinForms COM 互操作类型无法被静态分析，裁剪必崩） -->
@@ -19,6 +21,12 @@
     <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
     <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
   </PropertyGroup>
+
+  <!-- QUEST-4：.NET 8 SDK 默认不自动嵌入 ApplicationIcon 到 apphost，用 PostBuildEvent 调用 UpdateResource 嵌入
+       路径：系统 PATH 上的 python 解释器（聚焦 .py 嵌入 ICO 到 bin/Release/.../FocusCapture.exe） -->
+  <Target Name="EmbedAppIcon" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' AND Exists('Resources\app.ico')">
+    <Exec Command="python Resources\embed_icon.py" ContinueOnError="true"/>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />

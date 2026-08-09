@@ -27,6 +27,9 @@ public partial class FloatBall : Window
     public event Action? AiAskRequested;
     public event Action? ExitRequested;
 
+    /// <summary>AI 助手显示名称（MainWindow 从 AppSettings 注入，三处入口同源）</summary>
+    public string AiAssistantName { get; set; } = "AI 问答";
+
     public FloatBall()
     {
         InitializeComponent();
@@ -276,7 +279,7 @@ public partial class FloatBall : Window
         };
         menu.Items.Add(CreateMenuItem("  灵感速览", () => QuickViewRequested?.Invoke()));
         menu.Items.Add(CreateMenuItem("  沉浸记录", () => VoiceInputRequested?.Invoke()));
-        menu.Items.Add(CreateMenuItem("  AI 问答", () => AiAskRequested?.Invoke()));
+        menu.Items.Add(CreateMenuItem($"  {AiAssistantName}", () => AiAskRequested?.Invoke()));
         menu.Items.Add(CreateMenuItem("  设置", () => SettingsRequested?.Invoke()));
         menu.Items.Add(new Separator());
         menu.Items.Add(CreateMenuItem("  退出", () => ExitRequested?.Invoke()));

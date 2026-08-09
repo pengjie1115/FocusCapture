@@ -136,6 +136,45 @@
             <!-- 分隔线 -->
             <Rectangle Height="1" Fill="#3A3A3A" Margin="0,20,0,0"/>
 
+            <!-- 外观 -->
+            <TextBlock Text="外观" FontSize="16" FontWeight="Bold"
+                       Foreground="#4CAF50" Margin="0,16,0,12"/>
+
+            <DockPanel Margin="0,4">
+                <TextBlock Text="AI 助手名称" Width="130" VerticalAlignment="Center"/>
+                <TextBox x:Name="AiAssistantNameInput"
+                         Background="#2D2D2D"
+                         Foreground="#E0E0E0"
+                         BorderBrush="#555555"
+                         Padding="6,4"
+                         MaxLength="10"
+                         VerticalAlignment="Center"
+                         TextChanged="AiAssistantName_TextChanged"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,8">
+                <TextBlock Text="任务栏/托盘图标" Width="130" VerticalAlignment="Center"/>
+                <Button x:Name="BtnChooseIcon" Content="选择图标（png/jpg ≤1MB）"
+                        Width="180" HorizontalAlignment="Left"
+                        Click="BtnChooseIcon_Click"/>
+            </DockPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock x:Name="IconStatusText"
+                           Text=""
+                           Foreground="#CCCCCC"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center"/>
+                <Button x:Name="BtnResetIcon" Content="恢复默认图标"
+                        Width="110" Height="26"
+                        Margin="12,0,0,0"
+                        Visibility="Collapsed"
+                        Click="BtnResetIcon_Click"/>
+            </StackPanel>
+
+            <!-- 分隔线 -->
+            <Rectangle Height="1" Fill="#3A3A3A" Margin="0,20,0,0"/>
+
             <!-- 不透明度 -->
             <TextBlock Text="显示设置" FontSize="16" FontWeight="Bold"
                        Foreground="#4CAF50" Margin="0,16,0,12"/>

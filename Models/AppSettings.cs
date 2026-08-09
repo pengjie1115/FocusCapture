@@ -51,6 +51,9 @@ public class AppSettings
     public string AiModel { get; set; } = "agnes-2.5-flash";
     public string AiAssistantName { get; set; } = "AI 问答";
 
+    // ── 外观 ──
+    public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
+
     // ── 沉浸式语音输入 ──
     public HotkeyBinding VoiceInputHotkey { get; set; } = new() { Modifiers = 3, Key = 0x52 }; // Ctrl+Alt+R
     public HotkeyBinding SaveHotkey { get; set; } = new() { Modifiers = 2, Key = 0x53 };       // Ctrl+S

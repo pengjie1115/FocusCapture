@@ -9,6 +9,7 @@ namespace FocusCapture.Windows;
 public partial class CalendarWindow : Window
 {
     private readonly NoteService _noteService;
+    private readonly ThemeColors _theme;
     private DateTime _displayMonth;   // 当月 1 号
     private DateTime? _selectedDate;
 
@@ -22,6 +23,7 @@ public partial class CalendarWindow : Window
     {
         InitializeComponent();
         _noteService = noteService;
+        _theme = new ThemeService().GetColors(); // 热力色接主题（默认 Dark，切换主题后取当前）
         _selectedDate = currentDate.Date;
         _displayMonth = new DateTime(currentDate.Year, currentDate.Month, 1);
         Render();
@@ -56,13 +58,13 @@ public partial class CalendarWindow : Window
 
     private Button CreateDayCell(DateTime date, int count)
     {
-        // 4 档热力色（本阶段固定色，Phase 4 接主题）
+        // 4 档热力色（从 ThemeService 取，不硬编码；主题切换后取当前主题色）
         var (bg, fg) = count switch
         {
-            0 => (FromHex("#262626"), FromHex("#CCCCCC")),
-            <= 2 => (FromHex("#C8E6C9"), FromHex("#1B5E20")),
-            <= 5 => (FromHex("#81C784"), FromHex("#103D14")),
-            _ => (FromHex("#388E3C"), Brushes.White),
+            0 => (FromHex(_theme.Heat0Bg), FromHex(_theme.Heat0Fg)),
+            <= 2 => (FromHex(_theme.Heat1Bg), FromHex(_theme.Heat1Fg)),
+            <= 5 => (FromHex(_theme.Heat2Bg), FromHex(_theme.Heat2Fg)),
+            _ => (FromHex(_theme.Heat3Bg), FromHex(_theme.Heat3Fg)),
         };
 
         var btn = new Button
@@ -81,12 +83,12 @@ public partial class CalendarWindow : Window
         if (date == _selectedDate)
         {
             btn.BorderThickness = new Thickness(2);
-            btn.BorderBrush = FromHex("#4CAF50");
+            btn.BorderBrush = FromHex(_theme.Accent);
         }
         else if (date == DateTime.Today)
         {
             btn.BorderThickness = new Thickness(1);
-            btn.BorderBrush = FromHex("#555555");
+            btn.BorderBrush = FromHex(_theme.BorderColor);
         }
 
         btn.Click += (_, _) => SelectDate(date);

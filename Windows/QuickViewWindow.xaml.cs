@@ -129,12 +129,23 @@ public partial class QuickViewWindow : Window
         _noteService = noteService;
         _settings = settings;
         Opacity = settings.QuickViewOpacity;
+        // AI 助手名称自定义：标题栏入口按钮文案同源读取（三处入口之一）
+        BtnAiAsk.Content = string.IsNullOrWhiteSpace(settings.AiAssistantName) ? "AI 问答" : settings.AiAssistantName;
+        BtnAiAsk.Width = Math.Max(72, BtnAiAsk.Content.ToString()!.Length * 14 + 24);
     }
 
     /// <summary>重新加载当前选中日期的笔记（打开时与刷新按钮共用）</summary>
     public void Refresh()
     {
         ReloadNotes();
+    }
+
+    /// <summary>AI 助手名称变更时同步标题栏按钮文案（设置窗口保存后调用）</summary>
+    public void UpdateAiName(string name)
+    {
+        var final = string.IsNullOrWhiteSpace(name) ? "AI 问答" : name;
+        BtnAiAsk.Content = final;
+        BtnAiAsk.Width = Math.Max(72, final.Length * 14 + 24);
     }
 
     private void ReloadNotes()

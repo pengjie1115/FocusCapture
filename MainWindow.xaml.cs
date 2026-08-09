@@ -147,6 +147,7 @@ public partial class MainWindow : Window
     private void CreateFloatBall()
     {
         _floatBall = new FloatBall();
+        _floatBall.AiAssistantName = string.IsNullOrWhiteSpace(_settings.AiAssistantName) ? "AI 问答" : _settings.AiAssistantName;
         _floatBall.SetOpacity(_settings.FloatBallOpacity);
         _floatBall.ApplyPosition(_settings.BallLeft, _settings.BallTop);
         _floatBall.InputRequested += () => Dispatcher.Invoke(() => _inputWindow?.Show());
@@ -170,22 +171,70 @@ public partial class MainWindow : Window
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
+                ApplyAssistantNameToAllEntries();
             });
             sw.Owner = this; sw.ShowDialog();
         }
         finally { _settingsOpen = false; }
     }
 
+    /// <summary>AI 助手名称同步到三处入口：面板标题栏按钮 / 悬浮球右键菜单 / 托盘菜单（含图标重建）</summary>
+    private void ApplyAssistantNameToAllEntries()
+    {
+        var name = string.IsNullOrWhiteSpace(_settings.AiAssistantName) ? "AI 问答" : _settings.AiAssistantName;
+        if (_floatBall != null) _floatBall.AiAssistantName = name;
+        _quickViewWindow?.UpdateAiName(name);
+        try { CreateTrayIcon(); } catch { /* 托盘重建失败不阻塞设置窗口 */ }
+    }
+
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr handle);
 
+    /// <summary>
+    /// 托盘图标：优先加载自定义图标（%AppData%\FocusCapture\custom_icon.png），
+    /// 否则回退到默认深灰方块（v0.1 兜底逻辑保留）。
+    /// </summary>
     private void CreateTrayIcon()
     {
-        using var bmp = new System.Drawing.Bitmap(32, 32);
-        using var g = System.Drawing.Graphics.FromImage(bmp);
-        g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
-        var hIcon = bmp.GetHicon();
-        var icon = System.Drawing.Icon.FromHandle(hIcon);
+        // 重建时释放旧实例（设置变更后即时刷新托盘）
+        if (_notifyIcon != null)
+        {
+            _notifyIcon.Visible = false;
+            _notifyIcon.Dispose();
+            _notifyIcon = null;
+        }
+
+        System.Drawing.Icon icon;
+        var hIcon = IntPtr.Zero;
+        try
+        {
+            var customPath = _settings.CustomIconPath;
+            if (!string.IsNullOrEmpty(customPath) && File.Exists(customPath))
+            {
+                // 用户自定义图标：png/jpg 转 HICON（System.Drawing 加载后 GetHicon）
+                using var img = System.Drawing.Image.FromFile(customPath);
+                hIcon = new System.Drawing.Bitmap(img).GetHicon();
+                icon = System.Drawing.Icon.FromHandle(hIcon);
+            }
+            else
+            {
+                // 兜底：默认深灰方块
+                using var bmp = new System.Drawing.Bitmap(32, 32);
+                using var g = System.Drawing.Graphics.FromImage(bmp);
+                g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
+                hIcon = bmp.GetHicon();
+                icon = System.Drawing.Icon.FromHandle(hIcon);
+            }
+        }
+        catch
+        {
+            // 自定义图标损坏等异常 → 回退默认深灰方块
+            using var bmp = new System.Drawing.Bitmap(32, 32);
+            using var g = System.Drawing.Graphics.FromImage(bmp);
+            g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
+            hIcon = bmp.GetHicon();
+            icon = System.Drawing.Icon.FromHandle(hIcon);
+        }
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         { Icon = icon, Visible = true, Text = "FocusCapture - 专注力捕捉" };
@@ -193,14 +242,15 @@ public partial class MainWindow : Window
         var cm = new System.Windows.Forms.ContextMenuStrip();
         cm.Items.Add("显示设置", null, (_, _) => OpenSettings());
         cm.Items.Add("灵感速览", null, (_, _) => ShowQuickView());
-        cm.Items.Add("AI 问答", null, (_, _) => AIDialogHelper.Open(ExplainMode.Ask));
+        var aiName = string.IsNullOrWhiteSpace(_settings.AiAssistantName) ? "AI 问答" : _settings.AiAssistantName;
+        cm.Items.Add(aiName, null, (_, _) => AIDialogHelper.Open(ExplainMode.Ask));
         cm.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         cm.Items.Add("退出", null, (_, _) => ExitApp());
         _notifyIcon.ContextMenuStrip = cm;
         _notifyIcon.DoubleClick += (_, _) => OpenSettings();
 
         // 释放原始 HICON 句柄，防止 GDI 泄漏
-        DestroyIcon(hIcon);
+        if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
     }
 
     private void ExitApp()

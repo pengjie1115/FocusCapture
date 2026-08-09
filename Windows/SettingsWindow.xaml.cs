@@ -40,8 +40,10 @@ public partial class SettingsWindow : Window
         AiBaseUrlInput.Text = _settings.AiBaseUrl;
         AiApiKeyInput.Text = _settings.AiApiKey;
         AiModelInput.Text = _settings.AiModel;
+        AiAssistantNameInput.Text = _settings.AiAssistantName;
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+        UpdateIconUI();
         _suppressEvents = false;
     }
 
@@ -117,6 +119,14 @@ public partial class SettingsWindow : Window
     private void AiModel_TextChanged(object sender, TextChangedEventArgs e)
     { if (_suppressEvents) return; _settings.AiModel = AiModelInput.Text.Trim(); _settings.Save(); }
 
+    private void AiAssistantName_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AiAssistantName = AiAssistantNameInput.Text.Trim();
+        _settings.Save();
+        _onChanged?.Invoke();
+    }
+
     private async void BtnTestAi_Click(object sender, RoutedEventArgs e)
     {
         if (_testingAi) return;
@@ -173,6 +183,82 @@ public partial class SettingsWindow : Window
         { Description = "选择笔记存储目录", SelectedPath = _settings.NotesPath };
         if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         { _settings.NotesPath = dlg.SelectedPath; NotesPathText.Text = dlg.SelectedPath; _settings.Save(); }
+    }
+
+    // ── 外观：自定义托盘图标 ──
+
+    private static string CustomIconPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "FocusCapture", "custom_icon.png");
+
+    private void UpdateIconUI()
+    {
+        var hasCustom = !string.IsNullOrEmpty(_settings.CustomIconPath) && File.Exists(_settings.CustomIconPath);
+        BtnResetIcon.Visibility = hasCustom ? Visibility.Visible : Visibility.Collapsed;
+        IconStatusText.Text = hasCustom ? "已使用自定义图标" : "";
+    }
+
+    private void BtnChooseIcon_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择任务栏/托盘图标（png/jpg，≤1MB）",
+            Filter = "图片文件 (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg|所有文件 (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var file = new FileInfo(dlg.FileName);
+        var ext = file.Extension.ToLowerInvariant();
+        if (ext is not (".png" or ".jpg" or ".jpeg"))
+        {
+            IconStatusText.Text = "仅支持 png/jpg 图片";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            return;
+        }
+        if (file.Length > 1024 * 1024)
+        {
+            IconStatusText.Text = "图片超过 1MB，请换一张更小的";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            return;
+        }
+
+        // 复制到 %AppData%\FocusCapture\custom_icon.png 并持久化路径
+        try
+        {
+            var dir = Path.GetDirectoryName(CustomIconPath)!;
+            Directory.CreateDirectory(dir);
+            File.Copy(dlg.FileName, CustomIconPath, true);
+            _settings.CustomIconPath = CustomIconPath;
+            _settings.Save();
+            IconStatusText.Text = "已保存，托盘图标立即生效";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+            UpdateIconUI();
+            _onChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            IconStatusText.Text = $"保存失败：{ex.Message}";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+        }
+    }
+
+    private void BtnResetIcon_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (File.Exists(CustomIconPath)) File.Delete(CustomIconPath);
+            _settings.CustomIconPath = "";
+            _settings.Save();
+            IconStatusText.Text = "已恢复默认图标";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+            UpdateIconUI();
+            _onChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            IconStatusText.Text = $"恢复失败：{ex.Message}";
+            IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+        }
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();

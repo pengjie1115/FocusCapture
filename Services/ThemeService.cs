@@ -25,7 +25,7 @@ public class ThemeService
     }
 }
 
-/// <summary>窗口级主题颜色方案（不含控件细节，仅窗口背景/标题栏/边框）</summary>
+/// <summary>窗口级主题颜色方案（窗口背景/标题栏/边框 + 日历热力图 4 档色）</summary>
 public record ThemeColors(
     string WindowBg,
     string TitleBarBg,
@@ -34,7 +34,15 @@ public record ThemeColors(
     string SecondaryText,
     string Accent,
     string SplitterColor,
-    string BodyBg
+    string BodyBg,
+    string Heat0Bg,   // 日历热力：0 条（无笔记格背景）
+    string Heat0Fg,   // 日历热力：0 条（文字）
+    string Heat1Bg,   // 1-2 条（浅绿）
+    string Heat1Fg,
+    string Heat2Bg,   // 3-5 条（中绿）
+    string Heat2Fg,
+    string Heat3Bg,   // 6+ 条（深绿）
+    string Heat3Fg
 )
 {
     public static readonly ThemeColors Dark = new(
@@ -45,7 +53,15 @@ public record ThemeColors(
         SecondaryText: "#888888",
         Accent: "#4CAF50",
         SplitterColor: "#3A3A3A",
-        BodyBg: "#262626"
+        BodyBg: "#262626",
+        Heat0Bg: "#262626",
+        Heat0Fg: "#CCCCCC",
+        Heat1Bg: "#C8E6C9",
+        Heat1Fg: "#1B5E20",
+        Heat2Bg: "#81C784",
+        Heat2Fg: "#103D14",
+        Heat3Bg: "#388E3C",
+        Heat3Fg: "#FFFFFF"
     );
 
     public static readonly ThemeColors Light = new(
@@ -56,6 +72,14 @@ public record ThemeColors(
         SecondaryText: "#666666",
         Accent: "#2E7D32",
         SplitterColor: "#C0C0C0",
-        BodyBg: "#F5F5F5"
+        BodyBg: "#F5F5F5",
+        Heat0Bg: "#F5F5F5",
+        Heat0Fg: "#333333",
+        Heat1Bg: "#C8E6C9",
+        Heat1Fg: "#1B5E20",
+        Heat2Bg: "#81C784",
+        Heat2Fg: "#103D14",
+        Heat3Bg: "#388E3C",
+        Heat3Fg: "#FFFFFF"
     );
 }

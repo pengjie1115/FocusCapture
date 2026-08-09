@@ -33,3 +33,12 @@
 - [x] Release 构建通过（0 警告 0 错误）+ 静态反作弊检查（无 UpdateNote、无 DateText/DaySelector、删除走行级）
 - [x] 存储层集成测试通过（26 项：追加/关联/统计/删除/沉浸块完整/旧格式兼容/锁定拦截；真实 deleted.json 备份还原哈希一致）
 - [ ] 人工验收：面板操作/日历/语音/快捷键（见 QUEST-3 §8 手动验收清单，需真实 GUI 环境）
+
+## QUEST-4（Phase 4：个性化收尾）
+
+- [x] 任务 1（AppSettings 加 CustomIconPath 属性；外观字段集中分组）
+- [x] 任务 2（AI 助手名称自定义：SettingsWindow MaxLength=10 输入框；QuickViewWindow 标题栏按钮 + FloatBall 右键菜单 + MainWindow 托盘菜单 三处入口同源读 AiAssistantName；UpdateAiName 公开方法支持即时同步；CreateTrayIcon 重建释放旧实例）
+- [x] 任务 3（托盘图标自定义：SettingsWindow 外观区"选择图标"（png/jpg ≤1MB 校验 → 复制到 custom_icon.png → 保存路径）；MainWindow.CreateTrayIcon 优先加载自定义图标（System.Drawing.Image.FromFile → GetHicon），异常回退深灰方块；"恢复默认"按钮）
+- [x] 任务 4（主题配色统一：ThemeColors 加 Heat0~Heat3 共 8 个热力色字段（Dark/Light 各一套）；CalendarWindow.CreateDayCell 4 档热力色 + 选中边框 + 今天边框全部走 ThemeService.GetColors()，硬编码色值全部移除）
+- [x] 任务 5（正式 .ico：app_icon.svg SVG 设计 → Edge headless 转 256 PNG → Python struct 封装多尺寸 ICO（256/64/48/32/16，Vista+ PNG 压缩）；csproj 加 ApplicationIcon + PostBuildEvent 调用 embed_icon.py UpdateResource 嵌入 RT_GROUP_ICON + RT_ICON ×5；构建后 exe 资源验证含 5 尺寸图标组）
+- [x] Release 构建通过（0 警告 0 错误）+ 静态反作弊检查（AiAssistantName 三处引用、CustomIconPath 三处出现、ApplicationIcon 配 Resources\app.ico、热力色无硬编码走 ThemeService）
