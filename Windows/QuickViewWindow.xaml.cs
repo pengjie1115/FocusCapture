@@ -327,6 +327,8 @@ public partial class QuickViewWindow : Window
     }
 
     /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
+    private double _scrollOffsetBeforeEdit; // 进入编辑前的列表滚动位置，编辑后恢复
+
     private void BeginEditNote(NoteEntryViewModel vm)
     {
         if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
@@ -341,6 +343,10 @@ public partial class QuickViewWindow : Window
             other.CancelEdit();
         CancelEditState(vm);
 
+        // 记录编辑前 ScrollViewer 滚动偏移，编辑后恢复（避免 Focus 触发 ScrollIntoView 把后面笔记挤出去）
+        var scrollViewer = FindVisualChild<ScrollViewer>(NotesList);
+        _scrollOffsetBeforeEdit = scrollViewer?.VerticalOffset ?? 0;
+
         vm.BeginEdit();
         _activeEditVm = vm;
         // 等模板切换完成后聚焦编辑框
@@ -354,6 +360,12 @@ public partial class QuickViewWindow : Window
                 box?.SelectAll();
                 // 修复：长文本全选后 TextBox 自动滚动到选区末尾，内容"被拉到下面看不见"——拉回开头
                 box?.ScrollToHome();
+
+                // 恢复列表滚动位置到编辑前（Focus 触发的 ScrollIntoView 会让编辑项滚到视口边缘，后面笔记被挤出去）
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    scrollViewer?.ScrollToVerticalOffset(_scrollOffsetBeforeEdit);
+                }), DispatcherPriority.Background);
             }
         }), DispatcherPriority.Background);
     }
@@ -464,7 +476,12 @@ public partial class QuickViewWindow : Window
     private void EditBox_LostFocus(object sender, RoutedEventArgs e)
     {
         _selectionTimer?.Stop();
-        HideFloatToolbar();
+        // 延迟隐藏：避免点击浮动工具条按钮时 TextBox 失焦导致按钮 IsHitTestVisible=false（Collapsed）收不到 Click
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!FloatToolbar.IsKeyboardFocusWithin)
+                HideFloatToolbar();
+        }), DispatcherPriority.Background);
     }
 
     /// <summary>在选中文字附近显示浮动工具条（超界时靠边）</summary>
