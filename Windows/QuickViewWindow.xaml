@@ -374,10 +374,10 @@
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            Visibility="Collapsed"/>
-                <!-- 浮动工具条覆盖层：Canvas 不参与内容布局（修复：原 Border 用 Margin 定位在外层 Grid，撑大标题栏行导致列表被往下挤） -->
+                <!-- 浮动工具条覆盖层：Canvas 不参与内容布局；无 Background 天然不拦截鼠标（列表区域穿透正常），
+                     子元素按钮可正常命中（修复：之前 IsHitTestVisible=False 把整棵子树从命中测试排除，按钮点不到） -->
                 <Canvas x:Name="FloatToolbarCanvas"
-                        Panel.ZIndex="99"
-                        IsHitTestVisible="False">
+                        Panel.ZIndex="99">
                     <Border x:Name="FloatToolbar"
                             Canvas.Left="10" Canvas.Top="10"
                             Background="#2D2D2D"

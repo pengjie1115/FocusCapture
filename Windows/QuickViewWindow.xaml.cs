@@ -585,23 +585,31 @@ public partial class QuickViewWindow : Window
 
     private void FloatToolbar_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string mode }) return;
-        var vm = _activeEditVm;
-        // 优先选中文字；若点击瞬间选区丢失（失焦等），兜底用编辑框全文——保证点翻译/搜索一定有内容可发
-        var selected = _activeEditBox?.SelectedText?.Trim();
-        if (string.IsNullOrEmpty(selected))
-            selected = vm?.EditText?.Trim();
-        if (vm == null || string.IsNullOrEmpty(selected)) { HideFloatToolbar(); return; }
-
-        var explainMode = mode switch
+        try
         {
-            "Translate" => ExplainMode.Translate,
-            "Search" => ExplainMode.Search,
-            _ => ExplainMode.Ask,
-        };
+            if (sender is not Button { Tag: string mode }) return;
+            var vm = _activeEditVm;
+            // 优先选中文字；若点击瞬间选区丢失（失焦等），兜底用编辑框全文——保证点翻译/搜索一定有内容可发
+            var selected = _activeEditBox?.SelectedText?.Trim();
+            if (string.IsNullOrEmpty(selected))
+                selected = vm?.EditText?.Trim();
+            if (vm == null || string.IsNullOrEmpty(selected)) { HideFloatToolbar(); return; }
 
-        HideFloatToolbar();
-        AIDialogHelper.Open(explainMode, vm.Entry, selected);
+            var explainMode = mode switch
+            {
+                "Translate" => ExplainMode.Translate,
+                "Search" => ExplainMode.Search,
+                _ => ExplainMode.Ask,
+            };
+
+            HideFloatToolbar();
+            AIDialogHelper.Open(explainMode, vm.Entry, selected);
+        }
+        catch
+        {
+            // 任何异常都不崩，静默隐藏工具条
+            HideFloatToolbar();
+        }
     }
 
     /// <summary>在可视树中查找指定类型的第一个后代</summary>
