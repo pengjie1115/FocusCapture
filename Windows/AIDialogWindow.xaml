@@ -1,0 +1,182 @@
+<Window x:Class="FocusCapture.Windows.AIDialogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI 问答"
+        Width="640" Height="560"
+        MinWidth="480" MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0"
+        FontFamily="Microsoft YaHei UI"
+        FontSize="13">
+
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#3A3A3A"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#555555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#505050"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.55"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ScrollbarStyle" TargetType="ScrollBar">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Width" Value="8"/>
+        </Style>
+    </Window.Resources>
+
+    <Border CornerRadius="6" Background="#1E1E1E"
+            BorderBrush="#3A3A3A" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- 标题栏 -->
+            <Border Grid.Row="0" Background="#252525" CornerRadius="6,6,0,0">
+                <Grid Margin="14,0">
+                    <TextBlock x:Name="TitleText"
+                               Text="AI 问答"
+                               Foreground="#CCCCCC"
+                               FontSize="14" FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <Button x:Name="BtnClose"
+                            Content="×"
+                            FontSize="18"
+                            Width="28" Height="28"
+                            Background="Transparent"
+                            Foreground="#888888"
+                            BorderThickness="0"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Click="BtnClose_Click"/>
+                </Grid>
+            </Border>
+
+            <!-- 消息列表 -->
+            <Grid Grid.Row="1">
+                <ScrollViewer x:Name="MessagesScroll"
+                              VerticalScrollBarVisibility="Auto"
+                              Padding="14,10">
+                    <ItemsControl x:Name="MessagesList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,10">
+                                    <Border Background="#252525"
+                                            CornerRadius="6"
+                                            Padding="10,8"
+                                            MaxWidth="520"
+                                            HorizontalAlignment="Left">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="#252525"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                        <Setter Property="Background" Value="#2A3A2A"/>
+                                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <StackPanel>
+                                            <TextBlock x:Name="RoleLabel"
+                                                       FontSize="10"
+                                                       Foreground="#777777"
+                                                       Margin="0,0,0,3"/>
+                                            <TextBlock Text="{Binding Content}"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="#E0E0E0"
+                                                       FontSize="13"/>
+                                            <Button x:Name="FillButton"
+                                                    Content="回填到笔记"
+                                                    FontSize="11"
+                                                    Height="24"
+                                                    Padding="10,0"
+                                                    Margin="0,8,0,0"
+                                                    HorizontalAlignment="Left"
+                                                    Background="#2D2D2D"
+                                                    Foreground="#4CAF50"
+                                                    BorderBrush="#4CAF50"
+                                                    Tag="{Binding}"
+                                                    Click="BtnFill_Click"
+                                                    Visibility="Collapsed"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                        <Setter TargetName="RoleLabel" Property="Text" Value="我"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsUser}" Value="False">
+                                        <Setter TargetName="RoleLabel" Property="Text" Value="AI"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsFillable}" Value="True">
+                                        <Setter TargetName="FillButton" Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsFilled}" Value="True">
+                                        <Setter TargetName="FillButton" Property="Content" Value="已回填"/>
+                                        <Setter TargetName="FillButton" Property="IsEnabled" Value="False"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- 输入区 -->
+            <Border Grid.Row="2" Background="#252525" CornerRadius="0,0,6,6" Padding="12,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="InputBox"
+                             Grid.Column="0"
+                             Height="30"
+                             VerticalContentAlignment="Center"
+                             AcceptsReturn="False"
+                             Background="#1E1E1E"
+                             Foreground="#E0E0E0"
+                             BorderBrush="#555555"
+                             Padding="8,4"
+                             Cursor="IBeam"
+                             PreviewKeyDown="InputBox_PreviewKeyDown"/>
+                    <Button x:Name="BtnSend"
+                            Grid.Column="1"
+                            Content="发送"
+                            Width="72" Height="30"
+                            Margin="8,0,0,0"
+                            Background="#3A3A3A"
+                            Foreground="#4CAF50"
+                            BorderBrush="#4CAF50"
+                            Click="BtnSend_Click"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

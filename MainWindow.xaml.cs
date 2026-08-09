@@ -1,4 +1,5 @@
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 using FocusCapture.Windows;
 using System.Runtime.InteropServices;
 
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
         try
         {
             _noteService = new NoteService(_settings);
+            AIDialogHelper.Initialize(_noteService, _settings, this);
             _hotkeyService = new HotkeyService(_hwnd, _settings);
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
@@ -151,6 +153,7 @@ public partial class MainWindow : Window
         _floatBall.QuickViewRequested += () => Dispatcher.Invoke(ShowQuickView);
         _floatBall.SettingsRequested += () => Dispatcher.Invoke(OpenSettings);
         _floatBall.VoiceInputRequested += () => Dispatcher.Invoke(ShowVoiceInput);
+        _floatBall.AiAskRequested += () => Dispatcher.Invoke(() => AIDialogHelper.Open(ExplainMode.Ask));
         _floatBall.ExitRequested += () => Dispatcher.Invoke(ExitApp);
         _floatBall.Show();
     }
@@ -190,6 +193,7 @@ public partial class MainWindow : Window
         var cm = new System.Windows.Forms.ContextMenuStrip();
         cm.Items.Add("显示设置", null, (_, _) => OpenSettings());
         cm.Items.Add("灵感速览", null, (_, _) => ShowQuickView());
+        cm.Items.Add("AI 问答", null, (_, _) => AIDialogHelper.Open(ExplainMode.Ask));
         cm.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         cm.Items.Add("退出", null, (_, _) => ExitApp());
         _notifyIcon.ContextMenuStrip = cm;
@@ -204,6 +208,7 @@ public partial class MainWindow : Window
         _clipboardHook?.Dispose();
         _hotkeyService?.Dispose();
         if (_floatBall != null) { var (l, t) = _floatBall.GetPosition(); _settings.BallLeft = l; _settings.BallTop = t; _settings.Save(); }
+        AIDialogHelper.CloseAll();
         _floatBall?.Close(); _inputWindow?.Close(); _quickViewWindow?.Close(); _voiceWindow?.Close(); _notifyIcon?.Dispose();
         WpfApp.Current.Shutdown();
     }

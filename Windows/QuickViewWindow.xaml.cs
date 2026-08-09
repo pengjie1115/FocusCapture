@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using FocusCapture.Models;
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 
 namespace FocusCapture.Windows;
 
@@ -82,6 +83,9 @@ public partial class QuickViewWindow : Window
     private List<DayOption> _dayOptions = new();
     private DateTime _selectedDate = DateTime.Today;
     private bool _suppressDaySelector;
+    private DispatcherTimer? _selectionTimer;
+    private TextBox? _activeEditBox;
+    private NoteEntryViewModel? _activeEditVm;
 
     public QuickViewWindow(NoteService noteService, AppSettings settings)
     {
@@ -168,6 +172,12 @@ public partial class QuickViewWindow : Window
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Hide();
+
+    /// <summary>标题栏 AI 问答入口（全局，无笔记绑定）</summary>
+    private void BtnAiAsk_Click(object sender, RoutedEventArgs e)
+    {
+        AIDialogHelper.Open(ExplainMode.Ask);
+    }
 
     private void BtnExport_Click(object sender, RoutedEventArgs e)
     {
@@ -256,6 +266,66 @@ public partial class QuickViewWindow : Window
         }
     }
 
+    // ── 条目右键菜单 ──
+
+    private void NoteContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        // 记录右键目标条目，供各菜单项点击时使用
+        if (sender is ContextMenu menu && menu.PlacementTarget is FrameworkElement target)
+        {
+            _contextTarget = target.DataContext as NoteEntryViewModel;
+        }
+    }
+
+    private NoteEntryViewModel? _contextTarget;
+
+    private NoteEntryViewModel? GetContextTarget(object sender)
+        => _contextTarget;
+
+    private void CtxAiTranslate_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Translate, vm.Entry);
+    }
+
+    private void CtxAiSearch_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Search, vm.Entry);
+    }
+
+    private void CtxCopy_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm == null) return;
+        ClipboardHookService.MarkSelfCopy();
+        WpfClipboard.SetText(vm.Content);
+    }
+
+    private void CtxEdit_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm != null) BeginEditNote(vm);
+    }
+
+    private void CtxDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm == null) return;
+
+        var confirm = System.Windows.MessageBox.Show(
+            $"确认删除这条笔记？\n\n时间：{vm.Timestamp:HH:mm}\n内容：{vm.FirstLine}\n\n" +
+            "（源 .md 文件未修改，可从源文件回溯）",
+            "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        _noteService.DeletedService.MarkDeleted(vm.Entry);
+        CancelEditState(vm);
+        _viewModels.Remove(vm);
+        NotesList.Items.Refresh();
+        UpdateSelectionUI();
+    }
+
     /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
     private void BeginEditNote(NoteEntryViewModel vm)
     {
@@ -269,14 +339,17 @@ public partial class QuickViewWindow : Window
         // 同一时间只允许编辑一条
         foreach (var other in _viewModels.Where(v => v.IsEditing && !ReferenceEquals(v, vm)))
             other.CancelEdit();
+        CancelEditState(vm);
 
         vm.BeginEdit();
+        _activeEditVm = vm;
         // 等模板切换完成后聚焦编辑框
         Dispatcher.BeginInvoke(new Action(() =>
         {
             if (NotesList.ItemContainerGenerator.ContainerFromItem(vm) is FrameworkElement container)
             {
                 var box = FindVisualChild<TextBox>(container);
+                AttachEditBox(vm, box);
                 box?.Focus();
                 box?.SelectAll();
             }
@@ -290,7 +363,11 @@ public partial class QuickViewWindow : Window
 
     private void BtnEditCancel_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button btn && btn.Tag is NoteEntryViewModel vm) vm.CancelEdit();
+        if (sender is Button btn && btn.Tag is NoteEntryViewModel vm)
+        {
+            CancelEditState(vm);
+            vm.CancelEdit();
+        }
     }
 
     /// <summary>保存编辑：保存前检查沉浸式锁定，成功后重新加载面板</summary>
@@ -314,6 +391,7 @@ public partial class QuickViewWindow : Window
 
         if (_noteService.UpdateNote(vm.Entry, newContent))
         {
+            CancelEditState(vm);
             Refresh();
         }
         else
@@ -322,6 +400,111 @@ public partial class QuickViewWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Error);
             vm.CancelEdit();
         }
+    }
+
+    // ── 编辑态浮动工具条 ──
+
+    /// <summary>绑定当前编辑框的选中/失焦事件；切换编辑目标时解绑旧的</summary>
+    private void AttachEditBox(NoteEntryViewModel vm, TextBox? box)
+    {
+        if (_activeEditBox != null)
+        {
+            _activeEditBox.SelectionChanged -= EditBox_SelectionChanged;
+            _activeEditBox.LostFocus -= EditBox_LostFocus;
+        }
+        _activeEditBox = box;
+        if (box != null)
+        {
+            box.SelectionChanged += EditBox_SelectionChanged;
+            box.LostFocus += EditBox_LostFocus;
+        }
+        HideFloatToolbar();
+    }
+
+    /// <summary>取消编辑状态：解绑编辑框、清计时器、隐藏工具条</summary>
+    private void CancelEditState(NoteEntryViewModel? vm)
+    {
+        if (vm != null && _activeEditVm != null && !ReferenceEquals(vm, _activeEditVm)) return;
+
+        if (_activeEditBox != null)
+        {
+            _activeEditBox.SelectionChanged -= EditBox_SelectionChanged;
+            _activeEditBox.LostFocus -= EditBox_LostFocus;
+        }
+        _activeEditBox = null;
+        _activeEditVm = null;
+        _selectionTimer?.Stop();
+        HideFloatToolbar();
+    }
+
+    private void EditBox_SelectionChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox box) return;
+        var selected = box.SelectionLength > 0 && !string.IsNullOrEmpty(box.SelectedText);
+        _selectionTimer?.Stop();
+
+        if (selected && box.IsKeyboardFocused)
+        {
+            _selectionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            _selectionTimer.Tick += (_, _) =>
+            {
+                _selectionTimer.Stop();
+                ShowFloatToolbar();
+            };
+            _selectionTimer.Start();
+        }
+        else
+        {
+            HideFloatToolbar();
+        }
+    }
+
+    private void EditBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        _selectionTimer?.Stop();
+        HideFloatToolbar();
+    }
+
+    /// <summary>在选中文字附近显示浮动工具条（超界时靠边）</summary>
+    private void ShowFloatToolbar()
+    {
+        var box = _activeEditBox;
+        if (box == null || _activeEditVm == null) return;
+        if (box.SelectionLength <= 0) return;
+
+        // 选中起点在窗口内的坐标
+        var rect = box.GetRectFromCharacterIndex(box.SelectionStart, false);
+        var point = box.TransformToAncestor(this).Transform(new Point(rect.Left, rect.Bottom));
+
+        FloatToolbar.Visibility = Visibility.Visible;
+        FloatToolbar.UpdateLayout();
+
+        var left = Math.Min(Math.Max(0, point.X), ActualWidth - FloatToolbar.ActualWidth - 4);
+        var top = Math.Min(Math.Max(0, point.Y + 4), ActualHeight - FloatToolbar.ActualHeight - 4);
+        FloatToolbar.Margin = new Thickness(left, top, 0, 0);
+    }
+
+    private void HideFloatToolbar()
+    {
+        FloatToolbar.Visibility = Visibility.Collapsed;
+    }
+
+    private void FloatToolbar_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string mode }) return;
+        var vm = _activeEditVm;
+        var selected = _activeEditBox?.SelectedText?.Trim() ?? "";
+        if (vm == null || string.IsNullOrEmpty(selected)) { HideFloatToolbar(); return; }
+
+        var explainMode = mode switch
+        {
+            "Translate" => ExplainMode.Translate,
+            "Search" => ExplainMode.Search,
+            _ => ExplainMode.Ask,
+        };
+
+        HideFloatToolbar();
+        AIDialogHelper.Open(explainMode, vm.Entry, selected);
     }
 
     /// <summary>在可视树中查找指定类型的第一个后代</summary>

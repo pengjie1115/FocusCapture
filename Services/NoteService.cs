@@ -138,6 +138,84 @@ public class NoteService
         return false;
     }
 
+    /// <summary>
+    /// AI 回填：向笔记文件追加一条带标记的新行（MD 只增不减，禁止覆盖原行）。
+    /// 受沉浸式锁定约束：锁定时返回 false。
+    /// </summary>
+    public bool AppendAiFill(NoteEntry entry, string fillText)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(fillText)) return false;
+        if (ImmersiveSessionService.IsLocked(entry.Timestamp)) return false;
+
+        var filePath = FindEntryFile(entry);
+        if (filePath == null) return false;
+
+        // 新行只含回填内容；多段内容换行转义为单行标记，保持单行存储格式
+        var escaped = fillText
+            .Replace("\r\n", "\n")
+            .Replace("\n", "\u23CE");
+        var line = $"- [{DateTime.Now:yyyy-MM-dd HH:mm}] 【AI 释义】{escaped} — 来源: AI 回填";
+
+        try
+        {
+            File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] AI 回填失败 ({filePath}): {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>定位 entry 所在的 md 文件（当天灵感文件 + 全部标签文件），找不到返回 null</summary>
+    private string? FindEntryFile(NoteEntry entry)
+    {
+        // 行前缀：完整日期（新格式）；旧格式 [HH:mm] 行作为兼容回退
+        var fullPrefix = $"- [{entry.Timestamp:yyyy-MM-dd HH:mm}]";
+        var timePrefix = $"- [{entry.Timestamp:HH:mm}]";
+
+        var dayFile = Path.Combine(_settings.NotesPath, $"灵感_{entry.Timestamp:yyyy-MM-dd}.md");
+        var candidates = new List<string>();
+        if (File.Exists(dayFile)) candidates.Add(dayFile);
+
+        if (Directory.Exists(_settings.NotesPath))
+        {
+            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                if (fileName.StartsWith("灵感_")) continue;
+                if (!candidates.Contains(file)) candidates.Add(file);
+            }
+        }
+
+        foreach (var file in candidates)
+        {
+            if (FileContainsLine(file, fullPrefix) || FileContainsLine(file, timePrefix))
+                return file;
+        }
+        return null;
+    }
+
+    private static bool FileContainsLine(string filePath, string prefix)
+    {
+        try
+        {
+            var text = File.ReadAllText(filePath, Encoding.UTF8);
+            var idx = text.IndexOf(prefix, StringComparison.Ordinal);
+            while (idx >= 0)
+            {
+                if (idx == 0 || text[idx - 1] == '\n') return true;
+                idx = text.IndexOf(prefix, idx + 1, StringComparison.Ordinal);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 读取笔记文件失败 ({filePath}): {ex.Message}");
+        }
+        return false;
+    }
+
     /// <summary>行级定位替换：只替换行首匹配 prefix 的那一行，其余内容原样写回</summary>
     private static bool TryReplaceLine(string filePath, string linePrefix, string newLine)
     {
