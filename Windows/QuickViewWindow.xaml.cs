@@ -23,6 +23,17 @@ public class NoteEntryViewModel : INotifyPropertyChanged
     public string? Tag => Entry.Tag;
     public string Content => Entry.Content;
 
+    /// <summary>面板预览：原文首行 +（如有）最近一条 AI 释义首行（等高保持，40px 内容区截断）</summary>
+    public string DisplayPreview
+    {
+        get
+        {
+            if (Entry.AiFills.Count == 0) return Entry.FirstLine;
+            var lastFill = Entry.AiFills[^1].Split('\n')[0].Trim();
+            return $"{Entry.FirstLine}\n【AI 释义】{lastFill}";
+        }
+    }
+
     private bool _isSelected;
     public bool IsSelected
     {

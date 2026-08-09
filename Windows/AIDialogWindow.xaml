@@ -107,23 +107,52 @@
                                                        FontSize="10"
                                                        Foreground="#777777"
                                                        Margin="0,0,0,3"/>
-                                            <TextBlock Text="{Binding Content}"
-                                                       TextWrapping="Wrap"
-                                                       Foreground="#E0E0E0"
-                                                       FontSize="13"/>
-                                            <Button x:Name="FillButton"
-                                                    Content="回填到笔记"
-                                                    FontSize="11"
-                                                    Height="24"
-                                                    Padding="10,0"
-                                                    Margin="0,8,0,0"
-                                                    HorizontalAlignment="Left"
-                                                    Background="#2D2D2D"
-                                                    Foreground="#4CAF50"
-                                                    BorderBrush="#4CAF50"
-                                                    Tag="{Binding}"
-                                                    Click="BtnFill_Click"
-                                                    Visibility="Collapsed"/>
+                                            <!-- 只读 TextBox：支持拖选部分文字回填（TextBlock 不支持选中） -->
+                                            <TextBox x:Name="BubbleText"
+                                                     Text="{Binding Content}"
+                                                     TextWrapping="Wrap"
+                                                     IsReadOnly="True"
+                                                     IsReadOnlyCaretVisible="False"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Foreground="#E0E0E0"
+                                                     FontSize="13"
+                                                     Padding="0"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                <StackPanel.Style>
+                                                    <Style TargetType="StackPanel">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsFillable}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </StackPanel.Style>
+                                                <Button x:Name="FillAppendButton"
+                                                        Content="追加到原笔记"
+                                                        FontSize="11"
+                                                        Height="24"
+                                                        Padding="10,0"
+                                                        Margin="0,0,6,0"
+                                                        HorizontalAlignment="Left"
+                                                        Background="#2D2D2D"
+                                                        Foreground="#4CAF50"
+                                                        BorderBrush="#4CAF50"
+                                                        Tag="{Binding}"
+                                                        Click="BtnFillAppend_Click"/>
+                                                <Button x:Name="FillNewButton"
+                                                        Content="存为新笔记"
+                                                        FontSize="11"
+                                                        Height="24"
+                                                        Padding="10,0"
+                                                        HorizontalAlignment="Left"
+                                                        Background="#2D2D2D"
+                                                        Foreground="#888888"
+                                                        BorderBrush="#555555"
+                                                        Tag="{Binding}"
+                                                        Click="BtnFillNew_Click"/>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>
@@ -134,12 +163,11 @@
                                     <DataTrigger Binding="{Binding IsUser}" Value="False">
                                         <Setter TargetName="RoleLabel" Property="Text" Value="AI"/>
                                     </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsFillable}" Value="True">
-                                        <Setter TargetName="FillButton" Property="Visibility" Value="Visible"/>
-                                    </DataTrigger>
                                     <DataTrigger Binding="{Binding IsFilled}" Value="True">
-                                        <Setter TargetName="FillButton" Property="Content" Value="已回填"/>
-                                        <Setter TargetName="FillButton" Property="IsEnabled" Value="False"/>
+                                        <Setter TargetName="FillAppendButton" Property="Content" Value="已回填"/>
+                                        <Setter TargetName="FillAppendButton" Property="IsEnabled" Value="False"/>
+                                        <Setter TargetName="FillNewButton" Property="Content" Value="已回填"/>
+                                        <Setter TargetName="FillNewButton" Property="IsEnabled" Value="False"/>
                                     </DataTrigger>
                                 </DataTemplate.Triggers>
                             </DataTemplate>

@@ -262,9 +262,9 @@
                                             </StackPanel.Style>
                                             <TextBlock Foreground="#888888" FontSize="11"
                                                        Text="{Binding Timestamp, StringFormat=HH:mm}"/>
-                                            <!-- 等高设计：内容区固定 34px，单行截断预览（NoWrap），双击编辑不撑高列表 -->
+                                            <!-- 等高设计：内容区固定 40px，单行截断预览（NoWrap），双击编辑不撑高列表；DisplayPreview 含 AI 释义合并预览 -->
                                             <TextBlock Foreground="#E0E0E0" FontSize="13"
-                                                       Text="{Binding FirstLine}"
+                                                       Text="{Binding DisplayPreview}"
                                                        TextWrapping="NoWrap"
                                                        TextTrimming="CharacterEllipsis"
                                                        Height="40"

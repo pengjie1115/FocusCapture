@@ -139,10 +139,11 @@ public class NoteService
     }
 
     /// <summary>
-    /// AI 回填：向笔记文件追加一条带标记的新行（MD 只增不减，禁止覆盖原行）。
+    /// AI 回填-追加到原笔记：追加一条带标记的新行（MD 只增不减，禁止覆盖原行）。
+    /// 行尾带 (ref 原笔记时间戳)，解析时精确关联回原笔记（展示层合并为子条目）。
     /// 受沉浸式锁定约束：锁定时返回 false。
     /// </summary>
-    public bool AppendAiFill(NoteEntry entry, string fillText)
+    public bool AppendToNote(NoteEntry entry, string fillText)
     {
         if (entry == null || string.IsNullOrWhiteSpace(fillText)) return false;
         if (ImmersiveSessionService.IsLocked(entry.Timestamp)) return false;
@@ -154,7 +155,7 @@ public class NoteService
         var escaped = fillText
             .Replace("\r\n", "\n")
             .Replace("\n", "\u23CE");
-        var line = $"- [{DateTime.Now:yyyy-MM-dd HH:mm}] 【AI 释义】{escaped} — 来源: AI 回填";
+        var line = $"- [{DateTime.Now:yyyy-MM-dd HH:mm}] 【AI 释义】{escaped} — 来源: AI 回填 (ref {entry.Timestamp:yyyy-MM-dd HH:mm})";
 
         try
         {
@@ -167,6 +168,10 @@ public class NoteService
             return false;
         }
     }
+
+    /// <summary>AI 回填-单独形成一条新笔记（普通行，独立成条）</summary>
+    public NoteEntry? SaveAiNote(string text)
+        => SaveNote(text, "AI 回填");
 
     /// <summary>定位 entry 所在的 md 文件（当天灵感文件 + 全部标签文件），找不到返回 null</summary>
     private string? FindEntryFile(NoteEntry entry)
@@ -311,10 +316,46 @@ public class NoteService
                     : dateContext.ToString("yyyy-MM-dd");
                 if (DateTime.TryParse($"{day} {match.Groups[2].Value}", out var ts))
                 {
+                    var rawContent = match.Groups[3].Value.Replace("\u23CE", "\n");
+
+                    // AI 回填标记行：`【AI 释义】xxx`，可选 `(ref yyyy-MM-dd HH:mm)` 精确关联原笔记
+                    var aiMatch = Regex.Match(rawContent,
+                        @"^【AI 释义】(.*?)(?: \(ref (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\))?$",
+                        RegexOptions.Singleline);
+                    if (aiMatch.Success)
+                    {
+                        var fillText = aiMatch.Groups[1].Value.Trim();
+                        var refTimeStr = aiMatch.Groups[2].Success ? aiMatch.Groups[2].Value : null;
+
+                        // 有 ref → 精确关联；无 ref（旧数据）→ 回退关联最近一条普通笔记
+                        NoteEntry? target = null;
+                        if (!string.IsNullOrEmpty(refTimeStr) && DateTime.TryParse(refTimeStr, out var refTs))
+                            target = entries.LastOrDefault(e => Math.Abs((e.Timestamp - refTs).TotalMinutes) < 1);
+                        if (target == null)
+                            target = entries.LastOrDefault(e => e.Timestamp <= ts);
+
+                        if (target != null)
+                        {
+                            target.AiFills.Add(fillText);
+                            continue; // 关联成功，不生成独立条目
+                        }
+
+                        // 关联失败 → 独立成条
+                        entries.Add(new NoteEntry
+                        {
+                            Timestamp = ts,
+                            Content = fillText,
+                            SourceWindow = "AI 回填",
+                            Tag = tag
+                        });
+                        continue;
+                    }
+
+                    // 普通行
                     entries.Add(new NoteEntry
                     {
                         Timestamp = ts,
-                        Content = match.Groups[3].Value.Replace("\u23CE", "\n"),
+                        Content = rawContent,
                         SourceWindow = match.Groups[4].Success ? match.Groups[4].Value : "",
                         Tag = tag
                     });

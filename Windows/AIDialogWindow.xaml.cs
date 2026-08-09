@@ -227,7 +227,8 @@ public partial class AIDialogWindow : Window
         }
     }
 
-    private void BtnFill_Click(object sender, RoutedEventArgs e)
+    /// <summary>回填-追加到原笔记（受沉浸式锁定约束）</summary>
+    private void BtnFillAppend_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: ChatBubbleViewModel bubble } btn) return;
         if (_targetNote == null || bubble.IsUser || bubble.IsFilled) return;
@@ -239,20 +240,70 @@ public partial class AIDialogWindow : Window
             return;
         }
 
-        var fillText = bubble.Content.Trim();
+        // 优先气泡内选中文字，无选中则全文
+        var fillText = GetBubbleSelectedText(btn, bubble);
         if (string.IsNullOrEmpty(fillText)) return;
 
-        if (_noteService.AppendAiFill(_targetNote, fillText))
+        if (_noteService.AppendToNote(_targetNote, fillText))
         {
-            bubble.IsFilled = true;
-            btn.Content = "已回填";
-            btn.IsEnabled = false;
+            bubble.IsFilled = true; // 按钮文本由 DataTrigger 自动更新为"已回填"并禁用
         }
         else
         {
             System.Windows.MessageBox.Show(this, "回填失败：未找到笔记文件或写入失败", "错误",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    /// <summary>回填-单独形成一条新笔记（不关联原笔记，无锁定约束）</summary>
+    private void BtnFillNew_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ChatBubbleViewModel bubble } btn) return;
+        if (bubble.IsUser || bubble.IsFilled) return;
+
+        var fillText = GetBubbleSelectedText(btn, bubble);
+        if (string.IsNullOrEmpty(fillText)) return;
+
+        if (_noteService.SaveAiNote(fillText) != null)
+        {
+            bubble.IsFilled = true;
+        }
+        else
+        {
+            System.Windows.MessageBox.Show(this, "保存失败：笔记写入出错", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>读取气泡内选中文字；无选中返回全文。从按钮上溯到气泡 Border 找 BubbleText（只读 TextBox）</summary>
+    private static string GetBubbleSelectedText(Button btn, ChatBubbleViewModel bubble)
+    {
+        try
+        {
+            DependencyObject? current = btn;
+            while (current != null && current is not Border)
+                current = VisualTreeHelper.GetParent(current);
+            var box = current is Border b ? FindVisualChild<TextBox>(b) : null;
+            var selected = box?.SelectedText?.Trim();
+            if (!string.IsNullOrEmpty(selected)) return selected;
+        }
+        catch
+        {
+            // 可视化树查找失败时回退全文
+        }
+        return bubble.Content.Trim();
+    }
+
+    /// <summary>在可视树中查找指定类型的第一个后代</summary>
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed) return typed;
+            if (FindVisualChild<T>(child) is T found) return found;
+        }
+        return null;
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
