@@ -294,46 +294,41 @@
                                             </Grid.RowDefinitions>
                                             <TextBlock Grid.Row="0" Foreground="#888888" FontSize="11"
                                                        Text="{Binding Timestamp, StringFormat=HH:mm}"/>
-                                            <TextBox Grid.Row="1" x:Name="EditBox"
-                                                     Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                     AcceptsReturn="True"
-                                                     TextWrapping="Wrap"
-                                                     Height="52"
-                                                     BorderThickness="0"
-                                                     VerticalScrollBarVisibility="Auto"
-                                                     Background="#2D2D2D"
-                                                     Foreground="#E0E0E0"
-                                                     Padding="6,4"
-                                                     Cursor="IBeam"/>
+                                            <Grid Grid.Row="1">
+                                                <TextBox x:Name="EditBox"
+                                                         Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                         AcceptsReturn="True"
+                                                         TextWrapping="Wrap"
+                                                         Height="52"
+                                                         BorderThickness="0"
+                                                         VerticalScrollBarVisibility="Hidden"
+                                                         Background="#2D2D2D"
+                                                         Foreground="#E0E0E0"
+                                                         Padding="6,4"
+                                                         Cursor="IBeam"/>
+                                                <!-- 全屏编辑入口：嵌入输入框右上角（仅编辑态显示） -->
+                                                <Button Content="⛶" FontSize="11" Width="18" Height="18" Padding="0"
+                                                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                        Margin="0,1,1,0"
+                                                        Background="Transparent" Foreground="#777777"
+                                                        BorderThickness="0"
+                                                        Opacity="0.55"
+                                                        ToolTip="全屏编辑"
+                                                        Cursor="Hand"
+                                                        Panel.ZIndex="1"
+                                                        Click="BtnFullEdit_Click"
+                                                        Tag="{Binding}"/>
+                                            </Grid>
                                             <TextBlock Grid.Row="2" Foreground="#555555" FontSize="11"
                                                        Text="{Binding SourceWindow}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="0,2,0,0"
                                                        Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
                                         </Grid>
-                                        <!-- 右侧按钮区：全屏（常驻）+ 删除（常驻）+ 保存/取消（仅编辑态） -->
+                                        <!-- 右侧按钮区：删除（常驻）+ 保存/取消（仅编辑态）；全屏入口已嵌入编辑框内部 -->
                                         <StackPanel Grid.Column="2" VerticalAlignment="Top" Margin="6,0,0,0">
-                                            <Button Content="⛶" FontSize="13" Width="22" Height="22" Padding="0"
-                                                    VerticalAlignment="Top"
-                                                    Background="Transparent" Foreground="#888888"
-                                                    BorderThickness="0"
-                                                    ToolTip="全屏编辑"
-                                                    Cursor="Hand"
-                                                    Click="BtnFullEdit_Click"
-                                                    Tag="{Binding}">
-                                                <Button.Style>
-                                                    <Style TargetType="Button">
-                                                        <Setter Property="Visibility" Value="Collapsed"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsEditing}" Value="True">
-                                                                <Setter Property="Visibility" Value="Visible"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Button.Style>
-                                            </Button>
                                             <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
-                                                    Margin="0,2,0,0"
+                                                    Margin="0,0,0,0"
                                                     Background="Transparent"
                                                     Foreground="#666666"
                                                     BorderThickness="0"

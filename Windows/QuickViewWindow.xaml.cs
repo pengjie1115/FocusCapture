@@ -330,6 +330,9 @@ public partial class QuickViewWindow : Window
     /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
     private double _scrollOffsetBeforeEdit; // 进入编辑前的列表滚动位置，编辑后恢复
 
+    // 进入编辑时 SelectAll 会触发一次 SelectionChanged，用此标志抑制（全选不弹浮动工具条，用户主动拖选才弹）
+    private bool _suppressToolbarOnSelectAll;
+
     private void BeginEditNote(NoteEntryViewModel vm)
     {
         if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
@@ -356,6 +359,7 @@ public partial class QuickViewWindow : Window
             {
                 var box = FindVisualChild<TextBox>(container);
                 AttachEditBox(vm, box);
+                _suppressToolbarOnSelectAll = true; // 全选触发 SelectionChanged 时不弹浮动工具条
                 box?.Focus();
                 box?.SelectAll();
                 // 修复：长文本全选后 TextBox 自动滚动到选区末尾，内容"被拉到下面看不见"——拉回开头
@@ -479,6 +483,7 @@ public partial class QuickViewWindow : Window
         _activeEditBox = null;
         _activeEditVm = null;
         _selectionTimer?.Stop();
+        _suppressToolbarOnSelectAll = false;
         HideFloatToolbar();
     }
 
@@ -487,6 +492,14 @@ public partial class QuickViewWindow : Window
         if (sender is not TextBox box) return;
         var selected = box.SelectionLength > 0 && !string.IsNullOrEmpty(box.SelectedText);
         _selectionTimer?.Stop();
+
+        // 进入编辑时 SelectAll 触发的全选：不弹工具条（用户主动拖选才弹）
+        if (_suppressToolbarOnSelectAll)
+        {
+            _suppressToolbarOnSelectAll = false;
+            HideFloatToolbar();
+            return;
+        }
 
         if (selected && box.IsKeyboardFocused)
         {
