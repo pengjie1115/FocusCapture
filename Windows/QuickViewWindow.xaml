@@ -325,8 +325,23 @@
                                                        Margin="0,2,0,0"
                                                        Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
                                         </Grid>
-                                        <!-- 右侧按钮区：删除（常驻）+ 保存/取消（仅编辑态）；全屏入口已嵌入编辑框内部 -->
+                                        <!-- 右侧按钮区：AI 徽章（被追加释义时常驻）+ 删除（常驻）+ 保存/取消（仅编辑态）；全屏入口已嵌入编辑框内部 -->
                                         <StackPanel Grid.Column="2" VerticalAlignment="Top" Margin="6,0,0,0">
+                                            <!-- AI 释义徽章——明确标识该条目已被 AI 回填过，避免用户找不到原笔记 -->
+                                            <Border Background="#4CAF50" CornerRadius="3" Padding="4,1" Margin="0,0,0,2"
+                                                    HorizontalAlignment="Left">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasAiFills}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="AI" FontSize="9" Foreground="White" FontWeight="SemiBold"/>
+                                            </Border>
                                             <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
                                                     Margin="0,0,0,0"
                                                     Background="Transparent"

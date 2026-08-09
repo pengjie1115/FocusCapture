@@ -34,6 +34,9 @@ public class NoteEntryViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>是否有 AI 释义（用于面板右侧 AI 徽章标识）</summary>
+    public bool HasAiFills => Entry.AiFills.Count > 0;
+
     private bool _isSelected;
     public bool IsSelected
     {
@@ -72,7 +75,15 @@ public class NoteEntryViewModel : INotifyPropertyChanged
 
     public void BeginEdit()
     {
-        EditText = Entry.Content;
+        // 编辑时把 AiFills 拼接到 EditText（用户能看到+编辑全部内容）；保存时 SaveEditNote 会检测并分离
+        var sb = new System.Text.StringBuilder(Entry.Content);
+        if (Entry.AiFills.Count > 0)
+        {
+            sb.Append("\n\n—— AI 释义 ——\n");
+            foreach (var fill in Entry.AiFills)
+                sb.AppendLine($"【AI 释义】{fill}");
+        }
+        EditText = sb.ToString();
         IsEditing = true;
     }
 
@@ -449,8 +460,34 @@ public partial class QuickViewWindow : Window
             return;
         }
 
-        if (_noteService.UpdateNote(vm.Entry, newContent))
+        // 分离 AI 释义块（编辑时拼接显示，保存时剥离开来保持"MD 只增不减"结构）：
+        // 用户编辑了原文 → 写入新 Content；释义按"【AI 释义】xxx"逐行重建成 AiFills
+        const string separator = "\n\n—— AI 释义 ——\n";
+        var idx = newContent.IndexOf(separator);
+        string contentToSave;
+        List<string> fillsToSave;
+        if (idx >= 0)
         {
+            contentToSave = newContent[..idx].TrimEnd();
+            var fillsBlock = newContent[(idx + separator.Length)..];
+            fillsToSave = fillsBlock.Split('\n')
+                .Select(l => l.Trim())
+                .Where(l => l.StartsWith("【AI 释义】"))
+                .Select(l => l.Substring("【AI 释义】".Length).Trim())
+                .Where(l => l.Length > 0)
+                .ToList();
+        }
+        else
+        {
+            contentToSave = newContent;
+            fillsToSave = new List<string>(vm.Entry.AiFills);
+        }
+
+        if (_noteService.UpdateNote(vm.Entry, contentToSave))
+        {
+            // 内存 AiFills 同步（MD 文件中 AiFills 标记行不变，UpdateNote 只覆盖原 Content 行）
+            vm.Entry.AiFills.Clear();
+            vm.Entry.AiFills.AddRange(fillsToSave);
             CancelEditState(vm);
             Refresh();
         }
