@@ -8,6 +8,9 @@ namespace FocusCapture.Services;
 ///
 /// 防抖机制：部分系统工具会在"选中文字"时短暂写入剪贴板（~25ms 后恢复旧内容），
 /// 这类瞬态写入会被 400ms 二次确认过滤掉，只有内容稳定保留的才视为真正的复制操作。
+///
+/// 启动/重开开关时会记录当前剪贴板内容作为"稳定基线"；若防抖窗口内剪贴板回到基线内容，
+/// 说明是"选中即复制"工具写入选区后恢复了旧内容，此时取消捕获而不是把旧内容存下来。
 /// </summary>
 public class ClipboardHookService : IDisposable
 {
@@ -25,6 +28,7 @@ public class ClipboardHookService : IDisposable
     private bool _installed;
     private bool _disposed;
     private string? _lastSavedText;
+    private string? _baselineText;
     private uint _lastSeqNum;
 
     // 防抖：400ms 后二次确认剪贴板内容未变才保存
@@ -50,6 +54,12 @@ public class ClipboardHookService : IDisposable
         if (_installed) return;
         _hwnd = hwnd;
         _installed = AddClipboardFormatListener(hwnd);
+        if (!_installed) return;
+
+        // 记录当前剪贴板内容为稳定基线，并把序列号对齐，
+        // 避免把安装前就存在的内容误当成新复制。
+        _baselineText = Win32.GetClipboardText();
+        _lastSeqNum = Win32.GetClipboardSequenceNumber();
     }
 
     public void Uninstall()
@@ -58,7 +68,12 @@ public class ClipboardHookService : IDisposable
         RemoveClipboardFormatListener(_hwnd);
         _hwnd = IntPtr.Zero;
         _installed = false;
+
+        // 停掉未完成的防抖，避免关闭开关后定时器到点仍保存
+        _debounceTimer?.Stop();
+        _pendingText = null;
         _lastSavedText = null;
+        _baselineText = null;
     }
 
     public void OnClipboardUpdate()
@@ -78,6 +93,18 @@ public class ClipboardHookService : IDisposable
 
         // 文本去重：与上次已保存的内容相同则跳过
         if (text == _lastSavedText) return;
+
+        // 稳定基线判断：内容回到基线（可能是"选中即复制"工具恢复旧内容），
+        // 若防抖窗口内有待确认内容则取消捕获，避免把剪贴板旧内容误存。
+        if (text == _baselineText)
+        {
+            if (_pendingText != null)
+            {
+                _debounceTimer?.Stop();
+                _pendingText = null;
+            }
+            return;
+        }
 
         // 启动防抖：延迟二次确认
         _pendingText = text;
@@ -99,6 +126,9 @@ public class ClipboardHookService : IDisposable
     {
         _debounceTimer?.Stop();
 
+        // 开关已关闭时不保存
+        if (!_installed) return;
+
         if (_pendingText == null) return;
 
         // 二次确认：剪贴板当前内容是否仍是之前捕获的文本
@@ -108,6 +138,7 @@ public class ClipboardHookService : IDisposable
         {
             // 内容稳定保留 → 真正的复制操作
             _lastSavedText = currentText;
+            _baselineText = currentText;
             _noteService.SaveNote(currentText);
             _onCaptured?.Invoke();
         }
