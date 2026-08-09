@@ -262,12 +262,12 @@
                                             </StackPanel.Style>
                                             <TextBlock Foreground="#888888" FontSize="11"
                                                        Text="{Binding Timestamp, StringFormat=HH:mm}"/>
-                                            <!-- 等高设计：内容区固定 52px，单行截断预览（NoWrap），双击编辑不撑高列表 -->
+                                            <!-- 等高设计：内容区固定 40px，单行截断预览（NoWrap），双击编辑不撑高列表 -->
                                             <TextBlock Foreground="#E0E0E0" FontSize="13"
                                                        Text="{Binding FirstLine}"
                                                        TextWrapping="NoWrap"
                                                        TextTrimming="CharacterEllipsis"
-                                                       Height="52"
+                                                       Height="40"
                                                        VerticalAlignment="Top"/>
                                             <TextBlock Foreground="#555555" FontSize="11"
                                                        Text="{Binding SourceWindow}"
@@ -275,7 +275,7 @@
                                                        Margin="0,2,0,0"
                                                        Visibility="{Binding SourceWindow, Converter={StaticResource StringToVisibilityConverter}}"/>
                                         </StackPanel>
-                                        <!-- 编辑态：内容区 TextBox 固定 52px（与非编辑态等高，列表零跳动），内部滚动看全文 -->
+                                        <!-- 编辑态：内容区 TextBox 固定 40px（与非编辑态等高，列表零跳动），内部滚动看全文 -->
                                         <Grid Grid.Column="1">
                                             <Grid.Style>
                                                 <Style TargetType="Grid">
@@ -299,12 +299,12 @@
                                                          Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                          AcceptsReturn="True"
                                                          TextWrapping="Wrap"
-                                                         Height="52"
+                                                         Height="40"
                                                          BorderThickness="0"
                                                          VerticalScrollBarVisibility="Hidden"
                                                          Background="#2D2D2D"
                                                          Foreground="#E0E0E0"
-                                                         Padding="6,4"
+                                                         Padding="6,2"
                                                          Cursor="IBeam"/>
                                                 <!-- 全屏编辑入口：嵌入输入框右上角（仅编辑态显示） -->
                                                 <Button Content="⛶" FontSize="11" Width="18" Height="18" Padding="0"
