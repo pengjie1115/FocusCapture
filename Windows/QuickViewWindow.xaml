@@ -306,8 +306,8 @@
                                                          Foreground="#E0E0E0"
                                                          Padding="6,2"
                                                          Cursor="IBeam"/>
-                                                <!-- 全屏编辑入口：嵌入输入框右上角（仅编辑态显示） -->
-                                                <Button Content="⛶" FontSize="11" Width="18" Height="18" Padding="0"
+                                                <!-- 全屏编辑入口：嵌入输入框右上角（仅编辑态显示）；加大点击区域（18→22）避免太小点不中 -->
+                                                <Button Content="⛶" FontSize="12" Width="22" Height="22" Padding="0"
                                                         HorizontalAlignment="Right" VerticalAlignment="Top"
                                                         Margin="0,1,1,0"
                                                         Background="Transparent" Foreground="#777777"

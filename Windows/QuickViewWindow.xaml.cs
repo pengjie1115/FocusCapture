@@ -569,12 +569,13 @@ public partial class QuickViewWindow : Window
     private void EditBox_LostFocus(object sender, RoutedEventArgs e)
     {
         _selectionTimer?.Stop();
-        // 延迟：避免点击浮动工具条按钮时 TextBox 失焦导致按钮 IsHitTestVisible=false（Collapsed）收不到 Click
+        // 延迟：避免点击浮动工具条/编辑态内按钮时 TextBox 失焦导致按钮 IsHitTestVisible=false（Collapsed）收不到 Click
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            if (!FloatToolbar.IsKeyboardFocusWithin)
+            // 焦点仍在编辑态 UI（EditBox/全屏/保存/取消，DataContext 都是当前 vm）或浮动工具条内 → 不自动保存退出
+            if (!FloatToolbar.IsKeyboardFocusWithin && !IsFocusInEditingArea())
             {
-                // 焦点离开 EditBox 且不在工具条：自动保存退出（用户期望：点击被编辑笔记以外的任何位置都默认保存退出）
+                // 焦点真正离开编辑区：自动保存退出（用户期望：点击被编辑笔记以外的任何位置都默认保存退出）
                 if (_activeEditVm != null && _activeEditVm.IsEditing)
                 {
                     try { SaveEditNote(_activeEditVm); }
@@ -583,6 +584,20 @@ public partial class QuickViewWindow : Window
                 HideFloatToolbar();
             }
         }), DispatcherPriority.Background);
+    }
+
+    /// <summary>焦点是否落在当前编辑态 UI 内（EditBox / 全屏 / 保存 / 取消，DataContext 均指向当前 vm）</summary>
+    private bool IsFocusInEditingArea()
+    {
+        if (_activeEditVm == null) return false;
+        var focused = Keyboard.FocusedElement as DependencyObject;
+        while (focused != null)
+        {
+            if (focused is FrameworkElement fe && ReferenceEquals(fe.DataContext, _activeEditVm))
+                return true;
+            focused = VisualTreeHelper.GetParent(focused);
+        }
+        return false;
     }
 
     /// <summary>在选中文字附近显示浮动工具条（Canvas 浮层定位，不参与布局；超界时靠边）</summary>
