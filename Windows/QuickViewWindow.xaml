@@ -229,7 +229,7 @@
 
             <!-- 列表 -->
             <Grid Grid.Row="1">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="NotesScroll" VerticalScrollBarVisibility="Auto">
                     <ItemsControl x:Name="NotesList" Margin="8">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>

@@ -285,13 +285,14 @@ public partial class QuickViewWindow : Window
     private void CtxAiTranslate_Click(object sender, RoutedEventArgs e)
     {
         var vm = GetContextTarget(sender);
-        if (vm != null) AIDialogHelper.Open(ExplainMode.Translate, vm.Entry);
+        // 传整条笔记作为 selectedText，让 OpenSession 走 selectedText 路径自动发起第一轮（修复：之前漏传，对话框空白）
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Translate, vm.Entry, vm.Entry.Content);
     }
 
     private void CtxAiSearch_Click(object sender, RoutedEventArgs e)
     {
         var vm = GetContextTarget(sender);
-        if (vm != null) AIDialogHelper.Open(ExplainMode.Search, vm.Entry);
+        if (vm != null) AIDialogHelper.Open(ExplainMode.Search, vm.Entry, vm.Entry.Content);
     }
 
     private void CtxCopy_Click(object sender, RoutedEventArgs e)
@@ -343,9 +344,8 @@ public partial class QuickViewWindow : Window
             other.CancelEdit();
         CancelEditState(vm);
 
-        // 记录编辑前 ScrollViewer 滚动偏移，编辑后恢复（避免 Focus 触发 ScrollIntoView 把后面笔记挤出去）
-        var scrollViewer = FindVisualChild<ScrollViewer>(NotesList);
-        _scrollOffsetBeforeEdit = scrollViewer?.VerticalOffset ?? 0;
+        // 记录编辑前 ScrollViewer 滚动偏移，编辑后恢复（ScrollViewer 是 NotesList 的父级，不是后代）
+        _scrollOffsetBeforeEdit = NotesScroll?.VerticalOffset ?? 0;
 
         vm.BeginEdit();
         _activeEditVm = vm;
@@ -364,7 +364,7 @@ public partial class QuickViewWindow : Window
                 // 恢复列表滚动位置到编辑前（Focus 触发的 ScrollIntoView 会让编辑项滚到视口边缘，后面笔记被挤出去）
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    scrollViewer?.ScrollToVerticalOffset(_scrollOffsetBeforeEdit);
+                    NotesScroll?.ScrollToVerticalOffset(_scrollOffsetBeforeEdit);
                 }), DispatcherPriority.Background);
             }
         }), DispatcherPriority.Background);
