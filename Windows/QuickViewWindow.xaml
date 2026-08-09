@@ -369,12 +369,6 @@
                             Cursor="Hand"
                             Tag="Search"
                             Click="FloatToolbar_Click"/>
-                    <Button Content="问答" FontSize="11" Height="22" Padding="8,0"
-                            Background="#3A3A3A" Foreground="#E0E0E0"
-                            BorderBrush="#555555" BorderThickness="1"
-                            Cursor="Hand"
-                            Tag="Ask"
-                            Click="FloatToolbar_Click"/>
                 </StackPanel>
             </Border>
         </Grid>

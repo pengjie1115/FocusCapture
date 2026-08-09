@@ -352,6 +352,8 @@ public partial class QuickViewWindow : Window
                 AttachEditBox(vm, box);
                 box?.Focus();
                 box?.SelectAll();
+                // 修复：长文本全选后 TextBox 自动滚动到选区末尾，内容"被拉到下面看不见"——拉回开头
+                box?.ScrollToHome();
             }
         }), DispatcherPriority.Background);
     }

@@ -104,8 +104,7 @@ public partial class AIDialogWindow : Window
                 firstMessage = mode == ExplainMode.Translate
                     ? PromptBuilder.BuildTranslatePrompt(selectedText.Trim())
                     : selectedText.Trim();
-                AddBubble(true, firstMessage);
-                _session.AddUser(firstMessage);
+                // 用户消息统一由 SendAsync 加入会话与 UI，避免两条路径重复添加
             }
 
             if (!string.IsNullOrWhiteSpace(selectedText))
@@ -162,6 +161,7 @@ public partial class AIDialogWindow : Window
     private async void SendAsync(string text)
     {
         if (_session == null || _isStreaming) return;
+        if (string.IsNullOrWhiteSpace(text)) return;
 
         var generation = _sessionGeneration;
         _isStreaming = true;
@@ -170,6 +170,11 @@ public partial class AIDialogWindow : Window
 
         try
         {
+            // 用户消息入会话 + 入 UI（修复：此前仅第一轮 selectedText 路径添加，输入框路径完全缺失，
+            // 导致请求体 messages 无 user —— Agnes 400 "No user query" / DeepSeek 自说自话）
+            _session.AddUser(text);
+            AddBubble(true, text);
+
             AddBubble(false, "", _targetNote != null && _mode != ExplainMode.Ask);
             var current = _bubbles[^1];
 
