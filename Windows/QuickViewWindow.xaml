@@ -299,10 +299,10 @@
                                                      AcceptsReturn="True"
                                                      TextWrapping="Wrap"
                                                      Height="52"
+                                                     BorderThickness="0"
                                                      VerticalScrollBarVisibility="Auto"
                                                      Background="#2D2D2D"
                                                      Foreground="#E0E0E0"
-                                                     BorderBrush="#555555"
                                                      Padding="6,4"
                                                      Cursor="IBeam"/>
                                             <TextBlock Grid.Row="2" Foreground="#555555" FontSize="11"
@@ -320,7 +320,18 @@
                                                     ToolTip="全屏编辑"
                                                     Cursor="Hand"
                                                     Click="BtnFullEdit_Click"
-                                                    Tag="{Binding}"/>
+                                                    Tag="{Binding}">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
                                             <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
                                                     Margin="0,2,0,0"
                                                     Background="Transparent"
