@@ -42,3 +42,19 @@
 - [x] 任务 4（主题配色统一：ThemeColors 加 Heat0~Heat3 共 8 个热力色字段（Dark/Light 各一套）；CalendarWindow.CreateDayCell 4 档热力色 + 选中边框 + 今天边框全部走 ThemeService.GetColors()，硬编码色值全部移除）
 - [x] 任务 5（正式 .ico：app_icon.svg SVG 设计 → Edge headless 转 256 PNG → Python struct 封装多尺寸 ICO（256/64/48/32/16，Vista+ PNG 压缩）；csproj 加 ApplicationIcon + PostBuildEvent 调用 embed_icon.py UpdateResource 嵌入 RT_GROUP_ICON + RT_ICON ×5；构建后 exe 资源验证含 5 尺寸图标组）
 - [x] Release 构建通过（0 警告 0 错误）+ 静态反作弊检查（AiAssistantName 三处引用、CustomIconPath 三处出现、ApplicationIcon 配 Resources\app.ico、热力色无硬编码走 ThemeService）
+
+## QUEST-5（v3.0 Phase 0：云端同步 WebDAV 自用过渡）
+
+> 2026-08-12 拆分完成（docs/QUEST-5.md），执行基线：从 `codex/quest1-ai-provider` 新建 `codex/quest-v3-sync` 分支。人工验收待 Codex 执行后执行。
+
+- [ ] 任务 1（SyncNote 模型 + 确定性 ID 生成：SHA256(相对路径|行内容) 前 16 字节 hex）
+- [ ] 任务 2（NoteService 行级扩展：ReadAllLines / AppendLine / RemoveLines，不改现有方法）
+- [ ] 任务 3（ISyncProvider 契约：PullAsync/PushAsync/FullAsync + SyncLimits 频率上报）
+- [ ] 任务 4（CryptoService E2EE：PBKDF2 100k + AES-256-GCM + 盐/恢复码哈希 + 密钥重置流程）
+- [ ] 任务 5（本地回收站：.recycle_bin/ 30 天 + RecycleBinWindow 恢复/清空）
+- [ ] 任务 6（SyncEngine：游标/回声识别/打包拆包/冲突快照/30s 合并窗口/自愈重置/失败退避）
+- [ ] 任务 7（WebDAVProvider：PROPFIND/PUT/GET/DELETE + 401/503 区分 + 幂等整桶覆盖）
+- [ ] 任务 8（SettingsWindow 云同步区 + 悬浮球同步状态 + 启动轮询 + 双设备模拟联调）
+- [ ] Release 构建通过（0 警告 0 错误）+ 静态反作弊检查（云端无明文/桶文件/回声逻辑/回收站）
+- [ ] 验收：§8 A-G 全部通过（E2EE 密文 / 双设备收敛 / 密钥重置 / 自愈 / 回收站 / 单测）
+- [ ] 用户真实双机验收（需两台 Windows + 坚果云账号）
