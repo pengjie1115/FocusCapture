@@ -1,5 +1,6 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Sync;
 using Microsoft.Win32;
 
 namespace FocusCapture.Windows;
@@ -9,14 +10,15 @@ public partial class SettingsWindow : Window
     private Models.AppSettings _settings = null!;
     private readonly HotkeyService? _hotkeyService;
     private readonly Action? _onChanged;
+    private readonly NoteService? _noteService;
     private bool _capturing;
     private Action<Models.HotkeyBinding>? _onCaptureDone;
     private bool _suppressEvents = true; // 抑制 InitializeComponent 期间的 ValueChanged 事件
     private bool _testingAi;
 
-    public SettingsWindow(Models.AppSettings s, HotkeyService? hk = null, Action? onChanged = null)
+    public SettingsWindow(Models.AppSettings s, HotkeyService? hk = null, Action? onChanged = null, NoteService? noteService = null)
     {
-        _settings = s; _hotkeyService = hk; _onChanged = onChanged;
+        _settings = s; _hotkeyService = hk; _onChanged = onChanged; _noteService = noteService;
         InitializeComponent();
         _suppressEvents = false; // 初始化完成，允许事件处理
         LoadSettings(); KeyDown += OnKeyDown;
@@ -259,6 +261,14 @@ public partial class SettingsWindow : Window
             IconStatusText.Text = $"恢复失败：{ex.Message}";
             IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
         }
+    }
+
+    private void BtnRecycleBin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_noteService == null) return;
+        var bin = new RecycleBinService(_settings.NotesPath);
+        var win = new RecycleBinWindow(_noteService, bin) { Owner = this };
+        win.ShowDialog();
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();

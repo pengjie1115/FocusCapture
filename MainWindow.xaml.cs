@@ -172,7 +172,7 @@ public partial class MainWindow : Window
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 ApplyAssistantNameToAllEntries();
-            });
+            }, _noteService);
             sw.Owner = this; sw.ShowDialog();
         }
         finally { _settingsOpen = false; }

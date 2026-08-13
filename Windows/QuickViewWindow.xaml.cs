@@ -355,7 +355,7 @@ public partial class QuickViewWindow : Window
 
         var confirm = System.Windows.MessageBox.Show(
             $"确认删除这条笔记？\n\n时间：{vm.Timestamp:HH:mm}\n内容：{vm.FirstLine}\n\n" +
-            "（对应行将从 .md 源文件删除，软删除记录保留）",
+            "（将移入回收站，30 天内可恢复）",
             "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
@@ -723,7 +723,7 @@ public partial class QuickViewWindow : Window
         {
             var confirm = System.Windows.MessageBox.Show(
                 $"确认删除这条笔记？\n\n时间：{vm.Timestamp:HH:mm}\n内容：{vm.FirstLine}\n\n" +
-                "（对应行将从 .md 源文件删除，软删除记录保留）",
+                "（将移入回收站，30 天内可恢复）",
                 "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (confirm != MessageBoxResult.Yes) return;
 
@@ -746,7 +746,7 @@ public partial class QuickViewWindow : Window
 
         var confirm = System.Windows.MessageBox.Show(
             $"确认删除选中的 {selected.Count} 条笔记？\n\n" +
-            "（对应行将从 .md 源文件删除，软删除记录保留）",
+            "（将移入回收站，30 天内可恢复）",
             "批量删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 

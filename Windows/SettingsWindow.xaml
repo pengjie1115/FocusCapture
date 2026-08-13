@@ -244,6 +244,14 @@
                         Click="BtnBrowse_Click"/>
             </Grid>
 
+            <!-- 回收站 -->
+            <DockPanel Margin="0,14,0,0">
+                <TextBlock Text="回收站" Width="130" VerticalAlignment="Center"/>
+                <Button x:Name="BtnRecycleBin" Content="打开回收站"
+                        Width="120" HorizontalAlignment="Left"
+                        Click="BtnRecycleBin_Click"/>
+            </DockPanel>
+
             <!-- 关闭 -->
             <Button Content="关闭"
                     Width="80"

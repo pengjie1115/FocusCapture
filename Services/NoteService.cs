@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using FocusCapture.Models;
+using FocusCapture.Services.Sync;
 
 namespace FocusCapture.Services;
 
@@ -7,6 +8,7 @@ public class NoteService
 {
     private readonly AppSettings _settings;
     private readonly DeletedNoteService _deletedService;
+    private readonly RecycleBinService _recycleBin;
 
     // Windows 文件名非法字符
     private static readonly char[] InvalidFileChars = Path.GetInvalidFileNameChars();
@@ -20,6 +22,7 @@ public class NoteService
     {
         _settings = settings;
         _deletedService = new DeletedNoteService();
+        _recycleBin = new RecycleBinService(settings.NotesPath);
     }
 
     /// <summary>软删除服务（暴露给 UI 层调用 MarkDeleted）</summary>
@@ -224,21 +227,22 @@ public class NoteService
             var lines = File.ReadAllLines(filePath, Encoding.UTF8);
             var refStr = entry.Timestamp.ToString("yyyy-MM-dd HH:mm");
             var keep = new List<string>(lines.Length);
-            var removed = false;
+            var removedLines = new List<string>();
             foreach (var rawLine in lines)
             {
                 var line = rawLine.TrimEnd('\r');
                 if (IsEntryLine(line, entry) || IsAssociatedMarkerLine(line, refStr, entry))
                 {
-                    removed = true;
+                    removedLines.Add(line);
                     continue;
                 }
                 keep.Add(line);
             }
-            if (!removed) return false;
+            if (removedLines.Count == 0) return false;
 
             File.WriteAllLines(filePath, keep, Encoding.UTF8);
-            _deletedService.MarkDeleted(entry);
+            // 移入回收站（不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
+            _recycleBin.Add(Path.GetFileName(filePath), removedLines);
             return true;
         }
         catch (Exception ex)
@@ -465,4 +469,80 @@ public class NoteService
         }
         return counts;
     }
+
+    // ── 同步层行级读写扩展（QUEST-5 任务2）：只新增方法，不改现有方法 ──
+
+    /// <summary>
+    /// 遍历 NotesPath 下全部 .md，逐行解析（不合并标记行，同步层按纯行级处理），
+    /// 返回 (相对路径, 原始行, 解析结果)。相对路径 = 文件名（双机路径一致 → 确定性 ID 一致）。
+    /// </summary>
+    public List<(string RelativePath, string Line, NoteEntry Entry)> ReadAllLines()
+    {
+        var result = new List<(string, string, NoteEntry)>();
+        if (!Directory.Exists(_settings.NotesPath)) return result;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            var relativePath = Path.GetFileName(file);
+            var fileName = Path.GetFileNameWithoutExtension(file);
+            var tag = fileName.StartsWith("灵感_", StringComparison.Ordinal) ? null : fileName;
+
+            string[] lines;
+            try { lines = File.ReadAllLines(file, Encoding.UTF8); }
+            catch { continue; }
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.TrimEnd('\r');
+                var m = NoteLineRegex.Match(line);
+                if (!m.Success) continue;
+
+                var day = m.Groups[1].Success ? m.Groups[1].Value.Trim() : DateTime.Today.ToString("yyyy-MM-dd");
+                if (!DateTime.TryParse($"{day} {m.Groups[2].Value}", out var ts)) continue;
+
+                var entry = new NoteEntry
+                {
+                    Timestamp = ts,
+                    Content = m.Groups[3].Value.Replace("\u23CE", "\n"),
+                    SourceWindow = m.Groups[4].Success ? m.Groups[4].Value : "",
+                    Tag = tag
+                };
+                result.Add((relativePath, line, entry));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>向指定文件追加一行（目录不存在自动创建）。line 必须是单行格式（含 \u23CE 转义）。</summary>
+    public void AppendLine(string relativePath, string line)
+    {
+        var safeName = Path.GetFileName(relativePath); // 防御路径穿越
+        if (string.IsNullOrEmpty(safeName)) return;
+        Directory.CreateDirectory(_settings.NotesPath);
+        var filePath = Path.Combine(_settings.NotesPath, safeName);
+        File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+    }
+
+    /// <summary>从指定文件移除指定的行（按整行内容精确匹配），供"清空回收站后同步软删"与"冲突替换"用。</summary>
+    public void RemoveLines(string relativePath, HashSet<string> lineContents)
+    {
+        var safeName = Path.GetFileName(relativePath);
+        if (string.IsNullOrEmpty(safeName)) return;
+        var filePath = Path.Combine(_settings.NotesPath, safeName);
+        if (!File.Exists(filePath)) return;
+
+        var lines = File.ReadAllLines(filePath, Encoding.UTF8);
+        var keep = new List<string>(lines.Length);
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (lineContents.Contains(line)) continue;
+            keep.Add(line);
+        }
+        File.WriteAllLines(filePath, keep, Encoding.UTF8);
+    }
+
+    /// <summary>MD 行本地时间戳 → ISO 8601 UTC 字符串（同步层 CreatedAt/UpdatedAt 约定，分钟精度、DateTimeKind 处理）。</summary>
+    public static string ToUtcIsoString(DateTime localTime)
+        => DateTime.SpecifyKind(localTime, DateTimeKind.Local).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
 }
