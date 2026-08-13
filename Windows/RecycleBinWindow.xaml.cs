@@ -14,8 +14,8 @@ public class RecycleItemViewModel
     public string FileName { get; }
     public RecycleBinEntry Entry { get; }
     public string Preview => Entry.Preview;
-    public DateTime DeletedAt => Entry.DeletedAt;
-    public DateTime ExpiresAt => Entry.ExpiresAt;
+    public string DeletedAtText => Entry.DeletedAt.ToString("yyyy-MM-dd HH:mm");
+    public string ExpiresAtText => Entry.ExpiresAt.ToString("yyyy-MM-dd");
 
     public RecycleItemViewModel(string fileName, RecycleBinEntry entry)
     {
