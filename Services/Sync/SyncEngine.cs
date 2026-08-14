@@ -68,7 +68,8 @@ public class SyncEngine
 
     /// <summary>
     /// 设置主密码并派生 DEK（仅内存，不落盘）。
-    /// 盐优先级：本地缓存 → 云端 sync_meta.json → 生成新盐（首配设备，标记待上传到云端）。
+    /// 盐优先级：本地缓存 → 云端 sync_meta.json → 生成新盐（仅当确认云端无 meta = 真首配设备）。
+    /// 网络失败且本地无盐时**禁止生成新盐**（会与云端盐冲突，恢复联网后必失败），直接报错（2026-08-13 审查修正）。
     /// </summary>
     public async Task SetMasterPasswordAsync(string password, CancellationToken ct = default)
     {
@@ -79,19 +80,31 @@ public class SyncEngine
         }
         else
         {
+            var metaFetched = true;
+            string? cloudSalt = null;
             try
             {
                 var meta = await _provider.GetMetaAsync(ct).ConfigureAwait(false);
-                saltBase64 = meta?.SaltBase64 ?? "";
+                cloudSalt = meta?.SaltBase64;
             }
             catch
             {
-                saltBase64 = "";
+                metaFetched = false;   // 网络错误/其他：无法确认云端状态
             }
-            if (string.IsNullOrEmpty(saltBase64))
+
+            if (metaFetched)
             {
-                saltBase64 = Convert.ToBase64String(CryptoService.GenerateSalt());
-                _saltNeedsUpload = true;
+                if (!string.IsNullOrEmpty(cloudSalt))
+                    saltBase64 = cloudSalt;
+                else
+                {
+                    saltBase64 = Convert.ToBase64String(CryptoService.GenerateSalt());   // 真首配：云端无 meta
+                    _saltNeedsUpload = true;
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException("无法连接云端获取 E2EE 盐，请检查网络后重试");
             }
             _settings.Sync.E2eeSalt = saltBase64;
             _settings.Save();
@@ -298,46 +311,20 @@ public class SyncEngine
             });
         }
 
-        // 2) 合并：本机 + PendingDeletes（本机软删）+ 云端他端（保留，不丢数据）
+        // 2) 合并（2026-08-13 审查修正，deviceId 稳定版）：
+        //    - 云端全量保留（含他端行、本机旧推的行、软删驻留行）——本机推过的行不重复生成，
+        //      否则 DeviceId 被改写、每次同步云端桶都变（回声识别失效）；
+        //    - 本机新行（云端没有该 ID 的）TryAdd 加入——MD 只增不减：修改=追加新行（新 ID），同 ID 行内容必相同；
+        //    - PendingDeletes 覆盖（本机软删 wins），被覆盖的云端版本进 PrevContent 快照（密文）。
         var byId = new Dictionary<string, SyncNote>(StringComparer.Ordinal);
-        foreach (var n in localNotes) byId[n.Id] = n;
+        var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
+        foreach (var cloud in cloudAll) byId[cloud.Id] = cloud;
+        foreach (var n in localNotes) byId.TryAdd(n.Id, n);
         foreach (var d in _settings.Sync.PendingDeletes)
         {
-            d.DeviceId = _settings.Sync.DeviceId;
+            if (byId.TryGetValue(d.Id, out var old) && old.Deleted != d.Deleted)
+                d.PrevContent = old.Content;   // 被覆盖方快照（密文原样，内容不外泄）
             byId[d.Id] = d;
-        }
-
-        var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
-        foreach (var cloud in cloudAll)
-        {
-            if (byId.TryGetValue(cloud.Id, out var mine))
-            {
-                // 同 ID 状态分歧（极罕见：本地行 Deleted=false vs 云端软删 Deleted=true）→ updatedAt 大者胜，被覆盖方进 PrevContent
-                if (mine.Deleted != cloud.Deleted)
-                {
-                    if (string.CompareOrdinal(cloud.UpdatedAt, mine.UpdatedAt) > 0)
-                    {
-                        mine.PrevContent = mine.Content;      // 被覆盖方快照（密文原样，内容不外泄）
-                        byId[cloud.Id] = cloud;
-                    }
-                    else
-                    {
-                        cloud.PrevContent = cloud.Content;
-                        byId[cloud.Id] = mine;
-                    }
-                }
-                // 状态一致：内容同 ID 必相同，本机版本即可
-                continue;
-            }
-            if (cloud.DeviceId == _settings.Sync.DeviceId)
-            {
-                // 本机推过、本机本地文件已无此行 = 本机删除过且回收站未清空 → 云端保留原版本。
-                // 软删标记只来自清空回收站的 PendingDeletes（§5.0.6：未清空前云端无软删标记），
-                // 本地删除不主动从云端抹除——否则 B 拉取时行"失踪"而非可恢复。
-                byId[cloud.Id] = cloud;
-                continue;
-            }
-            byId[cloud.Id] = cloud;                        // 他端笔记保留（全量合并基础修正点）
         }
 
         // 3) 整桶覆盖上传（Provider 内分桶 PUT + 孤儿桶清理 + meta 更新）
@@ -364,10 +351,13 @@ public class SyncEngine
     /// <summary>
     /// 清空回收站联动（QUEST-5 第五步 2）：把全部被清空记录转为 Deleted=true 的 SyncNote 压入 PendingDeletes。
     /// Content 用完整原始行密文（与普通行一致）；Tags 规则同 ReadAllLines（灵感_*.md → []，其余 → [文件名]）。
+    /// CreatedAt 用原始行时间戳；**UpdatedAt 必须用软删发生时间（Now）**——否则增量拉取
+    /// （UpdatedAt &gt;= since 过滤）会把软删标记漏掉（原行时间戳 ≤ 他端游标）。
     /// </summary>
     public void QueueRecycleBinPurge(List<RecycleBinEntry> purgedEntries)
     {
         if (_dek == null) return;
+        var nowUtc = NoteService.ToUtcIsoString(DateTime.Now);
         foreach (var entry in purgedEntries)
         {
             foreach (var line in entry.Lines)
@@ -380,7 +370,7 @@ public class SyncEngine
                     Content = CryptoService.Encrypt(_dek, line),
                     Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
                     CreatedAt = NoteService.ToUtcIsoString(ts),
-                    UpdatedAt = NoteService.ToUtcIsoString(ts),
+                    UpdatedAt = nowUtc,
                     Deleted = true,
                     DeviceId = _settings.Sync.DeviceId,
                 });

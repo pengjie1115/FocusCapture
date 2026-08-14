@@ -239,12 +239,31 @@ public class NoteService
         {
             var lines = File.ReadAllLines(filePath, Encoding.UTF8);
             var refStr = entry.Timestamp.ToString("yyyy-MM-dd HH:mm");
+
+            // 分钟精度歧义检测：同分钟存在 >1 条原笔记（非标记行）时，(ref 时间戳) 无法区分归属，
+            // 删除时保守不删关联标记行（宁可留孤行，不可误删其他笔记的标记行——2026-08-13 测试发现误删+错误软删）。
+            var sameMinuteCount = 0;
+            foreach (var rawLine in lines)
+            {
+                var l = rawLine.TrimEnd('\r');
+                if (l.Contains("【编辑】", StringComparison.Ordinal) ||
+                    l.Contains("【AI 释义】", StringComparison.Ordinal)) continue;
+                var m = NoteLineRegex.Match(l);
+                if (!m.Success) continue;
+                var day = m.Groups[1].Success
+                    ? m.Groups[1].Value.Trim()
+                    : DateTime.Today.ToString("yyyy-MM-dd");
+                if (DateTime.TryParse($"{day} {m.Groups[2].Value}", out var ts) && ts == entry.Timestamp)
+                    sameMinuteCount++;
+            }
+            var refAmbiguous = sameMinuteCount > 1;
+
             var keep = new List<string>(lines.Length);
             var removedLines = new List<string>();
             foreach (var rawLine in lines)
             {
                 var line = rawLine.TrimEnd('\r');
-                if (IsEntryLine(line, entry) || IsAssociatedMarkerLine(line, refStr, entry))
+                if (IsEntryLine(line, entry) || IsAssociatedMarkerLine(line, refStr, entry, refAmbiguous))
                 {
                     removedLines.Add(line);
                     continue;
@@ -283,14 +302,23 @@ public class NoteService
         return line == old || line == old + $" — 来源: {entry.SourceWindow}";
     }
 
-    /// <summary>判断是否为该条笔记关联的标记行（AI 释义 / 编辑）：优先 (ref) 精确匹配，旧数据按 ±60s 回退</summary>
-    private static bool IsAssociatedMarkerLine(string line, string refStr, NoteEntry entry)
+    /// <summary>
+    /// 判断是否为该条笔记关联的标记行（AI 释义 / 编辑）。
+    /// - (ref) 精确匹配：refAmbiguous=true（同分钟有多条原笔记，ref 分钟精度无法区分归属）时**保守不删**，防误删其他笔记的标记行；
+    /// - 有 (ref ...) 但匹配不上 → 属于其他笔记，不删；
+    /// - 无 ref 的 v2.0 旧数据按 ±60s 回退（2026-08-13 测试发现并修正）。
+    /// </summary>
+    private static bool IsAssociatedMarkerLine(string line, string refStr, NoteEntry entry, bool refAmbiguous)
     {
         if (!line.Contains("【AI 释义】", StringComparison.Ordinal) &&
             !line.Contains("【编辑】", StringComparison.Ordinal))
             return false;
 
-        if (line.Contains($"(ref {refStr})", StringComparison.Ordinal)) return true;
+        // ref 精确匹配：歧义时保守不删
+        if (line.Contains($"(ref {refStr})", StringComparison.Ordinal)) return !refAmbiguous;
+
+        // 有 ref 但匹配不上 → 属于其他笔记，不误删
+        if (line.Contains("(ref ", StringComparison.Ordinal)) return false;
 
         var match = NoteLineRegex.Match(line);
         if (!match.Success) return false;
