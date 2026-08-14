@@ -28,12 +28,14 @@ public partial class RecycleBinWindow : Window
 {
     private readonly NoteService _noteService;
     private readonly RecycleBinService _recycleBin;
+    private readonly SyncEngine? _syncEngine;
 
-    public RecycleBinWindow(NoteService noteService, RecycleBinService recycleBin)
+    public RecycleBinWindow(NoteService noteService, RecycleBinService recycleBin, SyncEngine? syncEngine = null)
     {
         InitializeComponent();
         _noteService = noteService;
         _recycleBin = recycleBin;
+        _syncEngine = syncEngine;
         Reload();
     }
 
@@ -79,7 +81,13 @@ public partial class RecycleBinWindow : Window
             "清空确认", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
-        _recycleBin.PurgeAll();
+        var purged = _recycleBin.PurgeAll();
+        // 清空回收站 → 触发同步软删（Deleted=true 上传，QUEST-5 第五步 2）
+        if (purged.Count > 0)
+        {
+            _noteService.RaiseNotesChanged();
+            _syncEngine?.QueueRecycleBinPurge(purged);
+        }
         Reload();
     }
 }

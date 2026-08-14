@@ -42,13 +42,15 @@ public class SyncEngine
 
     private static readonly TimeSpan MergeWindow = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(30);
-    private static readonly int[] BackoffSeconds = { 30, 120, 600 };   // 指数退避 30s/2min/10min，3 档
+    private static readonly int[] DefaultBackoffSeconds = { 30, 120, 600 };   // 指数退避 30s/2min/10min，3 档
+    private readonly int[] _backoffSeconds;
 
-    public SyncEngine(AppSettings settings, NoteService noteService, ISyncProvider provider)
+    public SyncEngine(AppSettings settings, NoteService noteService, ISyncProvider provider, int[]? backoffSeconds = null)
     {
         _settings = settings;
         _noteService = noteService;
         _provider = provider;
+        _backoffSeconds = backoffSeconds ?? DefaultBackoffSeconds;
         _settings.Sync.EnsureDeviceId();
         _mergeTimer = new Timer(_ => OnMergeWindowElapsed(), null, Timeout.Infinite, Timeout.Infinite);
         _pollTimer = new Timer(_ => OnPollElapsed(), null, Timeout.Infinite, Timeout.Infinite);
@@ -168,7 +170,15 @@ public class SyncEngine
                 try
                 {
                     await PushSaltIfNeededAsync(CancellationToken.None).ConfigureAwait(false);
-                    await PullFlowAsync().ConfigureAwait(false);
+                    if (await PullFlowAsync().ConfigureAwait(false))
+                    {
+                        // 云端盐已变更（他端密钥重置）→ 本机 DEK 已失效，中止 push 防止旧 DEK 密文污染云端，等重输主密码
+                        _settings.Sync.LastSyncResult = "失败: 云端密钥已重置，请重新输入主密码";
+                        _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                        _settings.Save();
+                        StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
+                        return SyncResult.Failed("云端密钥已重置，请重新输入主密码");
+                    }
                     await PushFlowAsync().ConfigureAwait(false);
                     _settings.Sync.LastSyncResult = "成功";
                     _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
@@ -176,10 +186,10 @@ public class SyncEngine
                     StatusChanged?.Invoke("成功");
                     return SyncResult.SuccessResult;
                 }
-                catch (SyncProviderException ex) when (auto && (ex.IsRateLimit || ex.IsNetwork) && attempts <= BackoffSeconds.Length)
+                catch (SyncProviderException ex) when (auto && (ex.IsRateLimit || ex.IsNetwork) && attempts <= _backoffSeconds.Length)
                 {
-                    var delay = TimeSpan.FromSeconds(BackoffSeconds[attempts - 1]);
-                    StatusChanged?.Invoke($"同步失败，{delay.TotalSeconds:0}s 后重试（{attempts}/{BackoffSeconds.Length}）：{ex.Message}");
+                    var delay = TimeSpan.FromSeconds(_backoffSeconds[attempts - 1]);
+                    StatusChanged?.Invoke($"同步失败，{delay.TotalSeconds:0}s 后重试（{attempts}/{_backoffSeconds.Length}）：{ex.Message}");
                     await Task.Delay(delay).ConfigureAwait(false);
                 }
                 catch (SyncProviderException ex)
@@ -203,15 +213,22 @@ public class SyncEngine
 
     // ── 拉取侧：对账合并（回声识别 / 软删落地 / 密钥重置盐比对） ──
 
-    private async Task PullFlowAsync()
+    /// <summary>返回 true = 云端盐已变更（他端密钥重置），调用方必须中止 push 并提示重输主密码。</summary>
+    private async Task<bool> PullFlowAsync()
     {
-        var since = string.IsNullOrEmpty(_settings.Sync.LastCursor) ? null : _settings.Sync.LastCursor;
-        var pull = await _provider.PullAsync(since, CancellationToken.None).ConfigureAwait(false);
-
-        // 密钥重置检测：云端盐 ≠ 本地会话盐 → 提示重输主密码刷新盐（QUEST-5 审查补充，不得静默当数据损坏）
+        // 密钥重置检测：云端盐 ≠ 本地会话盐 → 刷新本地缓存盐（云端为权威，盐由最新重置者写入），
+        // 中止本次同步并提示重输主密码后用新盐派生 DEK（QUEST-5 审查补充，不得静默当数据损坏）
         var cloudSalt = await GetCloudSaltAsync().ConfigureAwait(false);
         if (!string.IsNullOrEmpty(cloudSalt) && cloudSalt != _dekSaltBase64)
-            StatusChanged?.Invoke("云端密钥可能已被重置，请重新输入主密码刷新盐");
+        {
+            _settings.Sync.E2eeSalt = cloudSalt;
+            _settings.Save();
+            StatusChanged?.Invoke("云端密钥可能已被重置，请重新输入主密码刷新会话");
+            return true;
+        }
+
+        var since = string.IsNullOrEmpty(_settings.Sync.LastCursor) ? null : _settings.Sync.LastCursor;
+        var pull = await _provider.PullAsync(since, CancellationToken.None).ConfigureAwait(false);
 
         var localLines = new Dictionary<string, (string RelativePath, string Line, NoteEntry Entry)>(StringComparer.Ordinal);
         foreach (var x in _noteService.ReadAllLines())
@@ -258,6 +275,7 @@ public class SyncEngine
         if (!string.IsNullOrEmpty(pull.NewSince))
             _settings.Sync.LastCursor = pull.NewSince;
         _settings.Save();
+        return false;
     }
 
     // ── 推送侧：全量合并 + 整桶覆盖（Quest-5 审查修正：合并基础 = 云端全量，防覆盖抹掉他端数据） ──
@@ -292,7 +310,6 @@ public class SyncEngine
         var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
         foreach (var cloud in cloudAll)
         {
-            if (cloud.DeviceId == _settings.Sync.DeviceId) continue;   // 本机推过的跳过
             if (byId.TryGetValue(cloud.Id, out var mine))
             {
                 // 同 ID 状态分歧（极罕见：本地行 Deleted=false vs 云端软删 Deleted=true）→ updatedAt 大者胜，被覆盖方进 PrevContent
@@ -310,11 +327,17 @@ public class SyncEngine
                     }
                 }
                 // 状态一致：内容同 ID 必相同，本机版本即可
+                continue;
             }
-            else
+            if (cloud.DeviceId == _settings.Sync.DeviceId)
             {
-                byId[cloud.Id] = cloud;                        // 他端笔记保留（全量合并基础修正点）
+                // 本机推过、本机本地文件已无此行 = 本机删除过且回收站未清空 → 云端保留原版本。
+                // 软删标记只来自清空回收站的 PendingDeletes（§5.0.6：未清空前云端无软删标记），
+                // 本地删除不主动从云端抹除——否则 B 拉取时行"失踪"而非可恢复。
+                byId[cloud.Id] = cloud;
+                continue;
             }
+            byId[cloud.Id] = cloud;                        // 他端笔记保留（全量合并基础修正点）
         }
 
         // 3) 整桶覆盖上传（Provider 内分桶 PUT + 孤儿桶清理 + meta 更新）
@@ -336,6 +359,49 @@ public class SyncEngine
         _settings.Sync.PendingDeletes.Add(deletedNote);
         _settings.Save();
         NotifyLocalChange();
+    }
+
+    /// <summary>
+    /// 清空回收站联动（QUEST-5 第五步 2）：把全部被清空记录转为 Deleted=true 的 SyncNote 压入 PendingDeletes。
+    /// Content 用完整原始行密文（与普通行一致）；Tags 规则同 ReadAllLines（灵感_*.md → []，其余 → [文件名]）。
+    /// </summary>
+    public void QueueRecycleBinPurge(List<RecycleBinEntry> purgedEntries)
+    {
+        if (_dek == null) return;
+        foreach (var entry in purgedEntries)
+        {
+            foreach (var line in entry.Lines)
+            {
+                var ts = ParseLineTimestamp(line);
+                var tag = GetTagFromFileName(entry.RelativePath);
+                _settings.Sync.PendingDeletes.Add(new SyncNote
+                {
+                    Id = SyncNote.ComputeId(entry.RelativePath, line),
+                    Content = CryptoService.Encrypt(_dek, line),
+                    Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
+                    CreatedAt = NoteService.ToUtcIsoString(ts),
+                    UpdatedAt = NoteService.ToUtcIsoString(ts),
+                    Deleted = true,
+                    DeviceId = _settings.Sync.DeviceId,
+                });
+            }
+        }
+        _settings.Save();
+        NotifyLocalChange();
+    }
+
+    private static DateTime ParseLineTimestamp(string line)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(line, @"- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]");
+        return m.Success && DateTime.TryParse($"{m.Groups[1].Value} {m.Groups[2].Value}", out var ts)
+            ? ts
+            : DateTime.Now;
+    }
+
+    private static string GetTagFromFileName(string relativePath)
+    {
+        var name = Path.GetFileNameWithoutExtension(relativePath);
+        return name.StartsWith("灵感_", StringComparison.Ordinal) ? "" : name;
     }
 
     /// <summary>

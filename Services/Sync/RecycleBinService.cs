@@ -109,14 +109,25 @@ public class RecycleBinService
         catch { }
     }
 
-    /// <summary>清空回收站：物理删除全部记录（行早已从原文件移除，删记录即彻底丢弃）</summary>
-    public void PurgeAll()
+    /// <summary>
+    /// 清空回收站：物理删除全部记录，返回被清空的记录（供同步层生成 Deleted=true 软删标记，
+    /// QUEST-5 第五步 2：清空回收站 → 对该笔记触发同步软删）。
+    /// </summary>
+    public List<RecycleBinEntry> PurgeAll()
     {
-        if (!Directory.Exists(_binDir)) return;
+        var purged = new List<RecycleBinEntry>();
+        if (!Directory.Exists(_binDir)) return purged;
         foreach (var file in Directory.GetFiles(_binDir, "recycle-*.json"))
         {
-            try { File.Delete(file); } catch { }
+            try
+            {
+                var entry = JsonSerializer.Deserialize<RecycleBinEntry>(File.ReadAllText(file, Encoding.UTF8));
+                File.Delete(file);
+                if (entry != null) purged.Add(entry);
+            }
+            catch { }
         }
+        return purged;
     }
 
     /// <summary>清理过期记录（启动时调用）</summary>

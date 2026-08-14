@@ -289,7 +289,7 @@ public partial class SettingsWindow : Window
     {
         if (_noteService == null) return;
         var bin = new RecycleBinService(_settings.NotesPath);
-        var win = new RecycleBinWindow(_noteService, bin) { Owner = this };
+        var win = new RecycleBinWindow(_noteService, bin, _syncEngineProvider?.Invoke()) { Owner = this };
         win.ShowDialog();
     }
 
