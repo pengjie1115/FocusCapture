@@ -1,5 +1,6 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
 using System.Runtime.InteropServices;
 
@@ -10,6 +11,7 @@ public partial class MainWindow : Window
     private readonly Models.AppSettings _settings;
     private HotkeyService? _hotkeyService;
     private NoteService? _noteService;
+    private SyncEngine? _syncEngine;            // QUEST-5：云端同步引擎（可插拔 Provider，配置完整才创建）
     private FloatBall? _floatBall;
     private InputWindow? _inputWindow;
     private QuickViewWindow? _quickViewWindow;
@@ -47,6 +49,12 @@ public partial class MainWindow : Window
             _hotkeyService = new HotkeyService(_hwnd, _settings);
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
+
+            // QUEST-5：云端同步引擎（本机变更 → 30s 合并窗口；自动同步开 → 启动 30min 轮询）
+            _noteService.NotesChanged += OnNotesChanged;
+            _syncEngine = CreateSyncEngine();
+            if (_syncEngine != null && _settings.Sync.AutoSyncEnabled)
+                _syncEngine.StartAutoSync();
 
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
 
@@ -172,10 +180,36 @@ public partial class MainWindow : Window
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 ApplyAssistantNameToAllEntries();
-            }, _noteService);
+            }, _noteService, () => _syncEngine, RebuildSyncEngine);
             sw.Owner = this; sw.ShowDialog();
         }
         finally { _settingsOpen = false; }
+    }
+
+    // ── QUEST-5：同步引擎生命周期 ──
+
+    /// <summary>本机笔记变更 → 30s 合并窗口推送（订阅一次，_syncEngine 字段实时指向当前引擎）。</summary>
+    private void OnNotesChanged() => _syncEngine?.NotifyLocalChange();
+
+    /// <summary>按当前配置创建引擎；配置不完整（无 Provider/无授权码）返回 null（本地功能不受影响）。</summary>
+    private SyncEngine? CreateSyncEngine()
+    {
+        if (_noteService == null) return null;
+        var sync = _settings.Sync;
+        if (sync.ProviderName != "WebDAV") return null;
+        var token = Models.SyncSettings.UnprotectToken(sync.WebDavToken);
+        if (string.IsNullOrEmpty(sync.WebDavUser) || string.IsNullOrEmpty(token)) return null;
+        var provider = new WebDAVProvider(sync.WebDavUrl, sync.WebDavUser, token);
+        return new SyncEngine(_settings, _noteService, provider);
+    }
+
+    /// <summary>设置页保存 WebDAV 配置后重建引擎（新配置立即生效，自动同步轮询延续）。</summary>
+    private void RebuildSyncEngine()
+    {
+        _syncEngine?.StopAutoSync();
+        _syncEngine = CreateSyncEngine();
+        if (_syncEngine != null && _settings.Sync.AutoSyncEnabled)
+            _syncEngine.StartAutoSync();
     }
 
     /// <summary>AI 助手名称同步到三处入口：面板标题栏按钮 / 悬浮球右键菜单 / 托盘菜单（含图标重建）</summary>
