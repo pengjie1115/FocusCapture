@@ -40,14 +40,15 @@
 ### 必做
 - **同步引擎与 UI 解耦**：同步永远在后台线程跑，不得阻塞/卡顿捕捉、速览、语音等主流程；断网时本地功能 100% 可用
 - **ISyncProvider 契约**：接口方法签名固定为 `Push(SyncNote[] changes)` / `Pull(string? since)` / `Full()`（返回类型见 §7 第三步），本阶段实现 `WebDAVProvider` 一个实现即可，但契约结构必须支持将来加 `ServerProvider`
-- **笔记 ID = 确定性哈希**：`SHA256(相对文件路径 + "|" + 完整行内容)` 取前 16 字节转 hex 作 ID。同一行在任何设备生成相同 ID → 天然幂等、天然去重、无需索引表。编辑追加新行 = 新 ID（与"MD 只增不减"语义天然契合，旧行在下次解析时不再存在则标记软删）
+- **笔记 ID = 确定性哈希**：`SHA256(相对文件路径 + "|" + 完整行内容)` 取前 16 字节转 hex 作 ID。同一行在任何设备生成相同 ID → 天然幂等、天然去重、无需索引表。编辑追加新行 = 新 ID（与"MD 只增不减"语义天然契合，旧行在下次解析时不再存在则标记软删）。**哈希输入必须是完整原始 MD 行（含 `- [yyyy-MM-dd HH:mm] ` 时间戳前缀，即 `ReadAllLines` 返回的 `Line`），禁止剥离时间戳后的 `NoteEntry.Content`**——否则同一文件内两条相同内容会撞 ID，被同步去重合并丢一条（2026-08-13 审查修正）
 - **打包存储**：云端按桶文件存，**禁止每条笔记一个文件**。桶规则：按 `updatedAt` 的 ISO 周排序，每桶 ≤200 条，文件名 `notes-{yyyy-Www}-{seq}.json`，桶内 JSON 数组
 - **桶清单与孤儿桶清理**：云端同目录维护 `sync_meta.json`（E2EE 盐 + 桶清单 + 同步游标）。push 完成后按清单 diff 删除不再存在的孤儿桶；笔记换周/换桶后旧桶必须同步删，防止已删笔记经旧桶复活
 - **E2EE**：云端桶内 `content` / `tags` 必须是 AES-256-GCM 密文（Base64）；密钥来自主密码 PBKDF2 派生，**密钥永不上传**；本地 MD 明文不动（本地明文兜底是密钥重置的前提）。**盐跨设备一致**：盐由首配设备随机生成，明文存云端 `sync_meta.json`，后续设备拉盐后派生同一 DEK
 - **device_id**：每台设备启动时生成并持久化（GUID），随每条笔记上传（`deviceId` 字段）；引擎必须用它区分"自己推的"与"别人推的"（回声识别）
 - **同步层纯行级，不感知标记行语义**：`【编辑】`/`【AI 释义】` 标记行是独立 MD 行，同步层一律当普通行（独立 ID、独立 SyncNote）上传/拉取；合并回原笔记是展示层 `ParseNotes` 的事，靠行尾 `(ref 绝对时间戳)` 精确关联（跨设备成立，因为是绝对时间戳）。同步层不得识别标记行或跨行合并
 - **频率克制**：推送 = 变更后合并 **30 秒窗口**批量发 1 次；拉取 = 启动 1 次 + 每 **30 分钟**轮询；503/网络失败指数退避 30s/2min/10min，连续 3 次失败停止自动重试，UI 显示失败原因
-- **本地回收站**：删除笔记先进回收站（保留 30 天，可配置），回收站内可恢复；确认清空才物理删除并同步软删；拉取到软删标记的笔记也进本地回收站
+- **本地回收站**：删除笔记先进回收站（保留 30 天，可配置），回收站内可恢复；确认清空才物理删除并同步软删；拉取到软删标记的笔记也进本地回收站。**先写回收站记录（成功）→ 再从原文件移除行；写失败必须中止删除并提示**——"行已删但回收站没记"= 数据永久丢失，违反本地明文兜底铁律（2026-08-13 审查修正）
+- **WPF 绑定铁律**：DataTemplate 内 `Run.Text` 默认 `BindsTwoWayByDefault=true`（与 `TextBlock.Text` 的 OneWay 不同），绑定只读 VM 属性必须显式 `Mode=OneWay`，否则每次渲染报"无法对只读属性 X 进行 TwoWay 或 OneWayToSource 绑定"，且可能被全局兜底弹窗 + Shutdown 表现为"报错后闪退"（回收站窗口教训，2026-08-13 审查补充）
 - **构建通过**：`dotnet build -c Release` 0 警告 0 错误
 - 新配置项一律进 `AppSettings`（settings.json），不硬编码
 
@@ -114,6 +115,9 @@ FocusCapture/
 
 8. **同步阻塞 UI** — 全量拉取时主界面卡死。
    验证方式：首次全量同步期间，悬浮球可拖、灵感速览可开、捕捉仍生效。
+
+9. **先删行后写回收站** — 回收站记录写入失败仍返回"删除成功"（行已删、记录没写 = 数据永久丢失）。
+   验证方式：把 `.recycle_bin/` 设为只读（或磁盘满）删一条 → 必须删除失败且原行仍在；代码审查：`RecycleBinService.Add` 成功后才执行行移除。
 
 ## 5. 取舍
 
@@ -202,10 +206,11 @@ public record SyncPushResult(string? NewSince);
 
 1. **密钥派生**：主密码 + 随机盐（16 字节，`RandomNumberGenerator`）→ PBKDF2（SHA-256，100_000 次迭代）→ 32 字节 DEK
 2. **加解密**：AES-256-GCM，`Encrypt(byte[] dek, string plaintext) → {nonce(12) + ciphertext+tag}` Base64 单串；`Decrypt(byte[] dek, string encrypted) → string`。非ce 每次随机
-3. **盐与恢复码存储**：盐由**首配设备**随机生成（16 字节，`RandomNumberGenerator`），**明文写云端 `sync_meta.json`**（盐不需保密，明文上传不泄露）；后续设备首次配置先拉取 `sync_meta.json` 的盐再派生同一 DEK——**保证跨设备同主密码 → 同 DEK**。本地也缓存盐到 `AppSettings.SyncSettings.E2eeSalt`（离线可派生）。**恢复码 = 10 位随机数字**（`RandomNumberGenerator.GetInt32` 逐位拼接），加本地随机盐后 SHA-256 哈希存 `AppSettings.SyncSettings.RecoveryCodeHash`（加盐防暴力枚举，盐同存该对象）；主密码本身**任何位置都不存**
+3. **盐与恢复码存储**：盐由**首配设备**随机生成（16 字节，`RandomNumberGenerator`），**明文写云端 `sync_meta.json`**（盐不需保密，明文上传不泄露）；后续设备首次配置先拉取 `sync_meta.json` 的盐再派生同一 DEK——**保证跨设备同主密码 → 同 DEK**。本地也缓存盐到 `AppSettings.SyncSettings.E2eeSalt`（离线可派生）。**恢复码 = 14 位混合字符**（大写 + 小写 + 数字，剔除易混淆 `0/O/1/I/l`，`RandomNumberGenerator` 取值查表、拒绝重采样）——10 位纯数字仅 10^10 空间，加盐 SHA-256 只防彩虹表、不防暴力枚举，settings.json 泄露即可被 GPU 穷举，故提升为混合字符集（2026-08-13 审查修正）；加本地随机盐后 SHA-256 哈希存 `AppSettings.SyncSettings.RecoveryCodeHash`（盐同存该对象）；主密码本身**任何位置都不存**
 4. **密钥重置流程**（用户忘主密码的兜底）：
    - 检测到"主密码验证失败"（解密第一条笔记报错）→ UI 引导：输入新主密码 → 生成新盐 → 重新派生 DEK → 用本地明文笔记重新加密 → 全量重新上传（覆盖云端桶）→ 恢复码重置
    - 恢复码重置：设置页"忘记主密码"→ 输入恢复码（校验哈希）+ 新主密码 → 走上述重置流程
+   - **跨设备盐同步（必做）**：重置生成新盐后，其他设备本地缓存的旧 `E2eeSalt` 派生 DEK 解新密文必然失败。引擎在 GCM 解密失败时必须比对"云端 `sync_meta.json` 的盐 vs 本地缓存盐"，不一致则提示"云端密钥可能已被重置，请重新输入主密码并刷新盐"，引导重拉 `sync_meta.json` 后用新盐重新派生 DEK（重输主密码）；**不得静默当"数据损坏"处理**（2026-08-13 审查补充）
 5. 加密边界：只加密 `SyncNote.Content` / `SyncNote.Tags[]`；`Id/SchemaVersion/CreatedAt/UpdatedAt/Deleted/DeviceId` 全部明文（引擎对账需要，均不敏感）
 6. 特别注意：首次配置主密码的引导 UI 在第七步做，本步只提供纯函数服务
 
@@ -215,11 +220,11 @@ public record SyncPushResult(string? NewSince);
 
 1. **存储**：回收站区 = `NotesPath` 下 `.recycle_bin/` 目录，删除的笔记行以 `recycle-{timestamp}.json` 记录 `{relativePath, line, deletedAt, expiresAt}`；30 天过期自动清理（启动时扫描）
 2. **流程**：
-   - 删除（替换现有 `DeleteNote` 的物理删除路径）：从原文件移除行 → 写入回收站记录 → **不**同步软删
+   - 删除（替换现有 `DeleteNote` 的物理删除路径）：**先写回收站记录（成功）→ 再从原文件移除行**；回收站写入失败必须中止删除并提示（2026-08-13 审查修正：原"先删行后写记录"在写失败时数据永久丢失，见 §2 铁律与反作弊 9）→ **不**同步软删
    - 恢复：从回收站记录取回 → 写回原文件（追加到末尾，保持 ID 不变）→ 删除回收站记录
    - 清空（设置页/回收站窗按钮，二次确认）：物理删除回收站文件 → 对该笔记触发同步软删（`Deleted=true` 上传）
    - 拉取到软删笔记：本地对应行移入回收站（可恢复），**不**物理删除
-3. `RecycleBinWindow`：列表（内容预览 + 过期时间）+ 恢复按钮 + 清空按钮（二次确认）；入口放设置页云同步区
+3. `RecycleBinWindow`：列表（内容预览 + 过期时间）+ 恢复按钮 + 清空按钮（二次确认）；入口放设置页云同步区。**DataTemplate 内 `Run.Text` 绑定必须显式 `Mode=OneWay`**（Run 默认 TwoWay，绑只读 VM 属性会报绑定错误并触发全局兜底闪退，见 §2 WPF 绑定铁律与 PROGRESS 交接状态）
 4. 特别注意：现有 `DeletedNoteService`（deleted.json）保留不动，两套机制并存——v2.0 软删记录管 UI 展示过滤，回收站管 30 天恢复。**但删除路径只能走一条**：改造 `DeleteNote` 后，删行改由回收站接管（从原文件移除行 → 写回收站记录），**不再调用 `_deletedService.MarkDeleted`**；恢复时仅从回收站取回写回文件，不碰 deleted.json。避免"删一条同时进回收站 + 记软删，恢复后仍被 `IsDeleted` 过滤看不到"的双轨冲突
 
 ### 第六步：SyncEngine 核心
@@ -228,7 +233,10 @@ public record SyncPushResult(string? NewSince);
 
 1. **状态**（`AppSettings.SyncSettings`）：`DeviceId`（GUID，无则生成）、`ProviderName`、`WebDavUrl`、`WebDavUser`、`WebDavToken`（坚果云授权码，**DPAPI 加密后**存，用官方 `System.Security.Cryptography.ProtectedData`；解密失败兜底为空并提示重新配置，不崩）、`LastCursor`、`AutoSyncEnabled`、`E2eeSalt`、`RecoveryCodeHash`、`PendingDeletes`（待推软删清单：`List<SyncNote>`，清空回收站时压入 `Deleted=true` 的笔记，推送成功后清空）、`LastSyncResult`、`LastSyncAt`
 2. **回声识别**：push 前比对——只推送本机修改过（`DeviceId == 本机`）且 `UpdatedAt > LastCursor` 的笔记；拉取时跳过 `DeviceId == 本机` 的笔记（自己推的不再拉回），其余按 last-write-wins 合并
-3. **打包/拆包**：push 流程 = **先 `PullAsync` 拉取云端当前桶（含 `sync_meta.json`）→ 按笔记 ID 合并本机变更（本机变更 wins）→ 重组桶 → 整桶 PUT 覆盖**；严禁未经合并直接用本机数据 PUT（B 空库首推会覆盖 A 数据）。pull 时 GET `sync_meta.json` + 全部桶，过滤 `UpdatedAt >= since`，按 ID 与本地对账。push 完成后按桶清单 diff 删除孤儿桶（笔记换周/换桶后旧桶同步删，防已删笔记经旧桶复活）
+3. **打包/拆包**：
+   - **push 合并基础 = 全量（2026-08-13 审查修正）**：push 前必须按 `sync_meta.json` 桶清单 **GET 全部云端桶**（非增量 pull）作为合并基础，按笔记 ID 合并本机笔记（本机变更 wins）→ 重组桶 → 整桶 PUT 覆盖。**严禁**把增量 pull 结果当 push 合并基础——A 本地没有的 B 新笔记不在增量结果里，A 整桶覆盖会把 B 的数据抹掉。增量 pull 只用于拉取侧（启动/轮询/手动同步）。严禁未经合并直接用本机数据 PUT（B 空库首推会覆盖 A 数据）
+   - **并发已知风险**：WebDAV 读-改-写非原子，双端几乎同时 push 时最后写者赢；自用低并发可接受，全量合并把覆盖窗口缩到最小，**不引入锁**（记录为已知风险）
+   - pull 时 GET `sync_meta.json` + 全部桶，过滤 `UpdatedAt >= since`，按 ID 与本地对账。push 完成后按桶清单 diff 删除孤儿桶（笔记换周/换桶后旧桶同步删，防已删笔记经旧桶复活）
 4. **冲突（确定性 ID 下的真实场景）**：ID=内容哈希，故"同 ID 双端都改"不会发生（改了内容 ID 就变）。真实冲突只有两类：① **删除 vs 编辑**——A 软删 ID-X，B 编辑 ID-X 追加新行 ID-Y，按 `UpdatedAt` 裁决：删晚则软删胜，改晚则保留新行；② **同 ID 状态分歧**（极罕见）——同 ID 双端一个 `Deleted=true` 一个 `false`，`UpdatedAt` 大者胜。被覆盖方内容/状态存本地 `PrevContent`（不丢数据），日志记录冲突。**不要实现"同 ID 不同内容"的合并逻辑——那是死代码**
 5. **频率合并窗口**：本机变更收集 30 秒（Timer 或延迟任务），窗口结束批量 push 一次；`Limits.MinIntervalSeconds` 来自 Provider
 6. **自愈**：`ResetSync()` 方法——清空 LastCursor + 删除云端所有桶（二次确认）→ 触发全量重新上传；拉取侧自愈 = 清 LastCursor → 全量拉取对账
@@ -239,7 +247,7 @@ public record SyncPushResult(string? NewSince);
 
 > 操作位置：`Services/Sync/WebDAVProvider.cs`（新建）
 
-1. **Base URL**：`https://dav.jianguoyun.com/dav/FocusCapture/`（桶文件放此目录）；`WebDAVToken` = 坚果云"第三方应用管理"生成的应用密码，Basic Auth（`Authorization: Basic base64(user:token)`）
+1. **Base URL**：`https://dav.jianguoyun.com/dav/FocusCapture/`（桶文件放此目录）；`WebDAVToken` = 坚果云"第三方应用管理"生成的应用密码，Basic Auth（`Authorization: Basic base64(user:token)`）。**首次同步前 PROPFIND Base URL 目录，404 则先 `MKCOL` 建目录**（坚果云自定义子目录不会自动存在），建失败明确报错（2026-08-13 审查补充）
 2. **操作映射**：
    - `PullAsync` → `GET sync_meta.json`（盐 + 桶清单 + 游标）→ `PROPFIND`（Depth:1 列目录）→ 对每个 `notes-*.json` 桶 `GET` → 解析 → 过滤增量
    - `PushAsync` → 变更按桶重组 → 每个桶 `PUT`（整桶覆盖，桶内 = 该桶全部当前笔记）→ 更新 `sync_meta.json` → 按桶清单 diff `DELETE` 孤儿桶
@@ -255,6 +263,7 @@ public record SyncPushResult(string? NewSince);
 
 1. 新增"云同步"设置区：
    - WebDAV 配置：服务器地址（默认 `https://dav.jianguoyun.com/dav/FocusCapture/`）、坚果云账号、授权码（PasswordBox）——"保存并连接"按钮做连通性测试；连接成功后**自动拉取 `sync_meta.json`（若无则本机为首配设备：生成盐并上传）+ 立即做一次全量同步 + 提示开启自动同步**（避免配完不拉一次，用户误以为没生效）
+   - **AppJsonContext 注册提醒（2026-08-13 审查补充）**：给 AppSettings 加 `SyncSettings` 子对象后，**必须**把 `SyncSettings`（及嵌套的 `List<SyncNote>` / `SyncNote[]` 等）注册进 `AppJsonContext`（`[JsonSerializable]`）——settings.json 走源生成序列化（`AppSettings.cs` 的 `AppJsonContext.Default.AppSettings`），漏注册运行时抛 `NotSupportedException`；SyncNote 本体走独立 `SyncJson` camelCase options（交接状态已确认无需注册，但 SyncSettings 必注册）
    - E2EE：首次配置引导（输入主密码 ×2，**强度校验：≥8 位且含字母 + 数字** + 生成并展示恢复码，提示"抄下来，别跟主密码放一起"）；已配置显示"已启用"+"重置主密码"入口
    - 同步控制：自动同步开关（默认关）、"立即同步"按钮 + 上次同步时间/结果、"重置同步状态"按钮（二次确认）
    - 回收站入口按钮
@@ -265,6 +274,8 @@ public record SyncPushResult(string? NewSince);
 ## 8. 验收标准
 
 > 按顺序执行。单机 Codex 环境用"双设备模拟"：本地建两个测试 NotesPath 目录（`NotesPath` 切到 `%AppData%\FocusCapture\notes_testA\` 与 `notes_testB\`，`deviceId` 各自独立），轮流以 A/B 身份跑同一份 SyncEngine。真实双机验收留给用户（见末尾清单）。
+>
+> **本机无坚果云账号时的联调替代（2026-08-13 审查补充）**：起一个本地 WebDAV 模拟桩（最小 HTTP 服务，支持 PUT/GET/PROPFIND/DELETE/MKCOL，Base URL 指 `http://127.0.0.1:{port}/`），Provider 逻辑与真实坚果云同路径跑通 A–F；真实坚果云（dav.jianguoyun.com）只留用户最终人工验收（§G）。
 
 ### A. 构建与静态检查
 

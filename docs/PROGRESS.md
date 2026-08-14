@@ -48,27 +48,29 @@
 > 2026-08-12 拆分完成（docs/QUEST-5.md）。执行基线：从 `codex/quest1-ai-provider` 新建 `codex/quest-v3-sync` 分支。
 > **2026-08-13 交接**：本阶段原由 WorkBuddy 助手开发至任务 5，后续转交其他 Agent 继续。接手前必读：`QUEST-5.md`（已含细节审查修正）、下方"交接状态"。
 
-### 交接状态（2026-08-13 22:54）
+### 交接状态（2026-08-13 22:54 / 2026-08-13 接手审查更新）
 
-- 当前分支：`codex/quest-v3-sync`（HEAD=7dc5ed9，未 push，验收通过后再推双远程；**勿在 main 直接改**）
-- 已完成 commit：`0c61ada` 文档 / `f0b13f3` 任务1 / `19e6d9b` 任务2+5 / `7dc5ed9` 回收站闪退修复
-- **待解决问题（接手第一优先级）**：回收站窗口第二次打开报错"无法对只读属性 DeletedAt 进行 TwoWay 或 OneWayToSource 绑定"→ 点击确定后程序闪退。已按"VM 加预格式化 string 属性替代 DateTime+StringFormat 绑定"修复（7dc5ed9），**但用户实测反馈问题依然存在，未复验**。接手者需：①复现 ②根治（可能需加全局异常兜底防闪退，见 App.xaml.cs DispatcherUnhandledException/AppDomain.UnhandledException；根因疑似 Run 元素绑定的隐式 TwoWay 推断或渲染线程未捕获异常）
-- 环境事实：csproj `PublishTrimmed=false`（未裁剪，反射序列化可用）；SyncNote 走独立 camelCase JsonSerializerOptions（无需注册 AppJsonContext）
+- 当前分支：`codex/quest-v3-sync`（HEAD=b1143d5，未 push，验收通过后再推双远程；**勿在 main 直接改**）
+- 已完成 commit：`0c61ada` 文档 / `f0b13f3` 任务1 / `19e6d9b` 任务2+5 / `7dc5ed9` 回收站闪退修复（不彻底）/ `b1143d5` PROGRESS 交接状态
+- **待解决问题（接手第一优先级）**：回收站窗口第二次打开报错"无法对只读属性 DeletedAt 进行 TwoWay 或 OneWayToSource 绑定"→ 点击确定后程序闪退。**2026-08-13 接手审查已定位根因**：①绑定报错根因 = `Run.Text` 依赖属性默认 `BindsTwoWayByDefault=true`，当前 XAML `<Run Text="{Binding DeletedAtText}"/>` 仍是隐式 TwoWay 绑定到**只读** VM 属性 → 必然再报同类错（7dc5ed9 只把 DateTime+StringFormat 换成预格式化 string，未加 `Mode=OneWay`，根因未除；用户实测"依然存在"与此吻合）；②闪退链路 = `App.xaml.cs` DispatcherUnhandledException 兜底弹"启动失败"框 + `Shutdown(1)` 杀进程。**修复方案**：XAML 两处 Run 显式 `Mode=OneWay`（或合并为单 TextBlock 绑定）；全局兜底改为记日志 + 弹窗提示、**不再强制 Shutdown**（可恢复的 UI 异常不该杀进程）。修复后连续开关回收站窗口多次验证无报错无闪退
+- **2026-08-13 文档修订（接手审查落实，已写入 QUEST-5.md / PRD v0.3.2）**：①ID 哈希必须用完整原始行（含时间戳前缀，防同文件同内容撞 ID）②回收站"先写记录成功再删行"（防写失败数据丢失；反作弊新增第 9 条）③Run.Text 显式 Mode=OneWay 铁律 ④恢复码 10 位数字 → 14 位混合字符（防暴力枚举）⑤密钥重置跨设备盐同步提示 ⑥push 合并基础 = 按 sync_meta 桶清单全量 GET（防整桶覆盖抹掉他端数据）+ WebDAV 读改写并发已知风险 ⑦WebDAV 首次 MKCOL 建目录 ⑧SyncSettings 必注册 AppJsonContext ⑨联调可用本地 WebDAV 桩替代真实坚果云（§8-C 联调说明）
+- 环境事实：csproj `PublishTrimmed=false`（未裁剪，反射序列化可用）；SyncNote 走独立 camelCase JsonSerializerOptions（无需注册 AppJsonContext，但 SyncSettings 在 AppSettings 内走源生成、必注册）
 - 踩坑速查：
   1. 临时 console 验证项目**不能放主项目子目录**（WPF `**/*.cs` glob 吞 Program.cs → wpftmp 编译 CS0579），放仓库外 + ProjectReference；且 net8.0-windows + UseWPF 项目 ImplicitUsings 不含 System.IO，需显式 using
   2. 此环境 `git update-ref` 会静默失败（退出码 0 不落盘），建含 `/` 分支名的 ref 用手写文件（mkdir + echo hash > .git/refs/heads/xxx）
-  3. WPF 列表 DataTemplate 里 `<Run Text="{Binding DateTime, StringFormat=...}"/>` 是高危写法，一律用 VM 预格式化 string 属性
+  3. WPF 列表 DataTemplate 里 `<Run Text="{Binding DateTime, StringFormat=...}"/>` 是高危写法：`Run.Text` 默认 `BindsTwoWayByDefault=true`（TextBlock.Text 才是 OneWay），绑只读 VM 属性必报"无法对只读属性进行 TwoWay 绑定"。用 VM 预格式化 string 属性 **且绑定显式 `Mode=OneWay`**——仅换 string 属性不解决隐式 TwoWay（回收站闪退教训）
 
 ### 任务清单（[x] = 已完成）
 
 - [x] 任务 1（SyncNote 模型 + 确定性 ID 生成：SHA256(相对路径|行内容) 前 16 字节 hex）— commit f0b13f3
 - [x] 任务 2（NoteService 行级扩展：ReadAllLines / AppendLine / RemoveLines / ToUtcIsoString，不改现有方法）— commit 19e6d9b
 - [ ] 任务 3（ISyncProvider 契约：PullAsync/PushAsync/FullAsync + SyncLimits 频率上报）
-- [ ] 任务 4（CryptoService E2EE：PBKDF2 100k + AES-256-GCM + 盐存云端 sync_meta.json + 恢复码加盐哈希 + 密钥重置流程）
+- [ ] 任务 4（CryptoService E2EE：PBKDF2 100k + AES-256-GCM + 盐存云端 sync_meta.json + 恢复码 14 位混合字符加盐哈希 + 密钥重置流程含跨设备盐同步）
 - [x] 任务 5（本地回收站：.recycle_bin/ 30 天 + RecycleBinWindow 恢复/清空 + DeleteNote 改造不再 MarkDeleted）— commit 19e6d9b
-- [ ] 任务 6（SyncEngine：游标/回声识别/打包拆包/push前先pull合并/冲突快照/30s 合并窗口/自愈重置/失败退避/PendingDeletes）
-- [ ] 任务 7（WebDAVProvider：PROPFIND/PUT/GET/DELETE + sync_meta.json + 孤儿桶清理 + 401/503 区分）
-- [ ] 任务 8（SettingsWindow 云同步区 + 首次同步引导 + 主密码强度校验 + 启动轮询 + 双设备模拟联调）
+- [ ] 任务 5 补丁（回收站闪退根治：Run.Text 显式 Mode=OneWay + 全局兜底不强制 Shutdown；DeleteNote 改"先写回收站成功再删行"，写失败中止删除）
+- [ ] 任务 6（SyncEngine：游标/回声识别/打包拆包/push 前按桶清单全量合并/冲突快照/30s 合并窗口/自愈重置/失败退避/PendingDeletes）
+- [ ] 任务 7（WebDAVProvider：PROPFIND/PUT/GET/DELETE/MKCOL + sync_meta.json + 孤儿桶清理 + 401/503 区分）
+- [ ] 任务 8（SettingsWindow 云同步区 + 首次同步引导 + 主密码强度校验 + 启动轮询 + 双设备模拟联调；SyncSettings 注册 AppJsonContext）
 - [ ] Release 构建通过（0 警告 0 错误）+ 静态反作弊检查（云端无明文/桶文件/回声逻辑/回收站）
 - [ ] 验收：§8 A-G 全部通过（E2EE 密文 / 双设备收敛 / 密钥重置 / 自愈 / 回收站 / 单测）
 - [ ] 用户真实双机验收（需两台 Windows + 坚果云账号）
