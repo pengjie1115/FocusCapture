@@ -9,6 +9,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <!-- QUEST-4：exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
+    <!-- 无外网环境：禁用包漏洞审计（NuGetAudit 每次构建尝试连 nuget.org 报 NU1900，破坏验收 A 的 0 警告） -->
+    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <!-- Release 构建：禁用 IL 裁剪（WPF/WinForms COM 互操作类型无法被静态分析，裁剪必崩） -->

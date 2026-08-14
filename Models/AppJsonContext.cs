@@ -13,6 +13,12 @@ namespace FocusCapture;
 [JsonSerializable(typeof(ExportConfig))]
 [JsonSerializable(typeof(DeletedNote))]
 [JsonSerializable(typeof(List<DeletedNote>))]
+// QUEST-5：SyncSettings 在 AppSettings 内走源生成，漏注册运行时抛 NotSupportedException。
+// SyncNote 由 [JsonPropertyName] 锁定 camelCase，与独立 SyncJson.Options（桶文件）命名一致。
+[JsonSerializable(typeof(SyncSettings))]
+[JsonSerializable(typeof(SyncNote))]
+[JsonSerializable(typeof(List<SyncNote>))]
+[JsonSerializable(typeof(SyncBucket))]
 internal partial class AppJsonContext : JsonSerializerContext
 {
 }

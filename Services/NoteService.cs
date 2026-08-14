@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using FocusCapture.Models;
 using FocusCapture.Services.Sync;
@@ -17,6 +18,15 @@ public class NoteService
     private static readonly Regex NoteLineRegex = new(
         @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$",
         RegexOptions.Compiled);
+
+    /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
+    public event Action? NotesChanged;
+
+    /// <summary>回收站服务（公开：SyncEngine 软删落地、UI 层复用同一实例）。</summary>
+    public RecycleBinService RecycleBin => _recycleBin;
+
+    /// <summary>外部路径（回收站恢复/清空等，非 SaveNote/AppendEdit/DeleteNote 内部）完成本机变更后调用，触发 NotesChanged。</summary>
+    public void RaiseNotesChanged() => NotesChanged?.Invoke();
 
     public NoteService(AppSettings settings)
     {
@@ -76,6 +86,7 @@ public class NoteService
             return null;
         }
 
+        NotesChanged?.Invoke();
         return entry;
     }
 
@@ -122,6 +133,7 @@ public class NoteService
         try
         {
             File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+            NotesChanged?.Invoke();
             return true;
         }
         catch (Exception ex)
@@ -153,6 +165,7 @@ public class NoteService
         try
         {
             File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+            NotesChanged?.Invoke();
             return true;
         }
         catch (Exception ex)
@@ -248,6 +261,7 @@ public class NoteService
                 return false;
             }
             File.WriteAllLines(filePath, keep, Encoding.UTF8);
+            NotesChanged?.Invoke();
             return true;
         }
         catch (Exception ex)

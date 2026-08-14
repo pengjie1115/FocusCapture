@@ -65,6 +65,9 @@ public class AppSettings
     public bool VoiceTopmost { get; set; } = false;
     public double VoiceSplitterPosition { get; set; } = 0.65; // 正文占比 (0.3~0.9)
 
+    // ── 云同步（QUEST-5）──
+    public SyncSettings Sync { get; set; } = new();
+
     // ── 序列化 ──
     public static AppSettings Load()
     {

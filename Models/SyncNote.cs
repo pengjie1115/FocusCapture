@@ -3,24 +3,36 @@ using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FocusCapture.Models;
 
 /// <summary>
-/// 云端同步数据模型（第二层契约：与云端桶 JSON 字段完全一致）。
+/// 云端同步数据模型（第二层契约：与云端桶 JSON 字段完全一致，camelCase）。
 /// Content/Tags 在云端为 E2EE 密文（由 CryptoService 负责），本地为明文；
 /// Id/SchemaVersion/CreatedAt/UpdatedAt/Deleted/DeviceId 恒为明文（引擎对账需要）。
+/// [JsonPropertyName] 显式锁定 camelCase 契约：桶文件（SyncJson.Options）与
+/// settings.json 内 PendingDeletes（AppJsonContext 源生成，默认 PascalCase）两条序列化路径命名一致。
 /// </summary>
 public class SyncNote
 {
+    [JsonPropertyName("schemaVersion")]
     public int SchemaVersion { get; set; } = 1;   // 格式演进预留
+    [JsonPropertyName("id")]
     public string Id { get; set; } = "";          // 确定性哈希
+    [JsonPropertyName("content")]
     public string Content { get; set; } = "";     // 云端=密文；本地=明文
+    [JsonPropertyName("tags")]
     public string[] Tags { get; set; } = [];      // 云端=密文数组；本地=明文
+    [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";   // ISO 8601 UTC，明文（不敏感）
+    [JsonPropertyName("updatedAt")]
     public string UpdatedAt { get; set; } = "";   // ISO 8601 UTC，明文（对账需要）
+    [JsonPropertyName("deleted")]
     public bool Deleted { get; set; }
+    [JsonPropertyName("deviceId")]
     public string DeviceId { get; set; } = "";    // 最后修改设备
+    [JsonPropertyName("prevContent")]
     public string? PrevContent { get; set; }      // 冲突被覆盖方快照（本地留存）
 
     /// <summary>
@@ -47,7 +59,9 @@ public class SyncNote
 /// </summary>
 public class SyncBucket
 {
+    [JsonPropertyName("bucket")]
     public string Bucket { get; set; } = "";
+    [JsonPropertyName("notes")]
     public List<SyncNote> Notes { get; set; } = new();
 
     public string ToJson() => JsonSerializer.Serialize(this, SyncJson.Options);
