@@ -75,8 +75,9 @@
                                            Foreground="#E0E0E0" FontSize="12"
                                            TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Foreground="#777777" FontSize="10" Margin="0,5,0,0">
-                                    <Run Text="删除于 "/><Run Text="{Binding DeletedAtText}"/>
-                                    <Run Text=" · 过期于 "/><Run Text="{Binding ExpiresAtText}"/>
+                                    <!-- Run.Text 默认 BindsTwoWayByDefault=true，绑只读 VM 属性必须显式 Mode=OneWay（QUEST-5 §2 WPF 绑定铁律，回收站闪退教训） -->
+                                    <Run Text="删除于 "/><Run Text="{Binding DeletedAtText, Mode=OneWay}"/>
+                                    <Run Text=" · 过期于 "/><Run Text="{Binding ExpiresAtText, Mode=OneWay}"/>
                                 </TextBlock>
                             </StackPanel>
                         </Border>

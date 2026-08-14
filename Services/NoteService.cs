@@ -240,9 +240,14 @@ public class NoteService
             }
             if (removedLines.Count == 0) return false;
 
+            // 先写回收站（成功）→ 再删原行（2026-08-13 审查修正：防"行已删但回收站没记"的数据永久丢失，
+            // 见 QUEST-5 §2 铁律与反作弊 9；不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
+            if (!_recycleBin.Add(Path.GetFileName(filePath), removedLines))
+            {
+                Debug.WriteLine($"[FocusCapture] 删除中止：回收站写入失败，原行保留 ({filePath})");
+                return false;
+            }
             File.WriteAllLines(filePath, keep, Encoding.UTF8);
-            // 移入回收站（不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
-            _recycleBin.Add(Path.GetFileName(filePath), removedLines);
             return true;
         }
         catch (Exception ex)

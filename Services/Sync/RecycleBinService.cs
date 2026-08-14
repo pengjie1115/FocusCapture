@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -47,10 +48,14 @@ public class RecycleBinService
         CleanupExpired();
     }
 
-    /// <summary>删除时移入回收站：记录被删的行（含关联标记行）</summary>
-    public void Add(string relativePath, IReadOnlyList<string> lines)
+    /// <summary>
+    /// 删除时移入回收站：记录被删的行（含关联标记行）。
+    /// 写成功返回 true；失败返回 false——调用方**必须中止删除**（先写回收站成功再删原行，
+    /// 2026-08-13 审查修正：防止"行已删但回收站没记"的数据永久丢失，见 QUEST-5 §2/反作弊 9）。
+    /// </summary>
+    public bool Add(string relativePath, IReadOnlyList<string> lines)
     {
-        if (lines.Count == 0) return;
+        if (lines.Count == 0) return true;
         var entry = new RecycleBinEntry
         {
             RelativePath = relativePath,
@@ -64,8 +69,13 @@ public class RecycleBinService
             var fileName = $"recycle-{DateTime.Now:yyyyMMddHHmmssfff}.json";
             File.WriteAllText(Path.Combine(_binDir, fileName),
                 JsonSerializer.Serialize(entry), Encoding.UTF8);
+            return true;
         }
-        catch { /* 回收站写失败不影响删除主流程（行已从原文件移除） */ }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 回收站写入失败，删除已中止: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>列出全部回收站记录（按删除时间倒序），返回 (记录文件名, 记录内容)</summary>
