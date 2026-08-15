@@ -557,9 +557,7 @@ public partial class QuickViewWindow : Window
             return;
         }
         CancelEditState(vm);
-        _viewModels.Remove(vm);
-        NotesList.Items.Refresh();
-        UpdateSelectionUI();
+        Refresh();   // 2026-08-15 修复：原 _viewModels.Remove + Items.Refresh() 对 ItemsSource=List 不触发 UI 重绘（List 无集合通知且 Items.Refresh 对 ItemsSource 模式无效），单条删除后不实时刷新；统一走 ReloadNotes 全量重载（与批量删除路径一致）
     }
 
     /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
@@ -924,9 +922,7 @@ public partial class QuickViewWindow : Window
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
-            _viewModels.Remove(vm);
-            NotesList.Items.Refresh();
-            UpdateSelectionUI();
+            Refresh();   // 2026-08-15 修复：同上（单条 × 删除后实时刷新，原 Remove+Items.Refresh 对 ItemsSource=List 无效）
         }
     }
 
