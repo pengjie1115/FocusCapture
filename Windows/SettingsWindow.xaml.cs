@@ -54,21 +54,21 @@ public partial class SettingsWindow : Window
         _suppressEvents = false;
     }
 
-    /// <summary>云同步设置回填（QUEST-5 第八步）</summary>
+    /// <summary>云同步设置回填（方案A 2026-08-15：授权码自动解锁，无主密码/恢复码）</summary>
     private void LoadSyncSettings()
     {
         SyncUrlInput.Text = _settings.Sync.WebDavUrl;
         SyncUserInput.Text = _settings.Sync.WebDavUser;
-        SyncRecoveryCodeText.Text = string.IsNullOrEmpty(_settings.Sync.RecoveryCodeHash)
-            ? "" : "（已设置，重置时输入）";
         AutoSyncCheck.IsChecked = _settings.Sync.AutoSyncEnabled;
         var engine = _syncEngineProvider?.Invoke();
-        var hasPwd = engine?.IsMasterPasswordSet == true;
-        SyncStatusText.Text = hasPwd
-            ? $"已解锁主密码 · 上次同步：{_settings.Sync.LastSyncAt} {_settings.Sync.LastSyncResult}"
-            : string.IsNullOrEmpty(_settings.Sync.E2eeSalt)
-                ? "未配置主密码（首次配置将生成恢复码）"
-                : $"已配置主密码（请输入主密码解锁）· 上次同步：{_settings.Sync.LastSyncAt} {_settings.Sync.LastSyncResult}";
+        var unlocked = engine?.IsMasterPasswordSet == true;
+        SyncStatusText.Text = unlocked
+            ? $"已解锁自动同步 · 上次同步：{_settings.Sync.LastSyncAt} {_settings.Sync.LastSyncResult}"
+            : engine?.IsLegacyMasterPasswordMode == true
+                ? "检测到旧版主密码配置，点击『保存并连接』一键升级（无需原主密码）"
+                : string.IsNullOrEmpty(_settings.Sync.E2eeSalt)
+                    ? "未配置云同步（首次点击『保存并连接』即完成配置）"
+                    : "授权码已保存，应用启动后自动解锁（重新填写授权码可更换）";
     }
 
     private void StartCapture(Button btn, Action<Models.HotkeyBinding> done)
@@ -295,16 +295,27 @@ public partial class SettingsWindow : Window
 
     // ── 云同步（QUEST-5 第八步：WebDAV 配置 / E2EE 主密码 / 同步控制 / 重置） ──
 
-    /// <summary>保存 WebDAV 配置 + 设置/解锁 E2EE 主密码 + 立即同步一次（连接成功提示开启自动同步）。</summary>
+    /// <summary>保存 WebDAV 配置 + 解锁/迁移 + 立即同步一次（授权码即钥匙：填一次永久有效，方案A 2026-08-15）。</summary>
     private async void BtnSyncConnect_Click(object sender, RoutedEventArgs e)
     {
         var url = SyncUrlInput.Text.Trim();
         var user = SyncUserInput.Text.Trim();
         var token = SyncTokenInput.Password;
-        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(token))
+        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(user))
         {
-            SyncStatusText.Text = "请填写服务器地址、坚果云账号、授权码";
+            SyncStatusText.Text = "请填写服务器地址、坚果云账号";
             return;
+        }
+        if (string.IsNullOrEmpty(token))
+        {
+            // 授权码留空 = 沿用已保存的（DPAPI 密文解出；应用重启后依然有效）
+            var saved = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
+            if (string.IsNullOrEmpty(saved))
+            {
+                SyncStatusText.Text = "请填写坚果云授权码（网页端『安全-第三方应用管理』生成的应用密码）";
+                return;
+            }
+            token = saved;
         }
 
         _settings.Sync.ProviderName = "WebDAV";
@@ -314,25 +325,6 @@ public partial class SettingsWindow : Window
         _settings.Save();
         _onSyncConfigChanged?.Invoke();   // MainWindow 用新配置重建引擎
 
-        var isFirst = string.IsNullOrEmpty(_settings.Sync.E2eeSalt);
-        var pwd = SyncMasterPwdInput.Password;
-        var pwd2 = SyncMasterPwdConfirmInput.Password;
-        if (string.IsNullOrEmpty(pwd))
-        {
-            SyncStatusText.Text = isFirst ? "首次配置请设置 E2EE 主密码（≥8 位含字母+数字）" : "请输入主密码解锁同步";
-            return;
-        }
-        if (pwd != pwd2)
-        {
-            SyncStatusText.Text = "两次输入的主密码不一致";
-            return;
-        }
-        if (!CryptoService.IsValidMasterPassword(pwd))
-        {
-            SyncStatusText.Text = "主密码强度不足：≥8 位且含字母+数字";
-            return;
-        }
-
         var engine = _syncEngineProvider?.Invoke();
         if (engine == null)
         {
@@ -340,35 +332,27 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        SyncStatusText.Text = "正在派生密钥并连接…";
+        SyncStatusText.Text = engine.IsLegacyMasterPasswordMode
+            ? "检测到旧版主密码配置，正在一键升级（本地明文重新加密上传）…"
+            : "正在连接并同步…";
         try
         {
-            await engine.SetMasterPasswordAsync(pwd);
+            SyncResult result;
+            if (engine.IsLegacyMasterPasswordMode)
+                result = await engine.MigrateFromLegacyAsync();          // 旧版：无需原主密码，自动升级
+            else
+            {
+                await engine.SetTokenKeyAsync(token);
+                result = await engine.SyncNowAsync(auto: false);
+            }
+            SyncStatusText.Text = result.Success
+                ? $"连接成功，已同步（{_settings.Sync.LastSyncAt}）。建议勾选『自动同步』"
+                : "连接失败：" + result.Error;
         }
         catch (Exception ex)
         {
-            SyncStatusText.Text = "密钥派生失败：" + ex.Message;
-            return;
+            SyncStatusText.Text = "连接失败：" + ex.Message;
         }
-
-        if (isFirst)
-        {
-            // 首次配置：生成恢复码并展示（哈希存本地；主密码/恢复码明文不进云端）
-            var code = CryptoService.GenerateRecoveryCode();
-            var (hash, salt) = CryptoService.HashRecoveryCode(code);
-            _settings.Sync.RecoveryCodeHash = hash;
-            _settings.Sync.RecoveryCodeSalt = salt;
-            _settings.Save();
-            SyncRecoveryCodeText.Text = code;
-            MessageBox.Show(
-                $"请抄下恢复码（与主密码分开放置）：\n\n{code}\n\n忘记主密码时可用恢复码 + 新主密码重置。",
-                "恢复码", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        var result = await engine.SyncNowAsync(auto: false);
-        SyncStatusText.Text = result.Success
-            ? $"连接成功，已同步（{_settings.Sync.LastSyncAt}）。建议勾选『自动同步』"
-            : "连接失败：" + result.Error;
     }
 
     private async void BtnSyncNow_Click(object sender, RoutedEventArgs e)
@@ -376,7 +360,7 @@ public partial class SettingsWindow : Window
         var engine = _syncEngineProvider?.Invoke();
         if (engine == null || !engine.IsMasterPasswordSet)
         {
-            SyncStatusText.Text = "请先『保存并连接』并输入主密码";
+            SyncStatusText.Text = "请先『保存并连接』（未解锁或未配置）";
             return;
         }
         SyncStatusText.Text = "正在同步…";
@@ -411,44 +395,6 @@ public partial class SettingsWindow : Window
         SyncStatusText.Text = "正在重置并全量重传…";
         var result = await engine.ResetSyncAsync();
         SyncStatusText.Text = result.Success ? "已重置并全量重传" : "重置失败：" + result.Error;
-    }
-
-    private async void BtnResetMasterPwd_Click(object sender, RoutedEventArgs e)
-    {
-        var code = RecoveryCodeInput.Password;
-        var pwd = SyncMasterPwdInput.Password;
-        var pwd2 = SyncMasterPwdConfirmInput.Password;
-        if (!CryptoService.VerifyRecoveryCode(code, _settings.Sync.RecoveryCodeHash, _settings.Sync.RecoveryCodeSalt))
-        {
-            SyncStatusText.Text = "恢复码错误";
-            return;
-        }
-        if (string.IsNullOrEmpty(pwd) || pwd != pwd2 || !CryptoService.IsValidMasterPassword(pwd))
-        {
-            SyncStatusText.Text = "新主密码无效（≥8 位含字母+数字，两次一致）";
-            return;
-        }
-        var engine = _syncEngineProvider?.Invoke();
-        if (engine == null)
-        {
-            SyncStatusText.Text = "同步引擎不可用";
-            return;
-        }
-        SyncStatusText.Text = "正在重置主密码并全量重传…";
-        var result = await engine.ResetMasterPasswordAsync(pwd);
-        if (result.Success)
-        {
-            // 重置后恢复码同步更新（主密码与恢复码永远不同期存储明文，各自新生成）
-            var newCode = CryptoService.GenerateRecoveryCode();
-            var (hash, salt) = CryptoService.HashRecoveryCode(newCode);
-            _settings.Sync.RecoveryCodeHash = hash;
-            _settings.Sync.RecoveryCodeSalt = salt;
-            _settings.Save();
-            SyncRecoveryCodeText.Text = newCode;
-            MessageBox.Show($"主密码已重置，新的恢复码：\n\n{newCode}\n\n请抄下并妥善保管。", "恢复码已更新",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        SyncStatusText.Text = result.Success ? "主密码已重置并全量重传" : "重置失败：" + result.Error;
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();

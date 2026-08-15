@@ -50,10 +50,10 @@ public partial class MainWindow : Window
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
 
-            // QUEST-5：云端同步引擎（本机变更 → 30s 合并窗口；自动同步开 → 启动 30min 轮询）
+            // QUEST-5：云端同步引擎（本机变更 → 30s 合并窗口；自动同步开 → 启动自动解锁 + 30min 轮询）
             _noteService.NotesChanged += OnNotesChanged;
             _syncEngine = CreateSyncEngine();
-            if (_syncEngine != null && _settings.Sync.AutoSyncEnabled)
+            if (_syncEngine != null && _settings.Sync.AutoSyncEnabled && _syncEngine.TryUnlockWithStoredToken())
                 _syncEngine.StartAutoSync();
 
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
@@ -208,7 +208,7 @@ public partial class MainWindow : Window
     {
         _syncEngine?.StopAutoSync();
         _syncEngine = CreateSyncEngine();
-        if (_syncEngine != null && _settings.Sync.AutoSyncEnabled)
+        if (_syncEngine != null && _settings.Sync.AutoSyncEnabled && _syncEngine.TryUnlockWithStoredToken())
             _syncEngine.StartAutoSync();
     }
 

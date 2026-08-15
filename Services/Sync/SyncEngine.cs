@@ -14,7 +14,7 @@ namespace FocusCapture.Services.Sync;
 public record SyncResult(bool Success, string? Error)
 {
     public static SyncResult SuccessResult => new(true, null);
-    public static SyncResult NotConfigured => new(false, "未配置同步（请先配置 WebDAV 与主密码）");
+    public static SyncResult NotConfigured => new(false, "未配置同步（请先配置 WebDAV 与授权码）");
     public static SyncResult Failed(string error) => new(false, error);
 }
 
@@ -64,14 +64,20 @@ public class SyncEngine
     public string LastSyncAt => _settings.Sync.LastSyncAt;
     public bool IsMasterPasswordSet => _dek != null;
 
-    // ── 主密码（E2EE） ──
+    // ── 密钥（E2EE，方案 A：授权码即钥匙，自动解锁） ──
+    // v3.0 简化（2026-08-15）：废弃"用户主密码 + 恢复码"，改为用坚果云授权码派生 DEK。
+    // 同账号授权码各设备一致 → 跨设备天然同 DEK（原主密码的跨设备一致性由"用户记同一密码"保证，现在由"同一授权码"保证）。
+    // 授权码 DPAPI 密文存 settings.json，启动自动解密解锁；云端仍只存密文，持有授权码者才能解。
+
+    /// <summary>旧版主密码配置检测：旧版首配强制生成恢复码（RecoveryCodeHash 必有），新版永不生成。</summary>
+    public bool IsLegacyMasterPasswordMode => !string.IsNullOrEmpty(_settings.Sync.RecoveryCodeHash);
 
     /// <summary>
-    /// 设置主密码并派生 DEK（仅内存，不落盘）。
+    /// 用授权码派生 DEK（仅内存，不落盘）。
     /// 盐优先级：本地缓存 → 云端 sync_meta.json → 生成新盐（仅当确认云端无 meta = 真首配设备）。
-    /// 网络失败且本地无盐时**禁止生成新盐**（会与云端盐冲突，恢复联网后必失败），直接报错（2026-08-13 审查修正）。
+    /// 网络失败且本地无盐时**禁止生成新盐**（会与云端盐冲突，恢复联网后必失败），直接报错。
     /// </summary>
-    public async Task SetMasterPasswordAsync(string password, CancellationToken ct = default)
+    public async Task SetTokenKeyAsync(string token, CancellationToken ct = default)
     {
         string saltBase64;
         if (!string.IsNullOrEmpty(_settings.Sync.E2eeSalt))
@@ -110,29 +116,53 @@ public class SyncEngine
             _settings.Save();
         }
 
-        _dek = CryptoService.DeriveKey(password, Convert.FromBase64String(saltBase64));
+        _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(saltBase64));
         _dekSaltBase64 = saltBase64;
     }
 
-    /// <summary>密钥重置：新主密码 → 新盐 → 新 DEK，全量重传（覆盖云端旧密文）。恢复码校验由 UI 层完成。</summary>
-    public async Task<SyncResult> ResetMasterPasswordAsync(string newPassword, CancellationToken ct = default)
+    /// <summary>
+    /// 启动自动解锁（纯本地、不联网）：DPAPI 解密已存授权码 → 派生 DEK。
+    /// 本地有盐才可解锁（有授权码必有盐）；旧版主密码配置不解锁（走设置页一键升级）。
+    /// </summary>
+    public bool TryUnlockWithStoredToken()
     {
+        if (_dek != null) return true;
+        if (IsLegacyMasterPasswordMode) return false;                       // 旧版：待一键升级（MigrateFromLegacyAsync）
+        if (string.IsNullOrEmpty(_settings.Sync.WebDavToken)) return false;
+        var token = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
+        if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(_settings.Sync.E2eeSalt)) return false;
+        _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(_settings.Sync.E2eeSalt));
+        _dekSaltBase64 = _settings.Sync.E2eeSalt;
+        return true;
+    }
+
+    /// <summary>
+    /// 旧版一键升级（本地明文兜底，无需原主密码）：新盐 + 授权码派生新 DEK + 全量重传 + 清除旧版恢复码标记。
+    /// 升级后云端密文全部用新 DEK 重写，其他旧版设备拉取到盐变更会自动刷新会话（新版）或提示重配（旧版）。
+    /// </summary>
+    public async Task<SyncResult> MigrateFromLegacyAsync(CancellationToken ct = default)
+    {
+        var token = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
+        if (string.IsNullOrEmpty(token)) return SyncResult.Failed("授权码未保存，请重新填写授权码");
+
         var newSalt = Convert.ToBase64String(CryptoService.GenerateSalt());
-        _dek = CryptoService.DeriveKey(newPassword, Convert.FromBase64String(newSalt));
+        _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(newSalt));
         _dekSaltBase64 = newSalt;
         _saltNeedsUpload = true;
         _settings.Sync.E2eeSalt = newSalt;
+        _settings.Sync.RecoveryCodeHash = "";
+        _settings.Sync.RecoveryCodeSalt = "";
         _settings.Save();
 
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             await PushSaltIfNeededAsync(ct).ConfigureAwait(false);
-            await PushFlowAsync(ct).ConfigureAwait(false);   // 用本地明文重新加密全量重传（PushAsync 全量合并时本机 wins）
-            _settings.Sync.LastSyncResult = "成功（密钥已重置并全量重传）";
+            await PushFlowAsync(ct).ConfigureAwait(false);   // 本地明文重新加密全量重传（本地事实源 wins）
+            _settings.Sync.LastSyncResult = "成功（已升级自动解锁模式）";
             _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
             _settings.Save();
-            StatusChanged?.Invoke("密钥已重置并全量重传");
+            StatusChanged?.Invoke("已升级到自动解锁模式并全量重传");
             return SyncResult.SuccessResult;
         }
         catch (Exception ex)
@@ -185,12 +215,10 @@ public class SyncEngine
                     await PushSaltIfNeededAsync(CancellationToken.None).ConfigureAwait(false);
                     if (await PullFlowAsync().ConfigureAwait(false))
                     {
-                        // 云端盐已变更（他端密钥重置）→ 本机 DEK 已失效，中止 push 防止旧 DEK 密文污染云端，等重输主密码
-                        _settings.Sync.LastSyncResult = "失败: 云端密钥已重置，请重新输入主密码";
-                        _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
-                        _settings.Save();
-                        StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
-                        return SyncResult.Failed("云端密钥已重置，请重新输入主密码");
+                        // 云端盐已变更（他端升级/重置密钥）→ 新版：用本地授权码 + 新盐自动刷新会话，继续 push；
+                        // 无授权码（未配置）→ 中止并提示重配
+                        if (!TryRefreshSessionFromCloudSalt())
+                            return SyncResult.Failed("云端密钥已重置，请重新配置授权码");
                     }
                     await PushFlowAsync().ConfigureAwait(false);
                     _settings.Sync.LastSyncResult = "成功";
@@ -230,13 +258,12 @@ public class SyncEngine
     private async Task<bool> PullFlowAsync()
     {
         // 密钥重置检测：云端盐 ≠ 本地会话盐 → 刷新本地缓存盐（云端为权威，盐由最新重置者写入），
-        // 中止本次同步并提示重输主密码后用新盐派生 DEK（QUEST-5 审查补充，不得静默当数据损坏）
+        // 返回 true 由调用方刷新会话（自动解锁模式下用授权码+新盐自动刷新，无需用户干预）
         var cloudSalt = await GetCloudSaltAsync().ConfigureAwait(false);
         if (!string.IsNullOrEmpty(cloudSalt) && cloudSalt != _dekSaltBase64)
         {
             _settings.Sync.E2eeSalt = cloudSalt;
             _settings.Save();
-            StatusChanged?.Invoke("云端密钥可能已被重置，请重新输入主密码刷新会话");
             return true;
         }
 
@@ -259,7 +286,7 @@ public class SyncEngine
             catch (CryptographicException)
             {
                 // 密钥不对/数据损坏：跳过该条，不崩溃、不改动本地（§6 未知处理 4）
-                StatusChanged?.Invoke("云端数据解密失败，可能主密码不正确或云端密钥已重置");
+                StatusChanged?.Invoke("云端数据解密失败，可能授权码不正确或云端密钥已重置");
                 continue;
             }
 
@@ -459,6 +486,26 @@ public class SyncEngine
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>云端盐已变更（他端升级/重置）→ 用本地授权码 + 新盐（_settings.Sync.E2eeSalt 已由 PullFlow 刷新）重派生 DEK。</summary>
+    private bool TryRefreshSessionFromCloudSalt()
+    {
+        if (string.IsNullOrEmpty(_settings.Sync.WebDavToken) || string.IsNullOrEmpty(_settings.Sync.E2eeSalt))
+            return false;
+        var token = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(_settings.Sync.E2eeSalt));
+            _dekSaltBase64 = _settings.Sync.E2eeSalt;
+            StatusChanged?.Invoke("云端密钥已变更，已自动刷新解锁");
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
