@@ -76,8 +76,13 @@ public partial class InputWindow : Window
 
     public new void Show()
     {
-        InputBox.Text = ""; Placeholder.Visibility = Visibility.Visible;
-        Height = 80; _isSaving = false;
+        // 2026-08-15 修复：保留未保存草稿。自动隐藏/失焦/Esc 只收起窗口不清空内容，
+        // 再次唤起（悬浮球/快捷键）可继续编辑；保存成功（Save 内已清空）后下次唤起才是空白。
+        var hasDraft = !string.IsNullOrEmpty(InputBox.Text);
+        Placeholder.Visibility = hasDraft ? Visibility.Collapsed : Visibility.Visible;
+        if (hasDraft) { AdjustHeight(); InputBox.CaretIndex = InputBox.Text.Length; }
+        else Height = 80;
+        _isSaving = false;
         base.Show();
         PositionWindow();
         Activate(); // 确保窗口激活，快捷键唤起后可直接打字
