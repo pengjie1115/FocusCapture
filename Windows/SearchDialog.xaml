@@ -6,7 +6,7 @@
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         Topmost="True"
-        Width="380" Height="140"
+        Width="380" Height="170"
         Background="#1E1E1E"
         WindowStartupLocation="CenterOwner"
         PreviewKeyDown="Window_PreviewKeyDown">
@@ -39,33 +39,48 @@
             </Border>
 
             <!-- 输入框 + 提示 -->
-            <StackPanel Grid.Row="1" Margin="16,16,16,8">
+            <StackPanel Grid.Row="1" Margin="16,14,16,8">
                 <TextBlock x:Name="HintText"
                            Text="搜索全部笔记的内容/编辑内容/来源窗口（不区分大小写）"
                            Foreground="#888888" FontSize="11"
                            TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <!-- 2026-08-15 修复：高度 30→36 让 13px 字体完整显示，VerticalContentAlignment Center 让内容垂直居中；
+                     Background/Foreground 等由 App.xaml 全局 TextBox Style 提供，避免 Aero 主题白底覆盖 -->
                 <TextBox x:Name="InputBox"
-                         FontSize="13" Height="30"
-                         Background="#2D2D2D"
-                         Foreground="#E0E0E0"
-                         BorderBrush="#555555" BorderThickness="1"
-                         Padding="8,4"
-                         CaretBrush="#4CAF50"
+                         FontSize="13" Height="36"
+                         VerticalContentAlignment="Center"
                          TextChanged="InputBox_TextChanged"/>
             </StackPanel>
 
-            <!-- 按钮区 -->
+            <!-- 按钮区：App.xaml 全局 Button Style 已处理 IsEnabled=False 灰显 + IsMouseOver 高亮 -->
             <StackPanel Grid.Row="2" Orientation="Horizontal"
                         HorizontalAlignment="Right" Margin="16,0,16,14">
-                <Button Content="取消" Width="70" Height="28"
-                        Background="#3A3A3A" Foreground="#AAAAAA"
-                        BorderThickness="0" Cursor="Hand"
+                <Button Content="取消" Width="70" Height="30"
                         Margin="0,0,10,0" Click="BtnCancel_Click"/>
-                <Button x:Name="BtnOk" Content="查找" Width="70" Height="28"
-                        Background="#0078D4" Foreground="White"
-                        BorderThickness="0" Cursor="Hand"
+                <Button x:Name="BtnOk" Content="查找" Width="70" Height="30"
                         IsEnabled="False"
-                        Click="BtnOk_Click"/>
+                        Click="BtnOk_Click">
+                    <Button.Style>
+                        <!-- 在全局 Button Style 基础上，仅本地覆盖默认蓝色 + IsEnabled 时变深灰蓝 -->
+                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                            <Setter Property="Background" Value="#0078D4"/>
+                            <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="BorderThickness" Value="0"/>
+                            <Style.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="#1A86D9"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter Property="Background" Value="#005FA3"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Background" Value="#2A4A6A"/>
+                                    <Setter Property="Foreground" Value="#88B0CC"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
             </StackPanel>
         </Grid>
     </Border>

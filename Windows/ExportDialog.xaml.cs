@@ -146,7 +146,7 @@ public partial class ExportDialog : Window
                 return;
             }
 
-            var previewDialog = new ImportPreviewDialog(preview) { Owner = this };
+            var previewDialog = new ImportPreviewDialog(preview, _noteService) { Owner = this };
             if (previewDialog.ShowDialog() != true) return;
 
             // 复用项目已有的 NoteService 实例（保证 NotesChanged 事件被同步引擎订阅到）

@@ -6,7 +6,7 @@
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         Topmost="True"
-        Width="340" Height="380"
+        Width="340" Height="410"
         Background="#1E1E1E"
         WindowStartupLocation="CenterOwner"
         PreviewKeyDown="Window_PreviewKeyDown">
@@ -60,12 +60,15 @@
                         Click="BtnToday_Click"/>
             </Grid>
 
-            <!-- 2026-08-15 新增：日期区间输入（开始 → 截止 + 清除），改变 DatePicker 触发 DateRangeSelected；
-                 点击日期格依然按"开始=截止=该日"区间语义触发，单日↔区间对调用方完全透明 -->
+            <!-- 2026-08-15 修复：弃用 WPF DatePicker（内部 DatePickerTextBox 是 internal 类 + ThemeStyle 锁，
+                 无法用 Application.Resources 或 Window.Resources Style 让它变深色）。
+                 改用 [TextBox(深色，全局 Style 兜底) + 📅Button 弹 CalendarWindow 复用] 的组合。
+                 TextBox 接受 yyyy-MM-dd 输入，📅按钮点击复用当前 CalendarWindow（其实例）作为弹窗让用户点选日期。 -->
             <Grid Grid.Row="1" Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -74,21 +77,27 @@
                 <TextBlock Grid.Column="0" Text="从"
                            Foreground="#888888" FontSize="11"
                            VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <DatePicker x:Name="StartPicker" Grid.Column="1"
-                            Height="26" FontSize="11"
-                            Background="#2D2D2D" Foreground="#E0E0E0"
-                            BorderBrush="#555555"
-                            SelectedDateChanged="StartPicker_SelectedDateChanged"/>
-                <TextBlock Grid.Column="2" Text="至"
+                <TextBox x:Name="StartInput" Grid.Column="1" Height="28" FontSize="11"
+                         VerticalContentAlignment="Center"
+                         LostFocus="StartInput_LostFocus"
+                         KeyDown="InputBox_KeyDown"/>
+                <Button Grid.Column="2" x:Name="BtnStartPick" Content="📅"
+                        FontSize="11" Width="28" Height="28" Margin="4,0,0,0"
+                        Cursor="Hand" ToolTip="选开始日期"
+                        Click="BtnStartPick_Click"/>
+                <TextBlock Grid.Column="3" Text="至"
                            Foreground="#888888" FontSize="11"
                            VerticalAlignment="Center" Margin="8,0"/>
-                <DatePicker x:Name="EndPicker" Grid.Column="3"
-                            Height="26" FontSize="11"
-                            Background="#2D2D2D" Foreground="#E0E0E0"
-                            BorderBrush="#555555"
-                            SelectedDateChanged="EndPicker_SelectedDateChanged"/>
-                <Button Grid.Column="4" Content="↩" FontSize="14"
-                        Width="28" Height="26" Margin="8,0,0,0"
+                <TextBox x:Name="EndInput" Grid.Column="4" Height="28" FontSize="11"
+                         VerticalContentAlignment="Center"
+                         LostFocus="EndInput_LostFocus"
+                         KeyDown="InputBox_KeyDown"/>
+                <Button Grid.Column="5" x:Name="BtnEndPick" Content="📅"
+                        FontSize="11" Width="28" Height="28" Margin="4,0,0,0"
+                        Cursor="Hand" ToolTip="选截止日期"
+                        Click="BtnEndPick_Click"/>
+                <Button Grid.Column="6" Content="↩" FontSize="14"
+                        Width="28" Height="28" Margin="6,0,0,0"
                         Background="Transparent"
                         Foreground="#888888"
                         BorderBrush="#555555" BorderThickness="1"

@@ -3,5 +3,56 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
+        <ResourceDictionary>
+            <!-- 2026-08-15：全局深色 Theme 兜底，避免 TextBox/Button 在某些状态下被 Aero 主题覆盖。
+                 局部窗口如有特殊需求可在自己 Window.Resources 覆盖。 -->
+            <Style TargetType="TextBox">
+                <Setter Property="Background" Value="#2D2D2D"/>
+                <Setter Property="Foreground" Value="#E0E0E0"/>
+                <Setter Property="BorderBrush" Value="#555555"/>
+                <Setter Property="CaretBrush" Value="#4CAF50"/>
+                <Setter Property="Padding" Value="6,4"/>
+            </Style>
+            <Style TargetType="PasswordBox">
+                <Setter Property="Background" Value="#2D2D2D"/>
+                <Setter Property="Foreground" Value="#E0E0E0"/>
+                <Setter Property="BorderBrush" Value="#555555"/>
+                <Setter Property="CaretBrush" Value="#4CAF50"/>
+            </Style>
+            <Style TargetType="Button">
+                <Setter Property="Background" Value="#3A3A3A"/>
+                <Setter Property="Foreground" Value="#CCCCCC"/>
+                <Setter Property="BorderBrush" Value="#555555"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="2"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#4A4A4A"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#2A2A2A"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="Bd" Property="Background" Value="#2A2A2A"/>
+                                    <Setter Property="Foreground" Value="#666666"/>
+                                    <Setter Property="Opacity" Value="1"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

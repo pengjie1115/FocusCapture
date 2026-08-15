@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Windows.Input;
 using FocusCapture.Services;
 
 namespace FocusCapture.Windows;
@@ -5,6 +7,8 @@ namespace FocusCapture.Windows;
 /// <summary>
 /// 日历热力图弹窗：单月视图 + 4 档热力色（数据来自 MD 文件真实统计），
 /// 点击日期返回选中日期（DateSelected 事件）；点击弹窗外部自动收起。
+/// 区间输入：TextBox + 📅Button（弹 CalendarWindow 复用），避免 WPF DatePicker 内部
+/// DatePickerTextBox 是 internal 类无法调样式的坑。
 /// </summary>
 public partial class CalendarWindow : Window
 {
@@ -14,10 +18,11 @@ public partial class CalendarWindow : Window
     private DateTime? _selectedDate;
     private bool _closed;             // 窗口已关闭标志（防止 Deactivated 重入 Close）
 
-    /// <summary>选中日期事件（点击日期即触发，兼容旧接口：start=end=选中日）</summary>
+    /// <summary>选中日期事件（点击日期格即触发，兼容旧接口：start=end=选中日）</summary>
     public event Action<DateTime>? DateSelected;
 
-    /// <summary>选中区间事件（2026-08-15 新增，供 QuickViewWindow 切换 Range 模式；当前 CalendarWindow 单日选择也触发：start=end=选中日，区间输入控件将在任务 3 改造时启用并触发真正的区间）</summary>
+    /// <summary>选中区间事件（2026-08-15 新增，供 QuickViewWindow 切换 Range 模式；
+    /// 当前 CalendarWindow 单日选择 + 区间输入控件统一触发 start=end / start..end 区间事件，调用方按 start==end 判定单日 vs 区间）</summary>
     public event Action<DateTime, DateTime>? DateRangeSelected;
 
     /// <summary>本次打开的选中日期（ShowDialog 返回后读取；现已改非模态 Show，此属性仅供外部读取）</summary>
@@ -31,10 +36,9 @@ public partial class CalendarWindow : Window
         _selectedDate = currentDate.Date;
         _displayMonth = new DateTime(currentDate.Year, currentDate.Month, 1);
 
-        // 初始化 DatePicker：默认区间=选中日（单日模式）—— SelectedDateChanged 可能在 Loaded 后才触发，
-        // 为避免在外部订阅前误发 DateRangeSelected，这里手动赋值后再调用 Render
-        StartPicker.SelectedDate = currentDate.Date;
-        EndPicker.SelectedDate = currentDate.Date;
+        // 初始化区间输入（默认=选中日，即单日模式）
+        StartInput.Text = currentDate.Date.ToString("yyyy-MM-dd");
+        EndInput.Text = currentDate.Date.ToString("yyyy-MM-dd");
 
         // 点击日历弹窗以外的任何区域 → 自动收起（模态窗口失去激活时触发）
         // 防重入：窗口关闭过程中 Deactivated 可能再次触发，_closed 标志拦截
@@ -42,36 +46,6 @@ public partial class CalendarWindow : Window
         Deactivated += (_, _) => { if (IsVisible && !_closed) Close(); };
 
         Render();
-    }
-
-    /// <summary>区间生效：start/end 都有值时触发 DateRangeSelected 并自动交换（start>end 时规范化），关闭窗口。</summary>
-    private void EmitRangeAndClose()
-    {
-        if (StartPicker.SelectedDate is not DateTime start || EndPicker.SelectedDate is not DateTime end) return;
-        if (start.Date > end.Date) (start, end) = (end, start);   // 防御性：自动交换
-        DateRangeSelected?.Invoke(start, end);
-        // 注意：SelectDate 路径仍通过 DateSelected / DateRangeSelected 单日触发，已在 SelectDate 内处理 Close
-        // 这里区间触发也主动关闭（用户调"清除"或调 DatePicker 后会自动关闭场景）
-        // 为避免和单击日期格重复关闭，调用方 Show 后 Deactivated 自动 Close 已兜底
-    }
-
-    private void StartPicker_SelectedDateChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-        => EmitRangeAndClose();
-
-    private void EndPicker_SelectedDateChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-        => EmitRangeAndClose();
-
-    private void BtnClearRange_Click(object sender, RoutedEventArgs e)
-    {
-        // 重置为今天 + 触发单日 DateRangeSelected
-        var today = DateTime.Today;
-        StartPicker.SelectedDate = today;
-        EndPicker.SelectedDate = today;
-        _selectedDate = today;
-        _displayMonth = new DateTime(today.Year, today.Month, 1);
-        Render();
-        DateRangeSelected?.Invoke(today, today);
-        Close();
     }
 
     private void Render()
@@ -174,6 +148,81 @@ public partial class CalendarWindow : Window
             e.Handled = true;
             Close();
         }
+    }
+
+    // ── 2026-08-15：区间输入处理（TextBox + 📅Button） ──
+
+    /// <summary>解析 TextBox 内容为 DateTime；空 / 格式错则返回 null。</summary>
+    private static DateTime? ParseDateInput(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (DateTime.TryParseExact(text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
+            return d.Date;
+        return null;
+    }
+
+    private void EmitRangeAndClose()
+    {
+        var start = ParseDateInput(StartInput.Text) ?? _selectedDate ?? DateTime.Today;
+        var end = ParseDateInput(EndInput.Text) ?? _selectedDate ?? DateTime.Today;
+        if (start > end) (start, end) = (end, start);   // 防御性：自动交换
+        DateRangeSelected?.Invoke(start, end);
+        // 注意：SelectDate / BtnClearRange 路径会在内部 Close；这里用户改完 TextBox 失焦只触发区间事件，由 Deactivated 自动 Close 兜底
+    }
+
+    private void StartInput_LostFocus(object sender, RoutedEventArgs e)
+        => EmitRangeAndClose();
+
+    private void EndInput_LostFocus(object sender, RoutedEventArgs e)
+        => EmitRangeAndClose();
+
+    private void InputBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            EmitRangeAndClose();
+        }
+    }
+
+    private void BtnStartPick_Click(object sender, RoutedEventArgs e)
+    {
+        var initial = ParseDateInput(StartInput.Text) ?? _selectedDate ?? DateTime.Today;
+        // 复用当前 CalendarWindow 实例作为弹窗（已有深色样式 + 热力色 + 月份导航）
+        // Deactivated 自动关闭已继承；点击日期格会触发 SelectDate→DateRangeSelected(date,date) 但当前实例会被关掉，
+        // 所以这里用独立回调：直接回填到 StartInput 并 emit 区间
+        var cal = new CalendarWindow(_noteService, initial);
+        cal.DateRangeSelected += (s, _) =>
+        {
+            StartInput.Text = s.ToString("yyyy-MM-dd");
+            EmitRangeAndClose();
+        };
+        cal.Show();
+    }
+
+    private void BtnEndPick_Click(object sender, RoutedEventArgs e)
+    {
+        var initial = ParseDateInput(EndInput.Text) ?? _selectedDate ?? DateTime.Today;
+        var cal = new CalendarWindow(_noteService, initial);
+        cal.DateRangeSelected += (s, _) =>
+        {
+            EndInput.Text = s.ToString("yyyy-MM-dd");
+            EmitRangeAndClose();
+        };
+        cal.Show();
+    }
+
+    private void BtnClearRange_Click(object sender, RoutedEventArgs e)
+    {
+        // 重置为今天 + 触发单日 DateRangeSelected
+        var today = DateTime.Today;
+        StartInput.Text = today.ToString("yyyy-MM-dd");
+        EndInput.Text = today.ToString("yyyy-MM-dd");
+        _selectedDate = today;
+        _displayMonth = new DateTime(today.Year, today.Month, 1);
+        Render();
+        DateRangeSelected?.Invoke(today, today);
+        Close();
     }
 
     private static SolidColorBrush FromHex(string hex)

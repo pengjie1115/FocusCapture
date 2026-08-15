@@ -63,7 +63,8 @@
                                Margin="0,4,0,8"/>
                 </StackPanel>
 
-                <!-- 目标日期选择 -->
+                <!-- 目标日期选择：弃用 DatePicker（DatePickerTextBox internal 类 + ThemeStyle 锁，无法调深色），
+                     改用 TextBox(深色，全局 Style 兜底) + 📅Button 弹 CalendarWindow 复用 -->
                 <Grid Grid.Row="1" Margin="0,0,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -73,10 +74,15 @@
                     <TextBlock Grid.Column="0" Text="目标日期"
                                Foreground="#999999" FontSize="12"
                                VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <DatePicker x:Name="TargetDatePicker" Grid.Column="1"
-                                Height="28" FontSize="12"
-                                Background="#2D2D2D" Foreground="#E0E0E0"
-                                BorderBrush="#555555"/>
+                    <TextBox x:Name="TargetDateInput" Grid.Column="1"
+                             Height="28" FontSize="12"
+                             VerticalContentAlignment="Center"
+                             LostFocus="TargetDateInput_LostFocus"
+                             KeyDown="TargetDateInput_KeyDown"/>
+                    <Button Grid.Column="2" x:Name="BtnPickTargetDate" Content="📅"
+                            FontSize="12" Width="28" Height="28" Margin="6,0,0,0"
+                            Cursor="Hand" ToolTip="选目标日期"
+                            Click="BtnPickTargetDate_Click"/>
                 </Grid>
 
                 <!-- 工具栏：全选/反选/计数 -->
