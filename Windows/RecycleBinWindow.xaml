@@ -16,6 +16,7 @@
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="40"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
@@ -37,12 +38,44 @@
                 </Grid>
             </Border>
 
-            <!-- 列表 -->
-            <ListBox x:Name="RecycleList" Grid.Row="1"
+            <!-- 选择工具栏（2026-08-15 回收站 UI 优化）：常驻全选/反选，已选计数显示在左侧 -->
+            <Border Grid.Row="1" Background="#1F1F1F" x:Name="SelectionBar"
+                    Padding="14,6">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left">
+                    <TextBlock x:Name="SelectedCountText"
+                               Text=""
+                               Foreground="#4CAF50"
+                               FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"
+                               Visibility="Collapsed"/>
+                    <Button x:Name="BtnSelectAll"
+                            Content="全选"
+                            FontSize="11" Width="48" Height="24"
+                            Margin="0,0,4,0"
+                            Background="Transparent"
+                            Foreground="#888888"
+                            BorderBrush="#555555" BorderThickness="1"
+                            Cursor="Hand"
+                            Click="BtnSelectAll_Click"/>
+                    <Button x:Name="BtnInvert"
+                            Content="反选"
+                            FontSize="11" Width="48" Height="24"
+                            Margin="0,0,4,0"
+                            Background="Transparent"
+                            Foreground="#888888"
+                            BorderBrush="#555555" BorderThickness="1"
+                            Cursor="Hand"
+                            Click="BtnInvert_Click"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 列表（SelectionMode=None：弃用 ListBox 选中机制，全部由 CheckBox.IsSelected 驱动，避免双轨混乱） -->
+            <ListBox x:Name="RecycleList" Grid.Row="2"
                      Background="Transparent" BorderThickness="0"
                      Margin="10,8"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                     SelectionChanged="RecycleList_SelectionChanged">
+                     SelectionMode="None">
                 <ListBox.ItemContainerStyle>
                     <Style TargetType="ListBoxItem">
                         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -54,14 +87,6 @@
                                             CornerRadius="6" Margin="0,2" Padding="0">
                                         <ContentPresenter/>
                                     </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="Bd" Property="Background" Value="#3A503A"/>
-                                        </Trigger>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="Bd" Property="Background" Value="#2F2F2F"/>
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
                                 </ControlTemplate>
                             </Setter.Value>
                         </Setter>
@@ -70,30 +95,42 @@
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <Border Background="#2A2A2A" CornerRadius="6" Padding="12,9">
-                            <StackPanel>
-                                <TextBlock Text="{Binding Preview}"
-                                           Foreground="#E0E0E0" FontSize="12"
-                                           TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Foreground="#777777" FontSize="10" Margin="0,5,0,0">
-                                    <!-- Run.Text 默认 BindsTwoWayByDefault=true，绑只读 VM 属性必须显式 Mode=OneWay（QUEST-5 §2 WPF 绑定铁律，回收站闪退教训） -->
-                                    <Run Text="删除于 "/><Run Text="{Binding DeletedAtText, Mode=OneWay}"/>
-                                    <Run Text=" · 过期于 "/><Run Text="{Binding ExpiresAtText, Mode=OneWay}"/>
-                                </TextBlock>
-                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <CheckBox Grid.Column="0"
+                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,10,0"
+                                          Cursor="Hand"
+                                          Click="ItemCheckBox_Click"/>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{Binding Preview}"
+                                               Foreground="#E0E0E0" FontSize="12"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Foreground="#777777" FontSize="10" Margin="0,5,0,0">
+                                        <!-- Run.Text 默认 BindsTwoWayByDefault=true，绑只读 VM 属性必须显式 Mode=OneWay（QUEST-5 §2 WPF 绑定铁律，回收站闪退教训） -->
+                                        <Run Text="删除于 "/><Run Text="{Binding DeletedAtText, Mode=OneWay}"/>
+                                        <Run Text=" · 过期于 "/><Run Text="{Binding ExpiresAtText, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Grid>
                         </Border>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
 
             <!-- 空提示 -->
-            <TextBlock x:Name="EmptyHint" Grid.Row="1"
+            <TextBlock x:Name="EmptyHint" Grid.Row="2"
                        Text="回收站是空的"
                        Foreground="#666666" FontSize="12"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        Visibility="Collapsed"/>
 
             <!-- 底部按钮 -->
-            <StackPanel Grid.Row="2" Orientation="Horizontal"
+            <StackPanel Grid.Row="3" Orientation="Horizontal"
                         Margin="12,0,12,14" HorizontalAlignment="Right">
                 <Button x:Name="BtnRestore" Content="恢复所选"
                         Height="30" Padding="16,0"

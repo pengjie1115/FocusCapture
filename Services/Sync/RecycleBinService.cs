@@ -110,6 +110,32 @@ public class RecycleBinService
     }
 
     /// <summary>
+    /// 批量恢复（2026-08-15 回收站 UI 优化）：每条独立走单条恢复流程（写回文件 + 删回收站记录），
+    /// 单条异常不影响其他条目（与现有"AppendLine 单条失败不阻塞整体"风格一致）。
+    /// 返回成功恢复的条数（用于 UI 反馈）。
+    /// </summary>
+    public int RestoreBatch(IEnumerable<(string FileName, RecycleBinEntry Entry)> items, NoteService noteService)
+    {
+        var restored = 0;
+        foreach (var (fileName, entry) in items)
+        {
+            try
+            {
+                foreach (var line in entry.Lines)
+                    noteService.AppendLine(entry.RelativePath, line);
+                var path = Path.Combine(_binDir, fileName);
+                if (File.Exists(path)) File.Delete(path);
+                restored++;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 批量恢复单条失败（{fileName}）：{ex.Message}");
+            }
+        }
+        return restored;
+    }
+
+    /// <summary>
     /// 清空回收站：物理删除全部记录，返回被清空的记录（供同步层生成 Deleted=true 软删标记，
     /// QUEST-5 第五步 2：清空回收站 → 对该笔记触发同步软删）。
     /// </summary>
