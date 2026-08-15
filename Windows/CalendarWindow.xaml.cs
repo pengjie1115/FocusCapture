@@ -188,28 +188,27 @@ public partial class CalendarWindow : Window
     private void BtnStartPick_Click(object sender, RoutedEventArgs e)
     {
         var initial = ParseDateInput(StartInput.Text) ?? _selectedDate ?? DateTime.Today;
-        // 复用当前 CalendarWindow 实例作为弹窗（已有深色样式 + 热力色 + 月份导航）
-        // Deactivated 自动关闭已继承；点击日期格会触发 SelectDate→DateRangeSelected(date,date) 但当前实例会被关掉，
-        // 所以这里用独立回调：直接回填到 StartInput 并 emit 区间
-        var cal = new CalendarWindow(_noteService, initial);
-        cal.DateRangeSelected += (s, _) =>
+        // 2026-08-15 修复：迷你日历 Popup（复用热力渲染），替代弹出整个 CalendarWindow 的笨重方案。
+        // 单选即关：点一个日期格 → 回填 StartInput → emit 区间 → Popup 自动关闭。
+        var picker = new MiniCalendarPicker(_noteService);
+        picker.DatePicked += date =>
         {
-            StartInput.Text = s.ToString("yyyy-MM-dd");
+            StartInput.Text = date.ToString("yyyy-MM-dd");
             EmitRangeAndClose();
         };
-        cal.Show();
+        picker.Show(BtnStartPick, initial);
     }
 
     private void BtnEndPick_Click(object sender, RoutedEventArgs e)
     {
         var initial = ParseDateInput(EndInput.Text) ?? _selectedDate ?? DateTime.Today;
-        var cal = new CalendarWindow(_noteService, initial);
-        cal.DateRangeSelected += (s, _) =>
+        var picker = new MiniCalendarPicker(_noteService);
+        picker.DatePicked += date =>
         {
-            EndInput.Text = s.ToString("yyyy-MM-dd");
+            EndInput.Text = date.ToString("yyyy-MM-dd");
             EmitRangeAndClose();
         };
-        cal.Show();
+        picker.Show(BtnEndPick, initial);
     }
 
     private void BtnClearRange_Click(object sender, RoutedEventArgs e)
