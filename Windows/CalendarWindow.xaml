@@ -6,7 +6,7 @@
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         Topmost="True"
-        Width="340" Height="330"
+        Width="340" Height="380"
         Background="#1E1E1E"
         WindowStartupLocation="CenterOwner"
         PreviewKeyDown="Window_PreviewKeyDown">
@@ -15,6 +15,7 @@
             BorderBrush="#3A3A3A" BorderThickness="1">
         <Grid Margin="12,10">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -59,8 +60,45 @@
                         Click="BtnToday_Click"/>
             </Grid>
 
+            <!-- 2026-08-15 新增：日期区间输入（开始 → 截止 + 清除），改变 DatePicker 触发 DateRangeSelected；
+                 点击日期格依然按"开始=截止=该日"区间语义触发，单日↔区间对调用方完全透明 -->
+            <Grid Grid.Row="1" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="从"
+                           Foreground="#888888" FontSize="11"
+                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <DatePicker x:Name="StartPicker" Grid.Column="1"
+                            Height="26" FontSize="11"
+                            Background="#2D2D2D" Foreground="#E0E0E0"
+                            BorderBrush="#555555"
+                            SelectedDateChanged="StartPicker_SelectedDateChanged"/>
+                <TextBlock Grid.Column="2" Text="至"
+                           Foreground="#888888" FontSize="11"
+                           VerticalAlignment="Center" Margin="8,0"/>
+                <DatePicker x:Name="EndPicker" Grid.Column="3"
+                            Height="26" FontSize="11"
+                            Background="#2D2D2D" Foreground="#E0E0E0"
+                            BorderBrush="#555555"
+                            SelectedDateChanged="EndPicker_SelectedDateChanged"/>
+                <Button Grid.Column="4" Content="↩" FontSize="14"
+                        Width="28" Height="26" Margin="8,0,0,0"
+                        Background="Transparent"
+                        Foreground="#888888"
+                        BorderBrush="#555555" BorderThickness="1"
+                        Cursor="Hand"
+                        ToolTip="清除区间，回单日模式"
+                        Click="BtnClearRange_Click"/>
+            </Grid>
+
             <!-- 星期表头：日一二三四五六 -->
-            <UniformGrid Grid.Row="1" Columns="7" Margin="0,0,0,4">
+            <UniformGrid Grid.Row="2" Columns="7" Margin="0,0,0,4">
                 <TextBlock Text="日" Foreground="#888888" FontSize="11" HorizontalAlignment="Center"/>
                 <TextBlock Text="一" Foreground="#888888" FontSize="11" HorizontalAlignment="Center"/>
                 <TextBlock Text="二" Foreground="#888888" FontSize="11" HorizontalAlignment="Center"/>
@@ -71,11 +109,11 @@
             </UniformGrid>
 
             <!-- 日期格：热力色背景 -->
-            <UniformGrid x:Name="DayGrid" Grid.Row="2" Columns="7"/>
+            <UniformGrid x:Name="DayGrid" Grid.Row="3" Columns="7"/>
 
             <!-- 底部提示 -->
-            <TextBlock Grid.Row="3"
-                       Text="点击日期查看当天笔记 · 颜色越深笔记越多"
+            <TextBlock Grid.Row="4"
+                       Text="调整区间直接筛选 · 点击日期查看当天笔记 · 颜色越深笔记越多"
                        Foreground="#666666" FontSize="11"
                        HorizontalAlignment="Center"
                        Margin="0,8,0,0"/>

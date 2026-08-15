@@ -14,8 +14,8 @@ public class NoteService
     // Windows 文件名非法字符
     private static readonly char[] InvalidFileChars = Path.GetInvalidFileNameChars();
 
-    /// <summary>速览行格式：- [yyyy-MM-dd HH:mm] 内容 — 来源: xxx（兼容旧格式 - [HH:mm]）</summary>
-    private static readonly Regex NoteLineRegex = new(
+    /// <summary>速览行格式：- [yyyy-MM-dd HH:mm] 内容 — 来源: xxx（兼容旧格式 - [HH:mm]）。public 让 NoteImportService 复用同一份正则。</summary>
+    public static readonly Regex NoteLineRegex = new(
         @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$",
         RegexOptions.Compiled);
 
@@ -592,4 +592,135 @@ public class NoteService
     /// <summary>MD 行本地时间戳 → ISO 8601 UTC 字符串（同步层 CreatedAt/UpdatedAt 约定，分钟精度、DateTimeKind 处理）。</summary>
     public static string ToUtcIsoString(DateTime localTime)
         => DateTime.SpecifyKind(localTime, DateTimeKind.Local).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    // ── 导入 / 区间 / 查找 扩展（2026-08-15 新增，灵感速览面板功能） ──
+
+    /// <summary>
+    /// 导入笔记：写入对应 MD 文件 + Content 去重（与目标日期已有笔记按 Content 完全相同去重，
+    /// 重复项默认保留原笔记跳过导入）。调用者负责已勾选过滤。无时间戳条目按 targetDate + 当前时分分配。
+    /// 全部处理后触发一次 NotesChanged。
+    /// </summary>
+    public int ImportNotes(List<NoteEntry> entries, DateTime targetDate)
+    {
+        if (entries == null || entries.Count == 0) return 0;
+
+        // 收集目标日期所有 MD 文件（含 tag 文件）的现有 Content 用于去重
+        var existingContents = LoadAllContents();
+
+        var written = 0;
+        var now = DateTime.Now;
+        // 无时间戳条目按 targetDate.Date + 递增时分分配（避免同分钟冲突）
+        var fallbackCursor = new DateTime(targetDate.Year, targetDate.Month, targetDate.Day, now.Hour, now.Minute, 0);
+
+        try
+        {
+            foreach (var entry in entries)
+            {
+                if (entry == null || string.IsNullOrWhiteSpace(entry.Content)) continue;
+
+                // 去重：Content 已存在则跳过
+                var contentKey = entry.Content.Trim();
+                if (existingContents.Contains(contentKey)) continue;
+
+                // 重新分配时间戳：无时间戳条目 → targetDate + 递增时分
+                if (entry.Timestamp == DateTime.MinValue)
+                {
+                    entry.Timestamp = fallbackCursor;
+                    fallbackCursor = fallbackCursor.AddMinutes(1);
+                }
+
+                // 决定写入哪个 MD 文件：tag 文件 vs 当天灵感文件
+                var fileName = !string.IsNullOrEmpty(entry.Tag)
+                    ? $"{entry.Tag}.md"
+                    : $"灵感_{entry.Timestamp:yyyy-MM-dd}.md";
+
+                try
+                {
+                    AppendLine(fileName, entry.ToMarkdownLine());
+                    existingContents.Add(contentKey);   // 防同一批次内重复
+                    written++;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[FocusCapture] 导入写入失败 ({fileName}): {ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            if (written > 0) NotesChanged?.Invoke();
+        }
+        return written;
+    }
+
+    /// <summary>收集所有 MD 文件的现有 Content 集合（用于导入去重）</summary>
+    private HashSet<string> LoadAllContents()
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (!Directory.Exists(_settings.NotesPath)) return set;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            try
+            {
+                foreach (var rawLine in File.ReadAllLines(file, Encoding.UTF8))
+                {
+                    var m = NoteLineRegex.Match(rawLine.TrimEnd('\r'));
+                    if (!m.Success) continue;
+                    var c = m.Groups[3].Value.Replace("\u23CE", "\n").Trim();
+                    if (!string.IsNullOrEmpty(c)) set.Add(c);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 读取已有笔记失败 ({file}): {ex.Message}");
+            }
+        }
+        return set;
+    }
+
+    /// <summary>加载所有笔记（合并 AI 释义/编辑标记行），用于区间筛选和全局查找的基础集。</summary>
+    public List<NoteEntry> LoadAllEntries()
+    {
+        var result = new List<NoteEntry>();
+        if (!Directory.Exists(_settings.NotesPath)) return result;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            var fileName = Path.GetFileNameWithoutExtension(file);
+            var tag = fileName.StartsWith("灵感_", StringComparison.Ordinal) ? null : fileName;
+            // dateContext 影响旧格式 [HH:mm] 行的归属（与 LoadNotes 一致用今天）
+            result.AddRange(ParseNotes(file, tag, DateTime.Today));
+        }
+
+        return result
+            .Where(e => !_deletedService.IsDeleted(e))
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
+    }
+
+    /// <summary>区间加载：start..end（含两端）的所有笔记，按时间戳倒序。</summary>
+    public List<NoteEntry> LoadNotesRange(DateTime start, DateTime end)
+    {
+        var s = start.Date;
+        var e = end.Date;
+        if (e < s) (s, e) = (e, s);   // 防御性交换
+
+        return LoadAllEntries()
+            .Where(x => x.Timestamp.Date >= s && x.Timestamp.Date <= e)
+            .ToList();
+    }
+
+    /// <summary>全局关键字查找：Content / EditedContent / SourceWindow 任一包含 keyword（不区分大小写）。</summary>
+    public List<NoteEntry> LoadNotesSearch(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword)) return new List<NoteEntry>();
+
+        return LoadAllEntries()
+            .Where(x =>
+                x.Content.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrEmpty(x.EditedContent) && x.EditedContent.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
+                x.SourceWindow.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
 }

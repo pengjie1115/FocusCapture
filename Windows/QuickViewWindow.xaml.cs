@@ -63,6 +63,19 @@ public class NoteEntryViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>是否重复（按 Content 完全相同聚合，频次>=2 视为重复）。控制面板条目文字颜色：默认白，重复红。</summary>
+    private bool _isDuplicate;
+    public bool IsDuplicate
+    {
+        get => _isDuplicate;
+        set
+        {
+            if (_isDuplicate == value) return;
+            _isDuplicate = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDuplicate)));
+        }
+    }
+
     private string _editText = string.Empty;
     public string EditText
     {
@@ -123,6 +136,14 @@ public partial class QuickViewWindow : Window
     private TextBox? _activeEditBox;
     private NoteEntryViewModel? _activeEditVm;
 
+    // ── 2026-08-15 新增：列表加载模式（单日 / 区间 / 全局查找） ──
+    private NoteLoadMode _loadMode = NoteLoadMode.Date;
+    private DateTime _rangeStart;
+    private DateTime _rangeEnd;
+    private string _searchKeyword = "";
+
+    private enum NoteLoadMode { Date, Range, Search }
+
     public QuickViewWindow(NoteService noteService, AppSettings settings)
     {
         InitializeComponent();
@@ -150,11 +171,61 @@ public partial class QuickViewWindow : Window
 
     private void ReloadNotes()
     {
-        var entries = _noteService.LoadNotes(_selectedDate);
+        // 2026-08-15：按当前加载模式分派（Date / Range / Search）
+        var entries = _loadMode switch
+        {
+            NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
+            NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
+            _ => _noteService.LoadNotes(_selectedDate)
+        };
         _viewModels = entries.Select(e => new NoteEntryViewModel(e)).ToList();
+        ApplyDuplicateMarkers();
         NotesList.ItemsSource = _viewModels;
-        EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateEmptyHint();
         UpdateSelectionUI();
+        UpdateModeIndicator();
+    }
+
+    /// <summary>
+    /// 按 Content 完全相同聚合判定重复：频次 ≥2 的 vm 标记 IsDuplicate=true，
+    /// 触发 XAML 样式把字体颜色切到红色（#FF6B6B）。空内容不参与。
+    /// </summary>
+    private void ApplyDuplicateMarkers()
+    {
+        var contentCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var vm in _viewModels)
+        {
+            var c = vm.Entry.Content?.Trim();
+            if (string.IsNullOrEmpty(c)) continue;
+            contentCounts[c] = contentCounts.GetValueOrDefault(c) + 1;
+        }
+        foreach (var vm in _viewModels)
+        {
+            var c = vm.Entry.Content?.Trim();
+            vm.IsDuplicate = !string.IsNullOrEmpty(c) && contentCounts.GetValueOrDefault(c) >= 2;
+        }
+    }
+
+    private void UpdateEmptyHint()
+    {
+        EmptyHint.Text = _loadMode switch
+        {
+            NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
+            NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
+            _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
+        };
+        EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateModeIndicator()
+    {
+        if (_loadMode == NoteLoadMode.Range)
+            ModeIndicator.Text = $"区间：{_rangeStart:yyyy-MM-dd}  ~  {_rangeEnd:yyyy-MM-dd}";
+        else if (_loadMode == NoteLoadMode.Search)
+            ModeIndicator.Text = $"查找：\"{_searchKeyword}\"";
+        else
+            ModeIndicator.Text = $"单日：{_selectedDate:yyyy-MM-dd}";
+        BtnReturnToDate.Visibility = _loadMode == NoteLoadMode.Date ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>焦点回归自动刷新（切回面板/关闭弹窗后列表同步最新笔记）</summary>
@@ -167,17 +238,46 @@ public partial class QuickViewWindow : Window
     /// <summary>标题栏刷新按钮：立即重新加载列表</summary>
     private void BtnRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
 
-    /// <summary>日历按钮：打开热力图弹窗，选中日期后切换到当天笔记</summary>
+    /// <summary>日历按钮：打开热力图弹窗，选中区间后切换到区间笔记。单日选=start=end=选中日；区间选=start..end。</summary>
     private void BtnCalendar_Click(object sender, RoutedEventArgs e)
     {
         // 非模态 Show：点击日历弹窗以外的任何区域 → 窗口失活 → Deactivated 自动收起
         var cal = new CalendarWindow(_noteService, _selectedDate) { Owner = this };
-        cal.DateSelected += d =>
+        cal.DateRangeSelected += (start, end) =>
         {
-            _selectedDate = d;
+            if (start == end)
+            {
+                // 单日选 → 回到 Date 模式
+                _selectedDate = start;
+                _loadMode = NoteLoadMode.Date;
+            }
+            else
+            {
+                // 区间选 → Range 模式
+                _rangeStart = start;
+                _rangeEnd = end;
+                _loadMode = NoteLoadMode.Range;
+            }
             ReloadNotes();
         };
         cal.Show();
+    }
+
+    /// <summary>查找按钮：弹出 SearchDialog 输入关键词，确认后进入 Search 模式替换列表。</summary>
+    private void BtnSearch_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SearchDialog { Owner = this };
+        if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Keyword)) return;
+        _searchKeyword = dlg.Keyword.Trim();
+        _loadMode = NoteLoadMode.Search;
+        ReloadNotes();
+    }
+
+    /// <summary>返回按钮：仅 Range/Search 模式显示。点击 → 回到 _selectedDate 单日模式。</summary>
+    private void BtnReturnToDate_Click(object sender, RoutedEventArgs e)
+    {
+        _loadMode = NoteLoadMode.Date;
+        ReloadNotes();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -237,7 +337,7 @@ public partial class QuickViewWindow : Window
                 return;
             }
 
-            _exportDialog = new ExportDialog(_settings) { Owner = this };
+            _exportDialog = new ExportDialog(_settings, _noteService) { Owner = this };
             _exportDialog.ShowDialog();
 
             if (!_exportDialog.Confirmed) return;

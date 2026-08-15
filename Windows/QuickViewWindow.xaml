@@ -73,6 +73,18 @@
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Right"
                                     VerticalAlignment="Center">
+                            <Button x:Name="BtnSearch"
+                                    Content="🔍"
+                                    FontSize="12"
+                                    Width="28" Height="24"
+                                    Background="Transparent"
+                                    Foreground="#CCCCCC"
+                                    BorderBrush="#555555"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    Margin="0,0,6,0"
+                                    ToolTip="全局查找（所有笔记）"
+                                    Click="BtnSearch_Click"/>
                             <Button x:Name="BtnRefresh"
                                     Content="⟳"
                                     FontSize="14"
@@ -119,47 +131,75 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- 选择工具栏：全选/反选常驻，已选计数和删除按选中状态显隐 -->
+                    <!-- 选择工具栏：左=选择控件 / 中=模式指示+返回 / 右=预留。返回按钮仅在 Range/Search 模式显示 -->
                     <Border Grid.Row="1" Background="#1F1F1F"
                             x:Name="SelectionBar"
                             Padding="14,6">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock x:Name="SelectedCountText"
-                                       Text=""
-                                       Foreground="#4CAF50"
-                                       FontSize="12" FontWeight="SemiBold"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,12,0"
-                                       Visibility="Collapsed"/>
-                            <Button x:Name="BtnSelectAll"
-                                    Content="全选"
-                                    FontSize="11" Width="48" Height="24"
-                                    Margin="0,0,4,0"
-                                    Background="Transparent"
-                                    Foreground="#888888"
-                                    BorderBrush="#555555" BorderThickness="1"
-                                    Cursor="Hand"
-                                    Click="BtnSelectAll_Click"/>
-                            <Button x:Name="BtnInvert"
-                                    Content="反选"
-                                    FontSize="11" Width="48" Height="24"
-                                    Margin="0,0,4,0"
-                                    Background="Transparent"
-                                    Foreground="#888888"
-                                    BorderBrush="#555555" BorderThickness="1"
-                                    Cursor="Hand"
-                                    Click="BtnInvert_Click"/>
-                            <Button x:Name="BtnDeleteSelected"
-                                    Content="删除已选"
-                                    FontSize="11" Width="80" Height="24"
-                                    Margin="0,0,4,0"
-                                    Background="Transparent"
-                                    Foreground="#E57373"
-                                    BorderBrush="#E57373" BorderThickness="1"
-                                    Cursor="Hand"
-                                    Visibility="Collapsed"
-                                    Click="BtnDeleteSelected_Click"/>
-                        </StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 左：选择控件（全选/反选/已选/删除已选） -->
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock x:Name="SelectedCountText"
+                                           Text=""
+                                           Foreground="#4CAF50"
+                                           FontSize="12" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,12,0"
+                                           Visibility="Collapsed"/>
+                                <Button x:Name="BtnSelectAll"
+                                        Content="全选"
+                                        FontSize="11" Width="48" Height="24"
+                                        Margin="0,0,4,0"
+                                        Background="Transparent"
+                                        Foreground="#888888"
+                                        BorderBrush="#555555" BorderThickness="1"
+                                        Cursor="Hand"
+                                        Click="BtnSelectAll_Click"/>
+                                <Button x:Name="BtnInvert"
+                                        Content="反选"
+                                        FontSize="11" Width="48" Height="24"
+                                        Margin="0,0,4,0"
+                                        Background="Transparent"
+                                        Foreground="#888888"
+                                        BorderBrush="#555555" BorderThickness="1"
+                                        Cursor="Hand"
+                                        Click="BtnInvert_Click"/>
+                                <Button x:Name="BtnDeleteSelected"
+                                        Content="删除已选"
+                                        FontSize="11" Width="80" Height="24"
+                                        Margin="0,0,4,0"
+                                        Background="Transparent"
+                                        Foreground="#E57373"
+                                        BorderBrush="#E57373" BorderThickness="1"
+                                        Cursor="Hand"
+                                        Visibility="Collapsed"
+                                        Click="BtnDeleteSelected_Click"/>
+                            </StackPanel>
+
+                            <!-- 中：模式指示 + 返回按钮（返回仅 Range/Search 模式可见） -->
+                            <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock x:Name="ModeIndicator"
+                                           Foreground="#888888" FontSize="11"
+                                           VerticalAlignment="Center"
+                                           Text=""/>
+                                <Button x:Name="BtnReturnToDate"
+                                        Content="↩ 返回"
+                                        FontSize="11" Width="60" Height="22"
+                                        Margin="12,0,0,0"
+                                        Background="Transparent"
+                                        Foreground="#4CAF50"
+                                        BorderBrush="#4CAF50" BorderThickness="1"
+                                        Cursor="Hand"
+                                        Visibility="Collapsed"
+                                        Click="BtnReturnToDate_Click"/>
+                            </StackPanel>
+                        </Grid>
                     </Border>
                 </Grid>
             </Border>
@@ -200,13 +240,25 @@
                                             </StackPanel.Style>
                                             <TextBlock Foreground="#888888" FontSize="11"
                                                        Text="{Binding Timestamp, StringFormat=HH:mm}"/>
-                                            <!-- 等高设计：内容区固定 40px，单行截断预览（NoWrap），双击编辑不撑高列表；DisplayPreview 含 AI 释义合并预览 -->
-                                            <TextBlock Foreground="#E0E0E0" FontSize="13"
+                                            <!-- 等高设计：内容区固定 40px，单行截断预览（NoWrap），双击编辑不撑高列表；DisplayPreview 含 AI 释义合并预览；
+                                             重复笔记（Content 完全相同 ≥2 次）字体显示红色，触发器由 ReloadNotes 聚合判定 -->
+                                            <TextBlock FontSize="13"
                                                        Text="{Binding DisplayPreview}"
                                                        TextWrapping="NoWrap"
                                                        TextTrimming="CharacterEllipsis"
                                                        Height="40"
-                                                       VerticalAlignment="Top"/>
+                                                       VerticalAlignment="Top">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="#E0E0E0"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsDuplicate}" Value="True">
+                                                                <Setter Property="Foreground" Value="#FF6B6B"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                             <TextBlock Foreground="#555555" FontSize="11"
                                                        Text="{Binding SourceWindow}"
                                                        TextTrimming="CharacterEllipsis"
