@@ -252,6 +252,46 @@ public class SyncEngine
         }
     }
 
+    /// <summary>
+    /// 只拉取（不推送）：把云端变更合并到本地。灵感速览面板的"↓ 下载"按钮专用入口。
+    /// 与 SyncNowAsync 流程一致但跳过 PushFlowAsync——避免用户点下载时把本地未确认内容顺手推上云端。
+    /// </summary>
+    public async Task<SyncResult> PullOnlyAsync(CancellationToken ct = default)
+    {
+        if (_dek == null) return SyncResult.NotConfigured;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await PushSaltIfNeededAsync(ct).ConfigureAwait(false);
+            if (await PullFlowAsync().ConfigureAwait(false))
+            {
+                // 云端盐已变更（他端升级/重置密钥）→ 用本地授权码 + 新盐自动刷新会话
+                if (!TryRefreshSessionFromCloudSalt())
+                    return SyncResult.Failed("云端密钥已重置，请重新配置授权码");
+            }
+            _settings.Sync.LastSyncResult = "成功（仅拉取）";
+            _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            _settings.Save();
+            StatusChanged?.Invoke("成功（仅拉取）");
+            return SyncResult.SuccessResult;
+        }
+        catch (SyncProviderException ex)
+        {
+            var msg = ex.IsAuth
+                ? "坚果云授权码无效，请在坚果云网页端『安全-第三方应用管理』重新生成"
+                : ex.Message;
+            return Fail(msg);
+        }
+        catch (Exception ex)
+        {
+            return Fail(ex.Message);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     // ── 拉取侧：对账合并（回声识别 / 软删落地 / 密钥重置盐比对） ──
 
     /// <summary>返回 true = 云端盐已变更（他端密钥重置），调用方必须中止 push 并提示重输主密码。</summary>

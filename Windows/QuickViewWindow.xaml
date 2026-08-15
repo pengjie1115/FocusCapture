@@ -69,6 +69,31 @@
                                     Cursor="Hand"
                                     VerticalAlignment="Center"
                                     Click="BtnCalendar_Click"/>
+                            <!-- 2026-08-15 灵感速览同步入口：上传=全量推（沿用 SyncNowAsync，机制不变）；下载=只 pull 不 push（见 SyncEngine.PullOnlyAsync） -->
+                            <Button x:Name="BtnSyncUpload"
+                                    Content="↑"
+                                    FontSize="14"
+                                    Width="28" Height="24"
+                                    Background="Transparent"
+                                    Foreground="#4CAF50"
+                                    BorderBrush="#4CAF50"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    Margin="6,0,0,0"
+                                    ToolTip="上传笔记到云端（沿用全量同步机制）"
+                                    Click="BtnSyncUpload_Click"/>
+                            <Button x:Name="BtnSyncDownload"
+                                    Content="↓"
+                                    FontSize="14"
+                                    Width="28" Height="24"
+                                    Background="Transparent"
+                                    Foreground="#4CAF50"
+                                    BorderBrush="#4CAF50"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    Margin="6,0,0,0"
+                                    ToolTip="从云端拉取笔记到本地（仅拉不推）"
+                                    Click="BtnSyncDownload_Click"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Right"
@@ -199,6 +224,16 @@
                                         Visibility="Collapsed"
                                         Click="BtnReturnToDate_Click"/>
                             </StackPanel>
+
+                            <!-- 右：同步状态文字（云同步入口反馈，空文本时靠右不占视觉空间） -->
+                            <TextBlock x:Name="SyncStatusText"
+                                       Grid.Column="2"
+                                       Text=""
+                                       Foreground="#888888"
+                                       FontSize="11"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Right"
+                                       TextTrimming="CharacterEllipsis"/>
                         </Grid>
                     </Border>
                 </Grid>

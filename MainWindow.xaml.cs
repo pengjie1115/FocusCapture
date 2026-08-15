@@ -60,7 +60,7 @@ public partial class MainWindow : Window
 
             _inputWindow = new InputWindow(_noteService, _settings);
             _inputWindow.NoteSaved += () => _floatBall?.FlashGreen();
-            _quickViewWindow = new QuickViewWindow(_noteService, _settings);
+            _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine);
             _voiceWindow = new VoiceInputWindow(_settings);
 
             // 剪贴板自动捕获

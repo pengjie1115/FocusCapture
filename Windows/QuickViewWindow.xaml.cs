@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Sync;
 
 namespace FocusCapture.Windows;
 
@@ -129,6 +130,7 @@ public partial class QuickViewWindow : Window
 {
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
+    private readonly Func<SyncEngine?>? _syncEngineProvider;   // 2026-08-15：注入引擎引用（引擎可能因配置变更重建，故传 provider）
     private ExportDialog? _exportDialog;
     private List<NoteEntryViewModel> _viewModels = new();
     private DateTime _selectedDate = DateTime.Today;
@@ -144,15 +146,17 @@ public partial class QuickViewWindow : Window
 
     private enum NoteLoadMode { Date, Range, Search }
 
-    public QuickViewWindow(NoteService noteService, AppSettings settings)
+    public QuickViewWindow(NoteService noteService, AppSettings settings, Func<SyncEngine?>? syncEngineProvider = null)
     {
         InitializeComponent();
         _noteService = noteService;
         _settings = settings;
+        _syncEngineProvider = syncEngineProvider;
         Opacity = settings.QuickViewOpacity;
         // AI 助手名称自定义：标题栏入口按钮文案同源读取（三处入口之一）
         BtnAiAsk.Content = string.IsNullOrWhiteSpace(settings.AiAssistantName) ? "AI 问答" : settings.AiAssistantName;
         BtnAiAsk.Width = Math.Max(72, BtnAiAsk.Content.ToString()!.Length * 14 + 24);
+        UpdateSyncButtonsState();   // 启动时根据引擎状态决定按钮是否可用
     }
 
     /// <summary>重新加载当前选中日期的笔记（打开时与刷新按钮共用）</summary>
@@ -233,6 +237,7 @@ public partial class QuickViewWindow : Window
     {
         try { Refresh(); }
         catch { /* 刷新失败不阻塞窗口激活 */ }
+        UpdateSyncButtonsState();   // 引擎可能因配置变更被重建（MainWindow.RebuildSyncEngine），每次激活时同步按钮可用性
     }
 
     /// <summary>标题栏刷新按钮：立即重新加载列表</summary>
@@ -402,6 +407,92 @@ public partial class QuickViewWindow : Window
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
             t.Tick += (_, _) => { b.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)); t.Stop(); };
             t.Start();
+        }
+    }
+
+    // ── 同步（2026-08-15 灵感速览同步入口：上传=全量推；下载=只 pull 不 push） ──
+
+    /// <summary>根据当前引擎/解锁状态刷新同步按钮可用性 + ToolTip（窗口激活时由 UpdateSyncButtonsState 触发）</summary>
+    private void UpdateSyncButtonsState()
+    {
+        var engine = _syncEngineProvider?.Invoke();
+        var enabled = engine != null && engine.IsMasterPasswordSet;
+        BtnSyncUpload.IsEnabled = enabled;
+        BtnSyncDownload.IsEnabled = enabled;
+        var tip = enabled
+            ? null
+            : "云同步未配置或未解锁，请到设置页连接";
+        BtnSyncUpload.ToolTip = enabled ? "上传笔记到云端（沿用全量同步机制）" : tip;
+        BtnSyncDownload.ToolTip = enabled ? "从云端拉取笔记到本地（仅拉不推）" : tip;
+    }
+
+    /// <summary>正在同步：禁用两个按钮，避免并发同步（SyncEngine 自身也有 SemaphoreSlim 闸）</summary>
+    private void SetSyncButtonsRunning(bool running)
+    {
+        BtnSyncUpload.IsEnabled = !running;
+        BtnSyncDownload.IsEnabled = !running;
+        BtnSyncUpload.Content = running ? "上传中…" : "↑";
+        BtnSyncDownload.Content = running ? "拉取中…" : "↓";
+    }
+
+    private void ShowSyncStatus(string text, bool error = false)
+    {
+        SyncStatusText.Text = text;
+        SyncStatusText.Foreground = new SolidColorBrush(Color.FromRgb(
+            error ? (byte)0xE5 : (byte)0x88,
+            error ? (byte)0x73 : (byte)0xCC,
+            error ? (byte)0x73 : (byte)0xCC));
+    }
+
+    /// <summary>标题栏 ↑ 按钮：触发一次全量推（与设置面板"立即同步"语义一致，机制不变）</summary>
+    private async void BtnSyncUpload_Click(object sender, RoutedEventArgs e)
+    {
+        var engine = _syncEngineProvider?.Invoke();
+        if (engine == null || !engine.IsMasterPasswordSet)
+        {
+            ShowSyncStatus("云同步未配置或未解锁，请到设置页连接", error: true);
+            return;
+        }
+        SetSyncButtonsRunning(true);
+        ShowSyncStatus("正在上传到云端（全量推）…");
+        try
+        {
+            var result = await engine.SyncNowAsync(auto: false);
+            ShowSyncStatus(result.Success ? "✓ 上传成功" : "✗ 上传失败：" + result.Error, error: !result.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowSyncStatus("✗ 上传失败：" + ex.Message, error: true);
+        }
+        finally
+        {
+            SetSyncButtonsRunning(false);
+        }
+    }
+
+    /// <summary>标题栏 ↓ 按钮：触发一次只 pull 不 push（避免把本机未确认内容顺手推上云端）</summary>
+    private async void BtnSyncDownload_Click(object sender, RoutedEventArgs e)
+    {
+        var engine = _syncEngineProvider?.Invoke();
+        if (engine == null || !engine.IsMasterPasswordSet)
+        {
+            ShowSyncStatus("云同步未配置或未解锁，请到设置页连接", error: true);
+            return;
+        }
+        SetSyncButtonsRunning(true);
+        ShowSyncStatus("正在从云端拉取…");
+        try
+        {
+            var result = await engine.PullOnlyAsync();
+            ShowSyncStatus(result.Success ? "✓ 拉取完成" : "✗ 拉取失败：" + result.Error, error: !result.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowSyncStatus("✗ 拉取失败：" + ex.Message, error: true);
+        }
+        finally
+        {
+            SetSyncButtonsRunning(false);
         }
     }
 
