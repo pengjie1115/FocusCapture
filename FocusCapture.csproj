@@ -11,6 +11,9 @@
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <!-- 无外网环境：禁用包漏洞审计（NuGetAudit 每次构建尝试连 nuget.org 报 NU1900，破坏验收 A 的 0 警告） -->
     <NuGetAudit>false</NuGetAudit>
+    <!-- reftable ref 存储后端（迁移，2026-08-15）：Microsoft.Build.Tasks.Git 不认 extensions.refStorage 扩展，
+         禁用 Source Control Manager 查询（仅影响 SourceLink 仓库信息生成，不影响构建产物） -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
   </PropertyGroup>
 
   <!-- Release 构建：禁用 IL 裁剪（WPF/WinForms COM 互操作类型无法被静态分析，裁剪必崩） -->
