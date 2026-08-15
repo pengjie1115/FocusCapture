@@ -70,12 +70,12 @@
                 </StackPanel>
             </Border>
 
-            <!-- 列表（SelectionMode=None：弃用 ListBox 选中机制，全部由 CheckBox.IsSelected 驱动，避免双轨混乱） -->
+            <!-- 列表（弃用 ListBox.SelectedItem，选中由 ItemTemplate 内的 CheckBox.IsSelected 单一驱动；
+                 SelectionMode 保持默认 Single 即可——ListBox.SelectionMode 没有 None 值，写 None 会被 TypeConverter 报错） -->
             <ListBox x:Name="RecycleList" Grid.Row="2"
                      Background="Transparent" BorderThickness="0"
                      Margin="10,8"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                     SelectionMode="None">
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <ListBox.ItemContainerStyle>
                     <Style TargetType="ListBoxItem">
                         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
