@@ -7,6 +7,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- QUEST-5 同步验收测试归档（2026-08-27）：docs/fc-sync-test-archive/ 含 Program.cs，
+         必须从默认编译项排除，否则 WPF **/*.cs glob 会吞掉它导致 CS0579 重复定义 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);docs\fc-sync-test-archive\**</DefaultItemExcludes>
     <!-- QUEST-4：exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <!-- 无外网环境：禁用包漏洞审计（NuGetAudit 每次构建尝试连 nuget.org 报 NU1900，破坏验收 A 的 0 警告） -->
