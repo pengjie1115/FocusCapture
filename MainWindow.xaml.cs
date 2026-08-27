@@ -11,6 +11,7 @@ public partial class MainWindow : Window
     private readonly Models.AppSettings _settings;
     private HotkeyService? _hotkeyService;
     private NoteService? _noteService;
+    private IChatProvider? _aiProvider;              // v3.5：共享 AI provider（面板编辑时间识别 LLM 兜底 + AI 对话框同源配置），设置变更后重建
     private SyncEngine? _syncEngine;            // QUEST-5：云端同步引擎（可插拔 Provider，配置完整才创建）
     private FloatBall? _floatBall;
     private InputWindow? _inputWindow;
@@ -60,7 +61,9 @@ public partial class MainWindow : Window
 
             _inputWindow = new InputWindow(_noteService, _settings);
             _inputWindow.NoteSaved += () => _floatBall?.FlashGreen();
-            _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine);
+            // v3.5：共享 AI provider（与 AI 对话框同源配置；面板编辑待办时间识别 LLM 兜底用，设置变更后由 OpenSettings 回调重建）
+            _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+            _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine, _aiProvider);
             _voiceWindow = new VoiceInputWindow(_settings);
 
             // 剪贴板自动捕获
@@ -177,6 +180,9 @@ public partial class MainWindow : Window
             var sw = new SettingsWindow(_settings, _hotkeyService, () =>
             {
                 _hotkeyService?.RegisterAll();
+                // v3.5：AI 配置可能变更 → 重建共享 provider 并同步给面板（编辑待办时间识别 LLM 兜底用当前配置）
+                _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+                _quickViewWindow?.UpdateAiProvider(_aiProvider);
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;

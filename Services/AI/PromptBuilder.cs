@@ -24,4 +24,15 @@ public static class PromptBuilder
         }
         return $"请把以下内容翻译成中文，并简要解释其含义：\n\n{trimmed}";
     }
+
+    /// <summary>v3.5 待办编辑时间识别 LLM 兜底提示词：要求只输出严格 JSON，无时间 has_time=false。</summary>
+    public static ChatMessage[] BuildTimeParseMessages(string text)
+    {
+        return new[]
+        {
+            new ChatMessage(ChatRoles.System,
+                "你是一个时间解析器。从用户文本中找出唯一的提醒时间表达，输出严格 JSON：{\"has_time\":true/false,\"time\":\"yyyy-MM-dd HH:mm\"}（无时间则 has_time=false）。只输出 JSON，不要解释。"),
+            new ChatMessage(ChatRoles.User, text)
+        };
+    }
 }
