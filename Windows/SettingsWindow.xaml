@@ -41,6 +41,88 @@
         <Style TargetType="Slider">
             <Setter Property="Background" Value="Transparent"/>
         </Style>
+
+        <!-- v3.5：深色 ComboBox（下拉项高亮绿色） -->
+        <Style x:Key="DarkComboBox" TargetType="ComboBox">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#555555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="toggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="{TemplateBinding BorderThickness}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="4">
+                                            <Grid>
+                                                <ContentPresenter Margin="6,3" VerticalAlignment="Center"/>
+                                                <Path Data="M 0 0 L 4 4 L 8 0 Z" Fill="#E0E0E0"
+                                                      HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="content"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              Margin="8,4,22,4"
+                                              IsHitTestVisible="False"
+                                              VerticalAlignment="Center"/>
+                            <Popup x:Name="PART_Popup" Placement="Bottom"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Border Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1"
+                                        CornerRadius="4" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="220">
+                                    <ScrollViewer>
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter Property="Background" Value="#3A3A3A" TargetName="toggle"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                CornerRadius="2" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#4CAF50"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -307,6 +389,68 @@
                        Foreground="#CCCCCC" FontSize="12"
                        TextWrapping="Wrap"
                        Margin="0,8,0,0"/>
+
+            <!-- 分隔线 -->
+            <Rectangle Height="1" Fill="#3A3A3A" Margin="0,20,0,0"/>
+
+            <!-- 待办与提醒（v3.5 QUEST-6） -->
+            <TextBlock Text="待办与提醒" FontSize="16" FontWeight="Bold"
+                       Foreground="#4CAF50" Margin="0,16,0,12"/>
+
+            <DockPanel Margin="0,4">
+                <TextBlock Text="输入框默认类型" Width="130" VerticalAlignment="Center"/>
+                <ComboBox x:Name="DefaultTypeCombo" Width="120" HorizontalAlignment="Left"
+                          Style="{StaticResource DarkComboBox}"
+                          SelectionChanged="DefaultType_SelectionChanged">
+                    <ComboBoxItem Content="笔记"/>
+                    <ComboBoxItem Content="待办"/>
+                </ComboBox>
+            </DockPanel>
+
+            <DockPanel Margin="0,8">
+                <TextBlock Text="类型切换快捷键" Width="130" VerticalAlignment="Center"/>
+                <Button x:Name="BtnTodoSwitchHotkey" Width="200" HorizontalAlignment="Right"
+                        Click="BtnTodoSwitch_Click"/>
+            </DockPanel>
+            <TextBlock Text="在输入框内按快捷键在「笔记/待办」间切换（全局热键，可能与其他应用冲突）"
+                       Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+            <DockPanel Margin="0,10,0,0">
+                <TextBlock Text="每日汇总弹窗" Width="130" VerticalAlignment="Center"/>
+                <CheckBox x:Name="DailySummaryCheck"
+                          Content="启用（到点列出所有未办待办）"
+                          Foreground="#E0E0E0" VerticalAlignment="Center"
+                          Checked="DailySummary_Changed" Unchecked="DailySummary_Changed"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,8">
+                <TextBlock Text="汇总时间（HH:mm）" Width="130" VerticalAlignment="Center"/>
+                <TextBox x:Name="DailySummaryTimeInput" Width="100" HorizontalAlignment="Left"
+                         Background="#2D2D2D" Foreground="#E0E0E0"
+                         BorderBrush="#555555" Padding="6,4" MaxLength="5"
+                         VerticalAlignment="Center"
+                         TextChanged="DailySummaryTime_TextChanged"/>
+            </DockPanel>
+            <TextBlock Text="格式如 18:00（00:00~23:59）；非法输入即时回退原值"
+                       Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+            <DockPanel Margin="0,8">
+                <TextBlock Text="稍后提醒间隔（分钟）" Width="130" VerticalAlignment="Center"/>
+                <TextBox x:Name="SnoozeMinutesInput" Width="100" HorizontalAlignment="Left"
+                         Background="#2D2D2D" Foreground="#E0E0E0"
+                         BorderBrush="#555555" Padding="6,4"
+                         VerticalAlignment="Center"
+                         TextChanged="SnoozeMinutes_TextChanged"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,8">
+                <TextBlock Text="弹窗收起秒数" Width="130" VerticalAlignment="Center"/>
+                <TextBox x:Name="PopupCloseSecondsInput" Width="100" HorizontalAlignment="Left"
+                         Background="#2D2D2D" Foreground="#E0E0E0"
+                         BorderBrush="#555555" Padding="6,4"
+                         VerticalAlignment="Center"
+                         TextChanged="PopupCloseSeconds_TextChanged"/>
+            </DockPanel>
 
             <!-- 关闭 -->
             <Button Content="关闭"

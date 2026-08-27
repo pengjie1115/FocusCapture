@@ -122,6 +122,7 @@ public partial class MainWindow : Window
             case HotkeyService.ID_CLIPBOARD_TOGGLE: ToggleClipboardCapture(); break;
             case HotkeyService.ID_QUICK_VIEW: ShowQuickView(); break;
             case HotkeyService.ID_VOICE_INPUT: ShowVoiceInput(); break;
+            case HotkeyService.ID_TODO_SWITCH: _inputWindow?.ToggleType(); break;   // v3.5：全局切换笔记/待办类型
         }
     });
 

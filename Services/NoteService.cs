@@ -38,7 +38,8 @@ public class NoteService
     /// <summary>软删除服务（暴露给 UI 层调用 MarkDeleted）</summary>
     public DeletedNoteService DeletedService => _deletedService;
 
-    public NoteEntry? SaveNote(string content, string? sourceWindow = null)
+    /// <summary>保存笔记/待办。type=Todo 时自动做本地规则时间识别（命中且是未来时间 → 设 DueTime；已过/未命中 → 纯待办）。</summary>
+    public NoteEntry? SaveNote(string content, string? sourceWindow = null, NoteType type = NoteType.Note)
     {
         if (string.IsNullOrWhiteSpace(content)) return null;
 
@@ -60,6 +61,14 @@ public class NoteService
             entry.Content = content[tagMatch.Length..].Trim();
         }
 
+        // v3.5：待办类型 + 规则解析（命中且是未来时间 → 设 DueTime；已过 / 未命中 → 不设）
+        entry.Type = type;
+        if (type == NoteType.Todo)
+        {
+            if (TimeParser.TryParse(entry.Content, out var due) && due > DateTime.Now)
+                entry.DueTime = due;
+        }
+
         // 确定文件名
         string fileName;
         if (!string.IsNullOrEmpty(entry.Tag))
@@ -77,11 +86,11 @@ public class NoteService
         catch (Exception ex)
         {
             Debug.WriteLine($"[FocusCapture] 写入笔记失败: {ex.Message}");
-            // 降级：不带标签写入默认文件
+            // 降级：不带标签写入默认文件（保持类型）
             if (!string.IsNullOrEmpty(entry.Tag))
             {
                 entry.Tag = null;
-                return SaveNote(content, sourceWindow);
+                return SaveNote(content, sourceWindow, type);
             }
             return null;
         }
@@ -408,6 +417,39 @@ public class NoteService
                         SourceWindow = marker == "AI" ? "AI 回填" : "手动编辑",
                         Tag = null
                     });
+                    continue;
+                }
+
+                // 普通行（v3.5 待办解析：必须放在 ParseMarkerLine 判定之后，否则待办正文以【编辑】/【AI 释义】开头会被误判成标记行）
+                if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
+                {
+                    var entry = new NoteEntry
+                    {
+                        Timestamp = ts,
+                        Type = NoteType.Todo,
+                        Content = rawContent,
+                        SourceWindow = source,
+                        Tag = tag
+                    };
+                    // 剥离 (提醒: …[, 状态: …]) 与独立 (状态: …) 属性（兼容组合/独立两种括号写法）
+                    var body = rawContent["【待办】".Length..].Trim();
+                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                    if (attrMatch.Success)
+                    {
+                        if (DateTime.TryParse(attrMatch.Groups[1].Value, out var due))
+                            entry.DueTime = due;
+                        if (attrMatch.Groups[2].Success)
+                            entry.TodoStatus = attrMatch.Groups[2].Value == "已办" ? TodoStatus.Done : TodoStatus.Read;
+                        body = body.Remove(attrMatch.Index, attrMatch.Length).Trim();
+                    }
+                    var stMatch = Regex.Match(body, @"\(状态: (已办|已读)\)");
+                    if (stMatch.Success)
+                    {
+                        entry.TodoStatus = stMatch.Groups[1].Value == "已办" ? TodoStatus.Done : TodoStatus.Read;
+                        body = body.Remove(stMatch.Index, stMatch.Length).Trim();
+                    }
+                    entry.Content = body;
+                    entries.Add(entry);
                     continue;
                 }
 

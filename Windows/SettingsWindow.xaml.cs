@@ -51,7 +51,19 @@ public partial class SettingsWindow : Window
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
         UpdateIconUI();
         LoadSyncSettings();
+        LoadTodoSettings();
         _suppressEvents = false;
+    }
+
+    /// <summary>v3.5 待办与提醒设置回填</summary>
+    private void LoadTodoSettings()
+    {
+        DefaultTypeCombo.SelectedIndex = _settings.InputDefaultType == "Todo" ? 1 : 0;
+        BtnTodoSwitchHotkey.Content = Win32.HotkeyToString(_settings.TodoSwitchHotkey);
+        DailySummaryCheck.IsChecked = _settings.DailySummaryEnabled;
+        DailySummaryTimeInput.Text = _settings.DailySummaryTime;
+        SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
+        PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
     }
 
     /// <summary>云同步设置回填（方案A 2026-08-15：授权码自动解锁，无主密码/恢复码）</summary>
@@ -122,6 +134,71 @@ public partial class SettingsWindow : Window
         _settings.QuickViewHotkey = new() { Modifiers = 3, Key = 0x56 };
         _settings.VoiceInputHotkey = new() { Modifiers = 3, Key = 0x52 };
         _settings.Save(); LoadSettings(); _onChanged?.Invoke();
+    }
+
+    // ── v3.5 待办与提醒（改即保存 + 即时校验） ──
+
+    private void DefaultType_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.InputDefaultType = DefaultTypeCombo.SelectedIndex == 1 ? "Todo" : "Note";
+        _settings.Save();
+    }
+
+    private void BtnTodoSwitch_Click(object sender, RoutedEventArgs e) => StartCapture(BtnTodoSwitchHotkey, hk =>
+    { _settings.TodoSwitchHotkey = hk; BtnTodoSwitchHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnTodoSwitchHotkey, hk); });
+
+    private void DailySummary_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.DailySummaryEnabled = DailySummaryCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    /// <summary>汇总时间校验：HH:mm 且 00:00~23:59；非法即时回退原值</summary>
+    private void DailySummaryTime_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var v = DailySummaryTimeInput.Text.Trim();
+        if (IsValidDailyTime(v)) { _settings.DailySummaryTime = v; _settings.Save(); }
+        else if (!string.IsNullOrEmpty(v))
+        {
+            DailySummaryTimeInput.Text = _settings.DailySummaryTime;
+            DailySummaryTimeInput.CaretIndex = DailySummaryTimeInput.Text.Length;
+        }
+    }
+
+    private static bool IsValidDailyTime(string v)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(v, @"^\d{1,2}:\d{2}$")) return false;
+        var parts = v.Split(':');
+        return int.TryParse(parts[0], out var h) && int.TryParse(parts[1], out var m)
+            && h >= 0 && h <= 23 && m >= 0 && m <= 59;
+    }
+
+    /// <summary>正整数校验：非法即时回退原值</summary>
+    private void SnoozeMinutes_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var v = SnoozeMinutesInput.Text.Trim();
+        if (int.TryParse(v, out var n) && n > 0) { _settings.SnoozeMinutes = n; _settings.Save(); }
+        else if (!string.IsNullOrEmpty(v))
+        {
+            SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
+            SnoozeMinutesInput.CaretIndex = SnoozeMinutesInput.Text.Length;
+        }
+    }
+
+    private void PopupCloseSeconds_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var v = PopupCloseSecondsInput.Text.Trim();
+        if (int.TryParse(v, out var n) && n > 0) { _settings.PopupAutoCloseSeconds = n; _settings.Save(); }
+        else if (!string.IsNullOrEmpty(v))
+        {
+            PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
+            PopupCloseSecondsInput.CaretIndex = PopupCloseSecondsInput.Text.Length;
+        }
     }
 
     private void InputOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)

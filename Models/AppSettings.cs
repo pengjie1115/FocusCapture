@@ -68,6 +68,14 @@ public class AppSettings
     // ── 云同步（QUEST-5）──
     public SyncSettings Sync { get; set; } = new();
 
+    // ── v3.5 待办与提醒 ──
+    public string InputDefaultType { get; set; } = "Note";                       // "Note" / "Todo"
+    public HotkeyBinding TodoSwitchHotkey { get; set; } = new() { Modifiers = 2, Key = 0x54 }; // Ctrl+T，全局热键（RegisterHotKey），可能与其他应用冲突，设置可改
+    public bool DailySummaryEnabled { get; set; } = true;
+    public string DailySummaryTime { get; set; } = "18:00";                       // "HH:mm"
+    public int SnoozeMinutes { get; set; } = 10;
+    public int PopupAutoCloseSeconds { get; set; } = 10;
+
     // ── 序列化 ──
     public static AppSettings Load()
     {
