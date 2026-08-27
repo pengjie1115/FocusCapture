@@ -37,6 +37,29 @@ public class NoteExportService
         sb.AppendLine();
         foreach (var note in notes)
         {
+            // 待办导出（v3.5 Phase 4）：- [ ] 内容 (提醒: …)（Open/Read）/ - [x] 内容 (提醒: …)（Done）。
+            // 只改行文本标记（内容区已把【待办】前缀剥离进 Type），无提醒不输出 (提醒:)。
+            if (note.Type == NoteType.Todo)
+            {
+                var box = note.TodoStatus == TodoStatus.Done ? "[x]" : "[ ]";
+                var body = config.IncludeContent ? note.Content.Trim() : "";
+                var todoLine = $"- {box} {body}".TrimEnd();
+                if (note.DueTime.HasValue)
+                    todoLine += $" (提醒: {note.DueTime:yyyy-MM-dd HH:mm})";
+
+                var todoMeta = new List<string>();
+                if (config.IncludeTag && !string.IsNullOrWhiteSpace(note.Tag))
+                    todoMeta.Add($"#{note.Tag}");
+                if (config.IncludeSource && !string.IsNullOrWhiteSpace(note.SourceWindow))
+                    todoMeta.Add($"来源: {note.SourceWindow}");
+                if (todoMeta.Count > 0)
+                    todoLine += " — " + string.Join(" ", todoMeta);
+
+                sb.AppendLine(todoLine);
+                continue;
+            }
+
+            // 普通笔记（现状不变，可回读；内容不含待办标记）
             var parts = new List<string>();
             if (config.IncludeTime) parts.Add($"[{note.Timestamp:HH:mm}]");
             if (config.IncludeContent) parts.Add(note.Content);
