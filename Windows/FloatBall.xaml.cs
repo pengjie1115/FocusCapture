@@ -26,6 +26,7 @@ public partial class FloatBall : Window
     public event Action? SettingsRequested;
     public event Action? AiAskRequested;
     public event Action? ExitRequested;
+    public event Action? BadgeClicked;   // v3.5：点击角标 → 打开待办汇总窗
 
     /// <summary>AI 助手显示名称（MainWindow 从 AppSettings 注入，三处入口同源）</summary>
     public string AiAssistantName { get; set; } = "AI 问答";
@@ -46,6 +47,35 @@ public partial class FloatBall : Window
             ? new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32))
             : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
         Ball.Fill = _normalBrush;
+    }
+
+    // ── v3.5：未办待办角标 ──
+
+    /// <summary>
+    /// 设置角标：count = 未办待办总数（Open+Read，不是纯 Open）；count &lt;=0 → 隐藏；
+    /// hasRead（存在已读暂缓）→ 红底(#E24B4A)否则绿底(#4CAF50)。
+    /// </summary>
+    public void SetBadge(int count, bool hasRead)
+    {
+        if (count <= 0 || !IsLoaded)
+        {
+            Badge.Visibility = Visibility.Collapsed;
+            return;
+        }
+        BadgeText.Text = count.ToString();
+        Badge.Background = new SolidColorBrush(
+            Color.FromRgb(hasRead ? (byte)0xE2 : (byte)0x4C, hasRead ? (byte)0x4B : (byte)0xAF, hasRead ? (byte)0x4A : (byte)0x50));
+        Badge.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// 角标点击：e.Handled = true 吞掉事件，防止冒泡触发悬浮球拖拽/点击唤出逻辑；
+    /// 触发 BadgeClicked（MainWindow 订阅 → 打开待办汇总窗）。
+    /// </summary>
+    private void Badge_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        BadgeClicked?.Invoke();
     }
     public void ApplyPosition(double l, double t)
     {

@@ -19,6 +19,10 @@ public partial class MainWindow : Window
     private VoiceInputWindow? _voiceWindow;
     private System.Windows.Forms.NotifyIcon? _notifyIcon;
     private ClipboardHookService? _clipboardHook;
+    private ReminderService? _reminderService;                    // v3.5 Phase3：提醒定时器/弹窗调度/角标
+    private ReminderPopupWindow? _reminderPopup;                  // v3.5 Phase3：单条/多条到点弹窗
+    private DailySummaryWindow? _dailySummary;                    // v3.5 Phase3：每日汇总弹窗
+    private TodoSummaryWindow? _todoSummary;                      // v3.5 Phase3：分组待办汇总窗（角色标点击打开）
     private IntPtr _hwnd; // 保存窗口句柄供剪贴板监听和热键切换使用
     private bool _settingsOpen;
 
@@ -65,6 +69,34 @@ public partial class MainWindow : Window
             _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
             _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine, _aiProvider);
             _voiceWindow = new VoiceInputWindow(_settings);
+
+            // v3.5（Phase 3）：待办提醒服务装配 ——
+            // 到点 → ReminderPopupWindow；每日汇总 → DailySummaryWindow；角标 → _floatBall.SetBadge；
+            // 角标点击 → TodoSummaryWindow。启动后立即 Refresh() 一次（角标初始化，验收 9）；
+            // NotesChanged → Refresh 保持角标/下次检查同步。
+            _reminderPopup = new ReminderPopupWindow(_noteService, _settings);
+            _dailySummary = new DailySummaryWindow(_noteService, _settings);
+            _todoSummary = new TodoSummaryWindow(_noteService, _settings);
+            _reminderService = new ReminderService(_noteService, _settings,
+                showDuePopups: items =>
+                {
+                    var (lx, ty) = GetBallAnchor();
+                    _reminderPopup.ShowPopups(items, lx, ty);
+                },
+                showDailySummary: () =>
+                {
+                    var (lx, ty) = GetBallAnchor();
+                    _dailySummary.ShowSummary(_noteService.LoadAllEntries(), lx, ty);
+                },
+                updateBadge: (count, hasRead) => Dispatcher.Invoke(() => _floatBall?.SetBadge(count, hasRead)));
+            if (_floatBall != null)
+                _floatBall.BadgeClicked += () => Dispatcher.Invoke(() =>
+                {
+                    _todoSummary?.RefreshAll(_noteService!.LoadAllEntries());
+                    _todoSummary?.Show();
+                });
+            _noteService.NotesChanged += () => _reminderService?.Refresh();
+            _reminderService.Start();
 
             // 剪贴板自动捕获
             _clipboardHook = new ClipboardHookService(_noteService, () =>
@@ -149,6 +181,15 @@ public partial class MainWindow : Window
     private void ShowQuickView()
     {
         if (_quickViewWindow?.IsVisible == true) _quickViewWindow.Hide(); else _quickViewWindow?.Show();
+    }
+
+    /// <summary>v3.5（Phase 3）：悬浮球的中心坐标，供提醒/汇总弹窗定位在球上方。</summary>
+    private (double left, double top) GetBallAnchor()
+    {
+        if (_floatBall != null && _floatBall.IsVisible)
+            return (_floatBall.Left + _floatBall.Width / 2, _floatBall.Top + _floatBall.Height / 2);
+        var wa = SystemParameters.WorkArea;
+        return (wa.Right - 80, wa.Bottom - 200); // 兜底：默认球位置
     }
 
     private void ShowVoiceInput()
@@ -296,6 +337,7 @@ public partial class MainWindow : Window
 
     private void ExitApp()
     {
+        _reminderService?.Stop();   // v3.5（Phase 3）：退出前停掉提醒定时器与弹窗调度
         _clipboardHook?.Dispose();
         _hotkeyService?.Dispose();
         if (_floatBall != null) { var (l, t) = _floatBall.GetPosition(); _settings.BallLeft = l; _settings.BallTop = t; _settings.Save(); }

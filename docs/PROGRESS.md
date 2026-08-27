@@ -105,7 +105,7 @@
 |---|---|---|---|
 | 1 底座 | ✅ 用户验收通过（2026-08-27） | 命令类 + 现象级全绿 | `quest 6 phase 1` |
 | 2 面板 | ✅ 用户验收通过（2026-08-27） | 命令类 + 现象级全绿 | `quest 6 phase 2` |
-| 3 提醒 | ⏳ 待开始 | — | — |
+| 3 提醒 | ✅ 用户验收通过（2026-08-27） | 命令类 + 现象级全绿 | `quest 6 phase 3` |
 | 4 兼容 | ⏳ 待开始 | — | — |
 
 ### 验收记录
@@ -119,3 +119,8 @@
 - 命令类验收（执行者自跑）：`dotnet build -c Debug` 0 error 0 warning；UpdateTodo 回写验证 10 项断言全过（待办解析 / 改内容+提醒返回 true 且回写 entry / 二次状态变更定位成功 / 待办行仅 1 行无【编辑】行 / 组合括号 `(状态: 已办)` / 重新加载 Done 保留）
 - 用户现象级验收：**通过**（2026-08-27 用户确认）
 - commit：`quest 6 phase 2: 面板待办徽标/已办/编辑识别/右键提醒/筛选`
+
+**Phase 3（2026-08-27）**
+- 命令类验收（执行者自跑）：`dotnet build -c Debug` 0 error 0 warning；静态反作弊检查全过——ReminderService 用 DispatcherTimer（无 Thread.Sleep）、所有 UpdateTodo 正文一律 `EditedContent ?? Content` 重建、防重复 key 用 DueTime（改 DueTime 后必重弹）、UpdateTodo 先定位后重建（NoteService 已有实现未动）
+- 用户现象级验收：**通过**（2026-08-27 用户确认，覆盖到点弹窗/同分钟合并/稍后重弹/已知悉角标变红/角标计数与点击/每日汇总/自动收起/启动角标初始化）
+- commit：`quest 6 phase 3: 提醒定时器/单条弹窗/每日汇总/分组汇总窗/悬浮球角标`
