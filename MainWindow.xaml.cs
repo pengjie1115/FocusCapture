@@ -78,6 +78,9 @@ public partial class MainWindow : Window
             _reminderService = new ReminderService(_noteService, _settings,
                 showDuePopups: items =>
                 {
+                    // v3.6：悬浮球处于收起态（靠边隐藏）时提醒触发 → 先自动展开，弹窗锚定展开后的主区域；
+                    // 未收起（用户在用）则保持现状逻辑不变
+                    if (_floatBall?.IsCollapsed == true) _floatBall.ExpandBall();
                     var (lx, ty) = GetBallAnchor();
                     _reminderPopup.ShowPopups(items, lx, ty);
                 },

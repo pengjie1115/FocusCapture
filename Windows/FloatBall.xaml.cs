@@ -271,8 +271,10 @@ public partial class FloatBall : Window
         AnimateTo(targetLeft, targetTop);
     }
 
-    private void CollapsedBar_MouseEnter(object sender, MouseEventArgs e)
+    /// <summary>v3.6：主动展开悬浮球（鼠标滑过收起条 / 提醒触发时调用）。收起态 → 还原 48x48 圆形球并归位。</summary>
+    public void ExpandBall()
     {
+        if (!_isCollapsed) return;
         _isCollapsed = false;
         CollapsedBar.Visibility = Visibility.Collapsed;
         BallGrid.Visibility = Visibility.Visible;
@@ -284,6 +286,8 @@ public partial class FloatBall : Window
         if (Top < s.Top + 5) Top = s.Top + 10;
         if (Top + Height > s.Bottom - 5) Top = s.Bottom - Height - 10;
     }
+
+    private void CollapsedBar_MouseEnter(object sender, MouseEventArgs e) => ExpandBall();
 
     private void Ball_MouseEnter(object sender, MouseEventArgs e)
     {

@@ -20,6 +20,11 @@ public class NoteEntryViewModel : INotifyPropertyChanged
     public NoteEntry Entry { get; }
     // v3（2026-08-28）：待办有 DueTime → 显示 DueTime（归类到提醒日期后，时间列展示提醒时刻而非创建时刻）
     public DateTime Timestamp => NoteService.TodoDisplayTime(Entry);
+    // v3.6（2026-08-28）：跨日期筛选（未到期档等）下非今天的条目带日期；今天只显示 HH:mm
+    public string DisplayTime =>
+        Timestamp.Date == DateTime.Today
+            ? Timestamp.ToString("HH:mm")
+            : Timestamp.ToString("MM-dd HH:mm");
     public string FirstLine => (Entry.EditedContent ?? Entry.Content).Split('\n')[0].Trim();
     public string SourceWindow => Entry.SourceWindow;
     public string? Tag => Entry.Tag;
@@ -160,9 +165,9 @@ public partial class QuickViewWindow : Window
 
     // ── v3.5 筛选（内存层过滤，切日期/刷新后保持生效；字段驱动，非前端一次性 filter） ──
     // v2（2026-08-28）：新增第 5 档 Future（未到期=明天及以后），与其余档互斥
+    // v3（2026-08-28）：来源筛选 string 单选 → HashSet 多选（空集=全部来源）
     private readonly HashSet<string> _typeFilter = new(StringComparer.Ordinal) { "All" }; // All / Note / Todo(未办) / Done(已办) / Future(未到期)，多选组合
-    private string _sourceFilter = "";                                                    // "" = 全部来源
-    private bool _suppressSourceFilterEvent;                                              // 刷新来源下拉时抑制 SelectionChanged 防递归 ReloadNotes
+    private readonly HashSet<string> _sourceFilter = new(StringComparer.Ordinal);         // 选中来源集合，空=全部来源
 
     // ── v3.5 编辑时间识别建议条 ──
     private NoteEntryViewModel? _suggestVm;                                                // 建议条关联的条目（保存后同步了 Content）
@@ -248,25 +253,55 @@ public partial class QuickViewWindow : Window
                 (showTodo && e.Type == NoteType.Todo && e.TodoStatus != TodoStatus.Done) ||
                 (showDone && e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done));
         }
-        if (!string.IsNullOrEmpty(_sourceFilter))
-            entries = entries.Where(e => e.SourceWindow == _sourceFilter);
+        if (_sourceFilter.Count > 0)
+            entries = entries.Where(e => !string.IsNullOrEmpty(e.SourceWindow) && _sourceFilter.Contains(e.SourceWindow));
         return entries;
     }
 
-    /// <summary>v3.5：来源下拉回填当前加载列表全部来源，保持 _sourceFilter 选中（抑制事件防递归 ReloadNotes）</summary>
+    /// <summary>v3.6：来源多选下拉——从当前加载列表聚合全部来源重建 Popup 列表，保留 _sourceFilter 选中；同步框内文本。</summary>
     private void UpdateSourceFilterOptions()
     {
-        _suppressSourceFilterEvent = true;
-        var sources = _viewModels.Select(v => v.SourceWindow).Where(s => !string.IsNullOrEmpty(s)).Distinct().OrderBy(s => s).ToList();
-        SourceFilter.ItemsSource = sources;
-        if (!string.IsNullOrEmpty(_sourceFilter) && sources.Contains(_sourceFilter))
-            SourceFilter.SelectedItem = _sourceFilter;
-        else
+        var sources = _viewModels.Select(v => v.SourceWindow).Where(s => !string.IsNullOrEmpty(s))
+            .Distinct().OrderBy(s => s).ToList();
+
+        // 剔除已失效的选中来源（当前列表不再出现）
+        _sourceFilter.RemoveWhere(s => !sources.Contains(s));
+
+        SourceFilterList.Children.Clear();
+        foreach (var src in sources)
         {
-            SourceFilter.SelectedItem = null;
-            _sourceFilter = "";
+            var selected = _sourceFilter.Contains(src);
+            var btn = new Button
+            {
+                Content = (selected ? "✓ " : "") + src,
+                Tag = src,
+                Height = 26,
+                Margin = new Thickness(0, 1, 0, 1),
+                Padding = new Thickness(8, 0, 8, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Foreground = selected ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)) : new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                FontSize = 12,
+                Cursor = Cursors.Hand
+            };
+            btn.Click += (_, _) => ToggleSource(src);
+            SourceFilterList.Children.Add(btn);
         }
-        _suppressSourceFilterEvent = false;
+
+        // 框内文本：未选=空白，已选=「已选 N 个来源」
+        SourceFilterText.Text = _sourceFilter.Count == 0 ? "" : $"已选 {_sourceFilter.Count} 个来源";
+        SourceFilterText.Foreground = _sourceFilter.Count == 0
+            ? new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88))
+            : new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+    }
+
+    /// <summary>v3.6：来源选项点击 → 切换选中（多选/再点取消）→ 重建列表样式 + 重新筛选。</summary>
+    private void ToggleSource(string source)
+    {
+        if (!_sourceFilter.Add(source)) _sourceFilter.Remove(source);
+        UpdateSourceFilterOptions();
+        ReloadNotes();
     }
 
     /// <summary>
@@ -756,11 +791,48 @@ public partial class QuickViewWindow : Window
         ReloadNotes();
     }
 
-    private void SourceFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    // ── v3.6：来源多选 popup 外部点击关闭（Popup 默认 StaysOpen=True 后手动维护可见性） ──
+    /// <summary>v3.6：来源筛选框点击 → 开/合下拉。开 popup 时注册窗口级外击监听；关时清理。</summary>
+    private void SourceFilterBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_suppressSourceFilterEvent) return;
-        _sourceFilter = (SourceFilter.SelectedItem as string) ?? "";
-        ReloadNotes();
+        if (SourceFilterPopup.IsOpen)
+            CloseSourcePopup();
+        else
+        {
+            UpdateSourceFilterOptions();
+            SourceFilterPopup.IsOpen = true;
+            Mouse.AddMouseDownHandler(this, OnWindowMouseDown_OutsideSourcePopup);
+        }
+    }
+
+    private void CloseSourcePopup()
+    {
+        SourceFilterPopup.IsOpen = false;
+        Mouse.RemoveMouseDownHandler(this, OnWindowMouseDown_OutsideSourcePopup);
+    }
+
+    /// <summary>点 popup 外（不在按钮也不在 popup 子树内）→ 关 popup。OriginalSource 判断所属控件路径。</summary>
+    private void OnWindowMouseDown_OutsideSourcePopup(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject src)
+        {
+            if (IsDescendantOf(src, SourceFilterBtn) || IsDescendantOf(src, SourceFilterPopup.Child))
+                return;
+        }
+        CloseSourcePopup();
+    }
+
+    /// <summary>沿 VisualTree 向上查找 ancestor 中是否包含 target。</summary>
+    private static bool IsDescendantOf(DependencyObject node, DependencyObject? ancestor)
+    {
+        if (ancestor == null) return false;
+        var cur = node;
+        while (cur != null)
+        {
+            if (cur == ancestor) return true;
+            cur = System.Windows.Media.VisualTreeHelper.GetParent(cur);
+        }
+        return false;
     }
 
     // ── v3.5 编辑时间识别建议条 ──

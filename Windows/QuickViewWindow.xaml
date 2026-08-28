@@ -378,9 +378,28 @@
                             <TextBlock Text="来源"
                                        Foreground="#666666" FontSize="11"
                                        VerticalAlignment="Center" Margin="10,0,4,0"/>
-                            <ComboBox x:Name="SourceFilter" Width="110"
-                                      Style="{StaticResource DarkComboBox}"
-                                      SelectionChanged="SourceFilter_SelectionChanged"/>
+                            <!-- 来源多选下拉（v3.6）：Button 触发 Popup，垂直列表多选；框内未选=空白、已选=「已选 N 个来源」 -->
+                            <Button x:Name="SourceFilterBtn" Width="110" Height="24" Cursor="Hand"
+                                    Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1"
+                                    Click="SourceFilterBtn_Click"
+                                    ToolTip="按来源筛选（可多选，再点取消）">
+                                <TextBlock x:Name="SourceFilterText" Text=""
+                                           Foreground="#888888" FontSize="11"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </Button>
+                            <Popup x:Name="SourceFilterPopup"
+                                   PlacementTarget="{Binding ElementName=SourceFilterBtn}"
+                                   Placement="Bottom" StaysOpen="True"
+                                   AllowsTransparency="True" PopupAnimation="Fade"
+                                   VerticalOffset="2">
+                                <Border Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1"
+                                        CornerRadius="4" MinWidth="170" MaxHeight="240">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel x:Name="SourceFilterList" Margin="3"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
                         </StackPanel>
                     </Border>
                 </Grid>
@@ -423,7 +442,7 @@
                                             <!-- 时间行 + 待办徽标 + 已读小标（v3.5） -->
                                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                                 <TextBlock Foreground="#888888" FontSize="11"
-                                                           Text="{Binding Timestamp, StringFormat=HH:mm}"
+                                                           Text="{Binding DisplayTime}"
                                                            VerticalAlignment="Center"/>
                                                 <!-- 待办徽标：绿色小标签，可点击切换待办/已办（v3：已办=灰底「已办」字，可再点恢复）；点击需吞事件防冒泡复制 -->
                                                 <Border x:Name="TodoBadge" Tag="{Binding}"
@@ -538,7 +557,7 @@
                                                 <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
                                             <TextBlock Grid.Row="0" Foreground="#888888" FontSize="11"
-                                                       Text="{Binding Timestamp, StringFormat=HH:mm}"/>
+                                                       Text="{Binding DisplayTime}"/>
                                             <Grid Grid.Row="1">
                                                 <TextBox x:Name="EditBox"
                                                          Text="{Binding EditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
