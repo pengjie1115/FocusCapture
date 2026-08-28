@@ -113,12 +113,14 @@ public class ReminderService
         catch (Exception ex) { Debug.WriteLine($"[FocusCapture] 角标刷新失败: {ex.Message}"); }
     }
 
-    /// <summary>count=未办总数（Open+Read），hasRead=是否存在 Read。</summary>
+    /// <summary>count=「今天及以前」的未办总数（Open+Read；无 DueTime 的纯待办也算，随时要做；明天及以后的不计），hasRead=是否存在 Read。</summary>
     private void UpdateBadgeFrom(List<NoteEntry> entries)
     {
-        var todos = entries.Where(e => e.Type == NoteType.Todo).ToList();
-        var open = todos.Count(e => e.TodoStatus == TodoStatus.Open);
-        var read = todos.Count(e => e.TodoStatus == TodoStatus.Read);
+        var today = DateTime.Today;
+        var relevant = entries.Where(e => e.Type == NoteType.Todo
+            && (!e.DueTime.HasValue || e.DueTime.Value.Date <= today)).ToList();
+        var open = relevant.Count(e => e.TodoStatus == TodoStatus.Open);
+        var read = relevant.Count(e => e.TodoStatus == TodoStatus.Read);
         _updateBadge?.Invoke(open + read, read > 0);
     }
 

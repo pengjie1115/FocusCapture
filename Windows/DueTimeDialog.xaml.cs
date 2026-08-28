@@ -9,10 +9,15 @@ public partial class DueTimeDialog : Window
     /// <summary>确认后解析出的提醒时间；未确认/取消 → null</summary>
     public DateTime? DueTime { get; private set; }
 
-    public DueTimeDialog(DateTime? current)
+    public DueTimeDialog(DateTime? current, string? prompt = null)
     {
         InitializeComponent();
         // 预填：已有提醒时间则回显，否则默认明天 09:00（常见上班时间）
+        if (!string.IsNullOrEmpty(prompt))
+        {
+            Title = "设置提醒时间";
+            PromptText.Text = prompt;
+        }
         DueInput.Text = current?.ToString("yyyy-MM-dd HH:mm")
             ?? DateTime.Today.AddDays(1).AddHours(9).ToString("yyyy-MM-dd HH:mm");
         DueInput.Focus();

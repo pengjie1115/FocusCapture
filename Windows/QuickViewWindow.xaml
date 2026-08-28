@@ -372,6 +372,9 @@
                             <ToggleButton x:Name="FilterDone" Content="已办" Tag="Done"
                                           Style="{StaticResource FilterToggleStyle}"
                                           Click="TypeFilter_Click"/>
+                            <ToggleButton x:Name="FilterFuture" Content="未到期" Tag="Future"
+                                          Style="{StaticResource FilterToggleStyle}"
+                                          Click="TypeFilter_Click"/>
                             <TextBlock Text="来源"
                                        Foreground="#666666" FontSize="11"
                                        VerticalAlignment="Center" Margin="10,0,4,0"/>

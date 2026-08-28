@@ -28,24 +28,35 @@ public partial class TodoSummaryWindow : Window
         _settings = settings;
     }
 
-    /// <summary>载入并分组展示所有未办待办。items 为空时显示空态。</summary>
+    /// <summary>载入并分组展示所有未办待办。v2（2026-08-28）：只显示「今天及以前」的（无 DueTime 纯待办也算），
+    /// 明天及以后的不出现（去灵感速览「未到期」档看）。三分组：已提醒暂缓(Read)最上 → 待处理(无提醒或今天还没到点) → 已过期(时间已过)最后。</summary>
     public void RefreshAll(List<NoteEntry>? allItems)
     {
         var all = allItems ?? new List<NoteEntry>();
-        var pending = all.Where(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Open).ToList();
-        var read = all.Where(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Read).ToList();
+        var today = DateTime.Today;
+        var now = DateTime.Now;
+        var relevant = all.Where(e => e.Type == NoteType.Todo
+            && (!e.DueTime.HasValue || e.DueTime.Value.Date <= today)).ToList();
+        var read = relevant.Where(e => e.TodoStatus == TodoStatus.Read).ToList();
+        var openPending = relevant.Where(e => e.TodoStatus == TodoStatus.Open
+            && (!e.DueTime.HasValue || e.DueTime.Value > now)).ToList();
+        var openOverdue = relevant.Where(e => e.TodoStatus == TodoStatus.Open
+            && e.DueTime.HasValue && e.DueTime.Value <= now).ToList();
 
         PendingList.Children.Clear();
         ReadList.Children.Clear();
+        OverdueList.Children.Clear();
 
-        EmptyText.Visibility = (pending.Count == 0 && read.Count == 0)
+        EmptyText.Visibility = (read.Count == 0 && openPending.Count == 0 && openOverdue.Count == 0)
             ? Visibility.Visible : Visibility.Collapsed;
 
-        PendingHeaderText.Visibility = pending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         ReadHeaderText.Visibility = read.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        PendingHeaderText.Visibility = openPending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        OverdueHeaderText.Visibility = openOverdue.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
 
-        foreach (var e in pending) PendingList.Children.Add(BuildPendingRow(e));
         foreach (var e in read) ReadList.Children.Add(BuildReadRow(e));
+        foreach (var e in openPending) PendingList.Children.Add(BuildPendingRow(e));
+        foreach (var e in openOverdue) OverdueList.Children.Add(BuildPendingRow(e));
     }
 
     /// <summary>待处理行：按钮按类型补全（同每日汇总）。</summary>

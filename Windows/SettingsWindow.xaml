@@ -452,6 +452,16 @@
                          TextChanged="PopupCloseSeconds_TextChanged"/>
             </DockPanel>
 
+            <DockPanel Margin="0,10,0,0">
+                <TextBlock Text="纯日期询问时刻" Width="130" VerticalAlignment="Center"/>
+                <CheckBox x:Name="AskTimeCheck"
+                          Content="勾选=输入「30号」等纯日期时弹窗问几点；取消=直接默认当天 09:00"
+                          Foreground="#E0E0E0" VerticalAlignment="Center"
+                          Checked="AskTime_Changed" Unchecked="AskTime_Changed"/>
+            </DockPanel>
+            <TextBlock Text="只影响只有日期没有具体几点的表达（如「30号」「下周三」「本月30号」）"
+                       Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="132,2,0,0"/>
+
             <!-- 关闭 -->
             <Button Content="关闭"
                     Width="80"

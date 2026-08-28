@@ -22,7 +22,7 @@
     </Window.Resources>
 
     <StackPanel Margin="16">
-        <TextBlock Text="提醒时间（yyyy-MM-dd HH:mm）"
+        <TextBlock x:Name="PromptText" Text="提醒时间（yyyy-MM-dd HH:mm）"
                    Foreground="#CCCCCC" Margin="0,0,0,8"/>
         <TextBox x:Name="DueInput"
                  Background="#2D2D2D" Foreground="#E0E0E0"

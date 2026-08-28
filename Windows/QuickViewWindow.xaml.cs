@@ -158,7 +158,8 @@ public partial class QuickViewWindow : Window
     private enum NoteLoadMode { Date, Range, Search }
 
     // ── v3.5 筛选（内存层过滤，切日期/刷新后保持生效；字段驱动，非前端一次性 filter） ──
-    private readonly HashSet<string> _typeFilter = new(StringComparer.Ordinal) { "All" }; // All / Note / Todo(未办) / Done(已办)，多选组合
+    // v2（2026-08-28）：新增第 5 档 Future（未到期=明天及以后），与其余档互斥
+    private readonly HashSet<string> _typeFilter = new(StringComparer.Ordinal) { "All" }; // All / Note / Todo(未办) / Done(已办) / Future(未到期)，多选组合
     private string _sourceFilter = "";                                                    // "" = 全部来源
     private bool _suppressSourceFilterEvent;                                              // 刷新来源下拉时抑制 SelectionChanged 防递归 ReloadNotes
 
@@ -198,12 +199,15 @@ public partial class QuickViewWindow : Window
     private void ReloadNotes()
     {
         // 2026-08-15：按当前加载模式分派（Date / Range / Search）
-        var entries = _loadMode switch
-        {
-            NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
-            NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
-            _ => _noteService.LoadNotes(_selectedDate)
-        };
+        // v2（2026-08-28）：未到期档跨日期加载全部笔记（未来待办不在任何单日列表里），内存筛选
+        var entries = _typeFilter.Contains("Future")
+            ? _noteService.LoadAllEntries()
+            : _loadMode switch
+            {
+                NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
+                NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
+                _ => _noteService.LoadNotes(_selectedDate)
+            };
 
         // v3.5：筛选在内存层应用（ReloadNotes 后），切日期/刷新后保持生效——不是前端一次性 filter
         var filtered = ApplyFilters(entries);
@@ -221,10 +225,17 @@ public partial class QuickViewWindow : Window
         UpdateModeIndicator();
     }
 
-    /// <summary>v3.5：类型多选 + 来源 筛选（内存过滤；“全部”时不过滤）</summary>
+    /// <summary>v3.5：类型多选 + 来源 筛选（内存过滤；“全部”时不过滤）。
+    /// v2：未到期档（Future）= 明天及以后的未办待办，与类型档互斥优先。</summary>
     private IEnumerable<NoteEntry> ApplyFilters(IEnumerable<NoteEntry> entries)
     {
-        if (!_typeFilter.Contains("All"))
+        if (_typeFilter.Contains("Future"))
+        {
+            // 未到期：明天及以后的未办待办（今天还没到时间的归「待办」档）
+            entries = entries.Where(e => e.Type == NoteType.Todo && e.TodoStatus != TodoStatus.Done
+                && e.DueTime.HasValue && e.DueTime.Value.Date > DateTime.Today);
+        }
+        else if (!_typeFilter.Contains("All"))
         {
             var showNote = _typeFilter.Contains("Note");
             var showTodo = _typeFilter.Contains("Todo");   // 「待办」档=未办（Open+Read，不含已办）
@@ -277,18 +288,22 @@ public partial class QuickViewWindow : Window
 
     private void UpdateEmptyHint()
     {
-        EmptyHint.Text = _loadMode switch
-        {
-            NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
-            NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
-            _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
-        };
+        EmptyHint.Text = _typeFilter.Contains("Future")
+            ? "没有未到期的待办"
+            : _loadMode switch
+            {
+                NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
+                NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
+                _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
+            };
         EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdateModeIndicator()
     {
-        if (_loadMode == NoteLoadMode.Range)
+        if (_typeFilter.Contains("Future"))
+            ModeIndicator.Text = "筛选：未到期（明天及以后）";
+        else if (_loadMode == NoteLoadMode.Range)
             ModeIndicator.Text = $"区间：{_rangeStart:yyyy-MM-dd}  ~  {_rangeEnd:yyyy-MM-dd}";
         else if (_loadMode == NoteLoadMode.Search)
             ModeIndicator.Text = $"查找：\"{_searchKeyword}\"";
@@ -698,9 +713,24 @@ public partial class QuickViewWindow : Window
             FilterNote.IsChecked = false;
             FilterTodo.IsChecked = false;
             FilterDone.IsChecked = false;
+            FilterFuture.IsChecked = false;
+        }
+        // 点「未到期」：与其余档互斥，只留 Future
+        else if (tag == "Future")
+        {
+            _typeFilter.Clear();
+            if (btn.IsChecked == true) _typeFilter.Add("Future");
+            else _typeFilter.Add("All");
+            FilterAll.IsChecked = !_typeFilter.Contains("Future");
+            FilterNote.IsChecked = false;
+            FilterTodo.IsChecked = false;
+            FilterDone.IsChecked = false;
+            if (!_typeFilter.Contains("Future")) FilterFuture.IsChecked = false;
         }
         else
         {
+            // 点类型档：移除未到期档
+            if (_typeFilter.Remove("Future")) FilterFuture.IsChecked = false;
             _typeFilter.Remove("All");
             if (btn.IsChecked == true) _typeFilter.Add(tag);
             else _typeFilter.Remove(tag);
@@ -918,9 +948,10 @@ public partial class QuickViewWindow : Window
         Refresh();
 
         // v3.5：待办时间识别建议（规则优先；规则未命中才调 LLM 兜底；未配 Key/异常 → 优雅降级不弹建议条不崩）
+        // v2：ResolveDueAsync 统一处理——裸时钟已过弹三选一、纯日期弹"问几点"、未来时间直接返回
         if (vm.Entry.Type == NoteType.Todo)
         {
-            var due = await TodoEditService.DetectDueAsync(contentToSave, _aiProvider);
+            var due = await TodoEditService.ResolveDueAsync(this, contentToSave, _aiProvider);
             if (due.HasValue)
             {
                 _suggestVm = vm;

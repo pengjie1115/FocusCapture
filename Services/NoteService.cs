@@ -42,8 +42,11 @@ public class NoteService
     /// <summary>软删除服务（暴露给 UI 层调用 MarkDeleted）</summary>
     public DeletedNoteService DeletedService => _deletedService;
 
-    /// <summary>保存笔记/待办。type=Todo 时自动做本地规则时间识别（命中且是未来时间 → 设 DueTime；已过/未命中 → 纯待办）。</summary>
-    public NoteEntry? SaveNote(string content, string? sourceWindow = null, NoteType type = NoteType.Note)
+    /// <summary>
+    /// 保存笔记/待办。type=Todo 时自动做本地规则时间识别（命中且是未来时间 → 设 DueTime；已过/未命中 → 纯待办）。
+    /// dueTime 非空（如输入框已弹窗确认过）→ 直接用显式值，跳过自动识别。
+    /// </summary>
+    public NoteEntry? SaveNote(string content, string? sourceWindow = null, NoteType type = NoteType.Note, DateTime? dueTime = null)
     {
         if (string.IsNullOrWhiteSpace(content)) return null;
 
@@ -66,10 +69,13 @@ public class NoteService
         }
 
         // v3.5：待办类型 + 规则解析（命中且是未来时间 → 设 DueTime；已过 / 未命中 → 不设）
+        // v2：dueTime 显式传入（输入框已弹窗确认过）→ 优先用显式值
         entry.Type = type;
         if (type == NoteType.Todo)
         {
-            if (TimeParser.TryParse(entry.Content, out var due) && due > DateTime.Now)
+            if (dueTime.HasValue)
+                entry.DueTime = dueTime.Value;
+            else if (TimeParser.TryParse(entry.Content, out var due))
                 entry.DueTime = due;
         }
 

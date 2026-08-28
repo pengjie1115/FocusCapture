@@ -64,6 +64,7 @@ public partial class SettingsWindow : Window
         DailySummaryTimeInput.Text = _settings.DailySummaryTime;
         SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
         PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
+        AskTimeCheck.IsChecked = _settings.AskTimeForDateOnly;
     }
 
     /// <summary>云同步设置回填（方案A 2026-08-15：授权码自动解锁，无主密码/恢复码）</summary>
@@ -152,6 +153,14 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _settings.DailySummaryEnabled = DailySummaryCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    /// <summary>纯日期是否弹窗问几点（取消=默认当天 09:00）</summary>
+    private void AskTime_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AskTimeForDateOnly = AskTimeCheck.IsChecked == true;
         _settings.Save();
     }
 

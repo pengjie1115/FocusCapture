@@ -100,14 +100,27 @@ public partial class InputWindow : Window
         else if (e.Key == Key.Escape) { e.Handled = true; Hide(); }
     }
 
-    private void Save()
+    /// <summary>
+    /// v2：待办保存前做时间识别——命中且未来 → 直接保存；纯日期（30号/下周三）→ 弹窗问几点；
+    /// 裸时钟已过（下午输"8点"）→ 弹三选一确认；规则未命中 → 不弹（创建路径暂不接 LLM，本地规则已覆盖常用表达）。
+    /// 识别结果通过 dueTime 显式传给 SaveNote，避免二次解析。
+    /// </summary>
+    private async void Save()
     {
         var text = InputBox.Text.Trim();
         if (string.IsNullOrEmpty(text)) { Hide(); return; }
         _isSaving = true;
         try
         {
-            _noteService.SaveNote(text, type: _currentType == "Todo" ? NoteType.Todo : NoteType.Note);
+            if (_currentType == "Todo")
+            {
+                var due = await TodoEditService.ResolveDueAsync(this, text, null);
+                _noteService.SaveNote(text, type: NoteType.Todo, dueTime: due);
+            }
+            else
+            {
+                _noteService.SaveNote(text);
+            }
         }
         finally { _isSaving = false; }
         InputBox.Text = ""; NoteSaved?.Invoke(); Hide();

@@ -1,17 +1,23 @@
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Windows;
 using FocusCapture.Models;
 using FocusCapture.Services.AI;
+using FocusCapture.Windows;
 
 namespace FocusCapture.Services;
 
 /// <summary>
-/// 编辑待办公共服务（v3.5）：两条保存路径（行内 SaveEditNote / 全屏 NoteEditWindow.Save）共用，
+/// 编辑待办公共服务（v3.5 → v2 时间识别）：两条保存路径（行内 SaveEditNote / 全屏 NoteEditWindow.Save）共用，
 /// 防逻辑漂移。
 /// - SaveEdited：待办内容变化 → UpdateTodo 原地改行（红线 2 例外，禁止追加【编辑】行）；
 ///               普通笔记走原 AppendEdit（现状不变）。
-/// - DetectDueAsync：时间识别，本地规则（TimeParser）优先，规则未命中才调 LLM 兜底；
-///               未配 Key / 调用异常 → 优雅降级返回 null（不弹建议、不崩溃）。
+/// - ResolveDueAsync：时间识别统一入口。本地规则（TimeParser）优先，按结果分派：
+///   ① 命中且未来 → 直接返回
+///   ② 纯日期（无时刻，如"30号"）→ 弹"设置提醒"窗问几点（预填识别日期 09:00）
+///   ③ 裸时钟已过（如下午输"8点"）→ 弹三选一确认（今晚/明早/取消）
+///   ④ 带时段/日期的已过 → 不弹不设（现状）
+///   ⑤ 规则未命中 → LLM 兜底（空 Key 短路不发请求；JSON 解析宽容剥代码块）
 /// </summary>
 public static class TodoEditService
 {
@@ -26,23 +32,62 @@ public static class TodoEditService
     }
 
     /// <summary>
-    /// 时间识别：TimeParser 本地规则优先，规则未命中才调 LLM 兜底（返回唯一提醒时间，无则 null）。
-    /// 异常（未配 Key / 网络失败）一律捕获降级返回 null。
+    /// 时间识别统一入口（v2）。owner 为弹窗宿主窗口（可 null，此时弹窗居中无宿主）。
+    /// settings 可 null：null 时内部 Load()（用于创建路径等未持有设置实例的调用方）。
+    /// 返回最终确认的提醒时间；无时间/取消/识别失败 → null。
     /// </summary>
-    public static async Task<DateTime?> DetectDueAsync(string text, IChatProvider? llm, CancellationToken ct = default)
+    public static async Task<DateTime?> ResolveDueAsync(Window? owner, string text, IChatProvider? llm, AppSettings? settings = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
-        // 规则优先：能本地规则解决绝不调 LLM（输入框场景直接禁止 LLM）
-        if (TimeParser.TryParse(text, out var due)) return due;
+        var parse = TimeParser.Parse(text);
+        if (parse.Matched)
+        {
+            var now = DateTime.Now;
 
-        // 规则未命中 → LLM 兜底；未注入 provider（未配 Key）→ 优雅降级不弹建议不崩溃
-        if (llm == null) return null;
+            // ① 命中且未来（含带日期/时段）→ 直接用
+            if (!parse.IsDateOnly && parse.Time > now) return parse.Time;
+
+            // ② 纯日期（无时刻）→ 设置开=弹"设置提醒"窗问几点（预填识别日期 09:00）；关=直接默认当天 09:00
+            if (parse.IsDateOnly)
+            {
+                var s = settings ?? AppSettings.Load();
+                if (!s.AskTimeForDateOnly)
+                    return parse.Time.Date.AddHours(9);
+                var dlg = new DueTimeDialog(parse.Time.Date.AddHours(9),
+                    $"识别到日期 {parse.Time:yyyy-MM-dd}，几点提醒？");
+                if (owner != null) dlg.Owner = owner;
+                return dlg.ShowDialog() == true ? dlg.DueTime : null;
+            }
+
+            // ③ 裸时钟已过 → 三选一确认（今晚/明早/取消）
+            if (parse.IsBareClock && parse.Time <= now)
+            {
+                var dlg = new TimeConfirmDialog(parse.Time);
+                if (owner != null) dlg.Owner = owner;
+                return dlg.ShowDialog() == true ? dlg.ConfirmedTime : null;
+            }
+
+            // ④ 带时段/日期的已过 → 不弹不设（用户决策：只有裸时钟才确认）
+            return null;
+        }
+
+        // ⑤ 规则未命中 → LLM 兜底
+        return await LlmFallbackAsync(text, llm, ct);
+    }
+
+    /// <summary>LLM 兜底：空 Key 短路（不发必失败的请求）；JSON 宽容解析（剥 markdown 代码块再取字段）。</summary>
+    private static async Task<DateTime?> LlmFallbackAsync(string text, IChatProvider? llm, CancellationToken ct)
+    {
+        if (llm == null || string.IsNullOrWhiteSpace(llm.ApiKey)) return null;
         try
         {
             var messages = PromptBuilder.BuildTimeParseMessages(text);
             var result = await llm.CompleteAsync(messages, ct);
             var json = result.Trim();
+            // 宽容：剥 ```json ... ``` 代码块（部分模型不遵守"只输出 JSON"）
+            var fence = Regex.Match(json, @"```(?:json)?\s*([\s\S]*?)```");
+            if (fence.Success) json = fence.Groups[1].Value.Trim();
             // 只认 has_time=true 的输出；time 字段解析失败/已过 → null
             if (!Regex.IsMatch(json, "\"has_time\"\\s*:\\s*true", RegexOptions.IgnoreCase)) return null;
             var m = Regex.Match(json, "\"time\"\\s*:\\s*\"([^\"]+)\"");

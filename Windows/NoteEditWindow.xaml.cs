@@ -119,7 +119,8 @@ public partial class NoteEditWindow : Window
         }
 
         // 待办：时间识别（规则优先，规则未命中才调 LLM 兜底；未配 Key/异常 → 优雅降级不弹建议）
-        var due = await TodoEditService.DetectDueAsync(content, _provider);
+        // v2：ResolveDueAsync 统一处理——裸时钟已过弹三选一、纯日期弹"问几点"、未来时间直接返回
+        var due = await TodoEditService.ResolveDueAsync(this, content, _provider);
         if (!due.HasValue)
         {
             // 未识别到时间：不自动清除原提醒（DueTime 保持），直接关窗

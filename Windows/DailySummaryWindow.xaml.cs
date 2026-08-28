@@ -39,7 +39,10 @@ public partial class DailySummaryWindow : Window
         _autoClose.Stop();
 
         var open = items ?? new List<NoteEntry>();
-        open = open.FindAll(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Open);
+        // v2（2026-08-28）：每日汇总只列「今天及以前」到期的（无 DueTime 的纯待办也算）；明天及以后的不弹（去灵感速览「未到期」档看）
+        var today = DateTime.Today;
+        open = open.FindAll(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Open
+            && (!e.DueTime.HasValue || e.DueTime.Value.Date <= today));
 
         EmptyText.Visibility = open.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         TitleText.Text = open.Count > 0 ? $"今日待办汇总（{open.Count}）" : "今日待办汇总";
