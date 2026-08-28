@@ -168,6 +168,7 @@ public partial class QuickViewWindow : Window
     // v3（2026-08-28）：来源筛选 string 单选 → HashSet 多选（空集=全部来源）
     private readonly HashSet<string> _typeFilter = new(StringComparer.Ordinal) { "All" }; // All / Note / Todo(未办) / Done(已办) / Future(未到期)，多选组合
     private readonly HashSet<string> _sourceFilter = new(StringComparer.Ordinal);         // 选中来源集合，空=全部来源
+    private List<string> _availableSources = new();   // v3.6 修复：当前加载范围【筛选前】的全量来源，供来源下拉取选项，避免选中后其它来源选项消失
 
     // ── v3.5 编辑时间识别建议条 ──
     private NoteEntryViewModel? _suggestVm;                                                // 建议条关联的条目（保存后同步了 Content）
@@ -215,6 +216,10 @@ public partial class QuickViewWindow : Window
                 _ => _noteService.LoadNotes(_selectedDate)
             };
 
+        // v3.6 修复：来源下拉选项取自【筛选前】的全量来源，否则选中某来源后其它来源条目被筛掉、
+        // 选项随之消失、无法继续多选（用户原痛点）。先聚合全量来源供 UpdateSourceFilterOptions 使用。
+        _availableSources = entries.Select(e => e.SourceWindow).Where(s => !string.IsNullOrEmpty(s))
+            .Distinct().OrderBy(s => s).ToList();
         // v3.5：筛选在内存层应用（ReloadNotes 后），切日期/刷新后保持生效——不是前端一次性 filter
         var filtered = ApplyFilters(entries);
         // v3.5：已办沉底——先分桶（已办 → 桶 1 沉底，普通+未办 → 桶 0），桶内按时间倒序。
@@ -226,7 +231,7 @@ public partial class QuickViewWindow : Window
 
         _viewModels = sorted.Select(e => new NoteEntryViewModel(e)).ToList();
         ApplyDuplicateMarkers();
-        UpdateSourceFilterOptions();   // v3.5：来源下拉从当前加载列表聚合（刷新后仍保持选中）
+        UpdateSourceFilterOptions();   // v3.6：来源下拉从【全量来源】聚合（_availableSources 已在筛选前算好），刷新后仍保持选中
         NotesList.ItemsSource = _viewModels;
         UpdateEmptyHint();
         UpdateSelectionUI();
@@ -258,13 +263,13 @@ public partial class QuickViewWindow : Window
         return entries;
     }
 
-    /// <summary>v3.6：来源多选下拉——从当前加载列表聚合全部来源重建 Popup 列表，保留 _sourceFilter 选中；同步框内文本。</summary>
+    /// <summary>v3.6：来源多选下拉——基于当前加载范围【筛选前】的全量来源重建 Popup 列表，保留 _sourceFilter 选中；同步框内文本。
+    /// 修复：原从筛选后的 _viewModels 聚合来源，选中某来源后其它来源条目被筛掉、选项消失，无法多选。改为用 _availableSources。</summary>
     private void UpdateSourceFilterOptions()
     {
-        var sources = _viewModels.Select(v => v.SourceWindow).Where(s => !string.IsNullOrEmpty(s))
-            .Distinct().OrderBy(s => s).ToList();
+        var sources = _availableSources;   // 筛选前全量来源，不受当前选中状态影响
 
-        // 剔除已失效的选中来源（当前列表不再出现）
+        // 剔除已失效的选中来源（当前加载范围不再出现）
         _sourceFilter.RemoveWhere(s => !sources.Contains(s));
 
         SourceFilterList.Children.Clear();
@@ -296,11 +301,11 @@ public partial class QuickViewWindow : Window
             : new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
     }
 
-    /// <summary>v3.6：来源选项点击 → 切换选中（多选/再点取消）→ 重建列表样式 + 重新筛选。</summary>
+    /// <summary>v3.6：来源选项点击 → 切换选中（点一下选中、再点取消）→ 重新筛选。ReloadNotes 内部 UpdateSourceFilterOptions
+    /// 已用全量来源重建勾选样式，故无需单独刷新；多选并集 + 即时生效，无需确认按钮。</summary>
     private void ToggleSource(string source)
     {
         if (!_sourceFilter.Add(source)) _sourceFilter.Remove(source);
-        UpdateSourceFilterOptions();
         ReloadNotes();
     }
 
