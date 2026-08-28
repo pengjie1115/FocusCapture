@@ -18,7 +18,8 @@ public class StringToVisibilityConverter : IValueConverter
 public class NoteEntryViewModel : INotifyPropertyChanged
 {
     public NoteEntry Entry { get; }
-    public DateTime Timestamp => Entry.Timestamp;
+    // v3（2026-08-28）：待办有 DueTime → 显示 DueTime（归类到提醒日期后，时间列展示提醒时刻而非创建时刻）
+    public DateTime Timestamp => NoteService.TodoDisplayTime(Entry);
     public string FirstLine => (Entry.EditedContent ?? Entry.Content).Split('\n')[0].Trim();
     public string SourceWindow => Entry.SourceWindow;
     public string? Tag => Entry.Tag;
@@ -212,8 +213,9 @@ public partial class QuickViewWindow : Window
         // v3.5：筛选在内存层应用（ReloadNotes 后），切日期/刷新后保持生效——不是前端一次性 filter
         var filtered = ApplyFilters(entries);
         // v3.5：已办沉底——稳定排序：时间倒序基础上，已办待办排到该日期列表最后
+        // v3（2026-08-28）：排序时间口径统一为 TodoDisplayTime（待办按提醒时刻排，与时间列显示一致）
         var sorted = filtered
-            .OrderByDescending(e => e.Timestamp)
+            .OrderByDescending(e => NoteService.TodoDisplayTime(e))
             .ThenBy(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done ? 1 : 0);
 
         _viewModels = sorted.Select(e => new NoteEntryViewModel(e)).ToList();
@@ -684,16 +686,21 @@ public partial class QuickViewWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
-    /// <summary>v3.5：待办徽标点击 → 已办（原地改行 + 落盘）。e.Handled 吞事件防冒泡触发条目复制；已办条目不重复点。</summary>
+    /// <summary>
+    /// v3.5：待办徽标点击 → 已办（原地改行 + 落盘）。e.Handled 吞事件防冒泡触发条目复制。
+    /// v3（2026-08-28）：可撤销——再点「已办」→ 恢复为「待办」（Open）。兜底场景：用户标记完成后又觉得该事
+    /// 只是暂时没时间做、仍可优化，恢复后继续保留在待办列表。
+    /// </summary>
     private void TodoBadge_Click(object sender, MouseButtonEventArgs e)
     {
         if (sender is Border b && b.DataContext is NoteEntryViewModel vm)
         {
             e.Handled = true;
-            if (!vm.IsTodo || vm.IsDone) return;
+            if (!vm.IsTodo) return;
+            var next = vm.IsDone ? TodoStatus.Open : TodoStatus.Done;
             if (_noteService.UpdateTodo(vm.Entry,
                     newContent: vm.Entry.EditedContent ?? vm.Entry.Content,
-                    status: TodoStatus.Done))
+                    status: next))
                 Refresh();
         }
     }

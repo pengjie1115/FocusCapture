@@ -425,25 +425,54 @@
                                                 <TextBlock Foreground="#888888" FontSize="11"
                                                            Text="{Binding Timestamp, StringFormat=HH:mm}"
                                                            VerticalAlignment="Center"/>
-                                                <!-- 待办徽标：绿色小标签，可点击（标记已办）；点击需吞事件防冒泡复制 -->
+                                                <!-- 待办徽标：绿色小标签，可点击切换待办/已办（v3：已办=灰底「已办」字，可再点恢复）；点击需吞事件防冒泡复制 -->
                                                 <Border x:Name="TodoBadge" Tag="{Binding}"
-                                                        Background="#4CAF50" CornerRadius="3" Padding="4,1"
+                                                        CornerRadius="3" Padding="4,1"
                                                         Margin="6,0,0,0"
                                                         VerticalAlignment="Center"
                                                         Cursor="Hand"
-                                                        ToolTip="点击标记为已办"
+                                                        ToolTip="点击切换待办/已办"
                                                         MouseLeftButtonDown="TodoBadge_Click">
                                                     <Border.Style>
                                                         <Style TargetType="Border">
                                                             <Setter Property="Visibility" Value="Collapsed"/>
+                                                            <Setter Property="Background" Value="#4CAF50"/>
                                                             <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding IsTodo}" Value="True">
                                                                     <Setter Property="Visibility" Value="Visible"/>
                                                                 </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsDone}" Value="True">
+                                                                    <Setter Property="Background" Value="#777777"/>
+                                                                </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
-                                                    <TextBlock Text="待办" FontSize="9" Foreground="White" FontWeight="SemiBold"/>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="待办" FontSize="9" Foreground="White" FontWeight="SemiBold">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsDone}" Value="False">
+                                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="已办" FontSize="9" Foreground="#CCCCCC" FontWeight="SemiBold">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsDone}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
                                                 </Border>
                                                 <!-- 已读小标：橙字「已读」 -->
                                                 <TextBlock Text="已读" FontSize="9" Foreground="#FF9800"

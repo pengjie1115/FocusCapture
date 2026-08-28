@@ -77,6 +77,9 @@ public partial class MainWindow : Window
             _reminderPopup = new ReminderPopupWindow(_noteService, _settings);
             _dailySummary = new DailySummaryWindow(_noteService, _settings);
             _todoSummary = new TodoSummaryWindow(_noteService, _settings);
+            // 2026-08-28：窗口被关闭（点 × 走 Close）后 WPF 不允许再 Show——监听 Closed 置 null，
+            // 下次角标点击时重建新实例，否则第二次点角标抛 InvalidOperationException
+            _todoSummary.Closed += (_, _) => _todoSummary = null;
             _reminderService = new ReminderService(_noteService, _settings,
                 showDuePopups: items =>
                 {
@@ -92,6 +95,8 @@ public partial class MainWindow : Window
             if (_floatBall != null)
                 _floatBall.BadgeClicked += () => Dispatcher.Invoke(() =>
                 {
+                    if (_todoSummary == null)
+                        _todoSummary = new TodoSummaryWindow(_noteService!, _settings);
                     _todoSummary?.RefreshAll(_noteService!.LoadAllEntries());
                     _todoSummary?.Show();
                 });

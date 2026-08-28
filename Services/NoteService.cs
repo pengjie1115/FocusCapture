@@ -23,6 +23,14 @@ public class NoteService
         @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$",
         RegexOptions.Compiled);
 
+    /// <summary>
+    /// 待办展示/归类时间（v3，2026-08-28）：有 DueTime → 用 DueTime（待办归类到提醒日期，如"30号出去吃饭"归到 8/30）；
+    /// 无 DueTime（纯待办）→ 用创建时间。普通笔记恒为 Timestamp。
+    /// 统一原则：写入落盘、按日加载、日历计数、面板排序/显示全部走这里，避免各层口径漂移。
+    /// </summary>
+    public static DateTime TodoDisplayTime(NoteEntry e)
+        => e.Type == NoteType.Todo && e.DueTime.HasValue ? e.DueTime.Value : e.Timestamp;
+
     /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
     public event Action? NotesChanged;
 
@@ -84,7 +92,12 @@ public class NoteService
         if (!string.IsNullOrEmpty(entry.Tag))
             fileName = $"{entry.Tag}.md";
         else
-            fileName = $"灵感_{DateTime.Now:yyyy-MM-dd}.md";
+        {
+            // v3（2026-08-28）：待办有提醒日期 → 归类写入该日期文件（如"30号出去吃饭"→ 灵感_2026-08-30.md，
+            // 保证 30 号面板能看到；普通笔记仍写当天文件）。entry.DueTime 在上方已赋值（显式 or 规则解析）。
+            var fileDate = TodoDisplayTime(entry).Date;
+            fileName = $"灵感_{fileDate:yyyy-MM-dd}.md";
+        }
 
         try
         {
@@ -441,7 +454,8 @@ public class NoteService
                 if (fileName.StartsWith("灵感_")) continue; // already parsed
 
                 var fileEntries = ParseNotes(file, fileName, DateTime.Today);
-                result.AddRange(fileEntries.Where(e => e.Timestamp.Date == date.Date));
+                // v3（2026-08-28）：待办按 DueTime 归类日期过滤（有提醒的待办跟随提醒日期，普通笔记按创建日）
+                result.AddRange(fileEntries.Where(e => TodoDisplayTime(e).Date == date.Date));
             }
         }
 
@@ -628,7 +642,14 @@ public class NoteService
                     };
                     if (_deletedService.IsDeleted(entry)) continue;
 
-                    var key = ts.Date;
+                    // v3（2026-08-28）：待办行按 DueTime 归类记红点（日历热力与面板归类同口径）
+                    DateTime? due = null;
+                    if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
+                    {
+                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                        if (attr.Success && DateTime.TryParse(attr.Groups[1].Value, out var d)) due = d;
+                    }
+                    var key = (due.HasValue ? due.Value.Date : ts.Date);
                     counts[key] = counts.GetValueOrDefault(key) + 1;
                 }
             }
