@@ -22,7 +22,6 @@ public partial class MainWindow : Window
     private ReminderService? _reminderService;                    // v3.5 Phase3：提醒定时器/弹窗调度/角标
     private ReminderPopupWindow? _reminderPopup;                  // v3.5 Phase3：单条/多条到点弹窗
     private DailySummaryWindow? _dailySummary;                    // v3.5 Phase3：每日汇总弹窗
-    private TodoSummaryWindow? _todoSummary;                      // v3.5 Phase3：分组待办汇总窗（角色标点击打开）
     private IntPtr _hwnd; // 保存窗口句柄供剪贴板监听和热键切换使用
     private bool _settingsOpen;
 
@@ -72,14 +71,10 @@ public partial class MainWindow : Window
 
             // v3.5（Phase 3）：待办提醒服务装配 ——
             // 到点 → ReminderPopupWindow；每日汇总 → DailySummaryWindow；角标 → _floatBall.SetBadge；
-            // 角标点击 → TodoSummaryWindow。启动后立即 Refresh() 一次（角标初始化，验收 9）；
-            // NotesChanged → Refresh 保持角标/下次检查同步。
+            // 角标点击 → TodoSummaryWindow（v3 起每次点击新建实例，见 BadgeClicked）。
+            // 启动后立即 Refresh() 一次（角标初始化，验收 9）；NotesChanged → Refresh 保持角标/下次检查同步。
             _reminderPopup = new ReminderPopupWindow(_noteService, _settings);
             _dailySummary = new DailySummaryWindow(_noteService, _settings);
-            _todoSummary = new TodoSummaryWindow(_noteService, _settings);
-            // 2026-08-28：窗口被关闭（点 × 走 Close）后 WPF 不允许再 Show——监听 Closed 置 null，
-            // 下次角标点击时重建新实例，否则第二次点角标抛 InvalidOperationException
-            _todoSummary.Closed += (_, _) => _todoSummary = null;
             _reminderService = new ReminderService(_noteService, _settings,
                 showDuePopups: items =>
                 {
@@ -95,10 +90,18 @@ public partial class MainWindow : Window
             if (_floatBall != null)
                 _floatBall.BadgeClicked += () => Dispatcher.Invoke(() =>
                 {
-                    if (_todoSummary == null)
-                        _todoSummary = new TodoSummaryWindow(_noteService!, _settings);
-                    _todoSummary?.RefreshAll(_noteService!.LoadAllEntries());
-                    _todoSummary?.Show();
+                    // v3（2026-08-28 二次修复）：每次点击都 new 新实例，从根上杜绝「已关闭窗口不能再 Show」；
+                    // 汇总窗无状态（每次 RefreshAll 全量重载），复用旧实例毫无收益，反而引入生命周期风险
+                    try
+                    {
+                        var w = new TodoSummaryWindow(_noteService!, _settings);
+                        w.RefreshAll(_noteService!.LoadAllEntries());
+                        w.Show();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogStartupError("OpenTodoSummary", ex);
+                    }
                 });
             _noteService.NotesChanged += () => _reminderService?.Refresh();
             _reminderService.Start();

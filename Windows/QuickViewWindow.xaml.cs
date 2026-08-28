@@ -212,11 +212,12 @@ public partial class QuickViewWindow : Window
 
         // v3.5：筛选在内存层应用（ReloadNotes 后），切日期/刷新后保持生效——不是前端一次性 filter
         var filtered = ApplyFilters(entries);
-        // v3.5：已办沉底——稳定排序：时间倒序基础上，已办待办排到该日期列表最后
-        // v3（2026-08-28）：排序时间口径统一为 TodoDisplayTime（待办按提醒时刻排，与时间列显示一致）
+        // v3.5：已办沉底——先分桶（已办 → 桶 1 沉底，普通+未办 → 桶 0），桶内按时间倒序。
+        // v3（2026-08-28 二次修复）：旧实现用 ThenBy 做沉底，但 ThenBy 只在时间相同时生效，
+        // 时间不同的已办永远排不沉 → 必须把「是否已办」放主排序键。恢复待办后自动回桶 0 正常排序。
         var sorted = filtered
-            .OrderByDescending(e => NoteService.TodoDisplayTime(e))
-            .ThenBy(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done ? 1 : 0);
+            .OrderBy(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done ? 1 : 0)
+            .ThenByDescending(e => NoteService.TodoDisplayTime(e));
 
         _viewModels = sorted.Select(e => new NoteEntryViewModel(e)).ToList();
         ApplyDuplicateMarkers();
