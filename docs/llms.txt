@@ -1,0 +1,51 @@
+# FocusCapture
+
+> FocusCapture 是一款 Windows 桌面端灵感捕获工具：复制即存、语音即记、悬浮球常驻最前层，所有数据只存在用户自己的电脑上，完全离线可用。免费开源（MIT）。
+
+## 核心信息
+
+- 产品名：FocusCapture（专注力捕捉）
+- 平台：Windows 10 / 11 64 位（.NET 8 / WPF）
+- 当前版本：0.2.0
+- 开源协议：MIT
+- 下载地址：https://github.com/pengjie1115/FocusCapture/releases
+- 源码仓库：https://github.com/pengjie1115/FocusCapture
+- 官方网站：https://pengjie1115.github.io/FocusCapture/
+
+## 主要功能
+
+- 桌面悬浮球：常驻最前层，输入/速览/设置/语音/退出五大入口一键直达
+- 剪贴板自动捕获：复制即自动存为笔记，400ms 防抖过滤瞬态写入，自动去重
+- 沉浸式语音输入：纯 C# 本地语音识别（sherpa-onnx + FireRedASR2），中英双语，离线可用
+- 灵感速览：最近 3 天笔记切换查看，支持长笔记折叠与回收站
+- 一键导出：Markdown / JSON / TXT / Word（.docx）四种格式
+- 来源与标签：自动记录笔记来源窗口，支持打标签
+- 数据全本地：笔记、设置、模型全部存本机，不上传任何服务器
+
+## 默认热键
+
+- Alt+Space：唤起灵感输入窗
+- Ctrl+Alt+F1：剪贴板自动捕获 开/关
+- Ctrl+Alt+V：打开/关闭 灵感速览
+- Ctrl+Alt+R：启动沉浸式语音输入
+- Ctrl+S：语音输入窗内保存
+
+## 隐私说明
+
+- 所有数据（笔记、设置、语音模型）均存储在用户本机
+- 语音识别完全离线，音频不上传
+- 可选 WebDAV 云同步（AES-256-GCM 端到端加密），授权码即钥匙
+
+## 技术栈
+
+- .NET 8 / WPF（+ WinForms 托盘图标）
+- sherpa-onnx 1.13.4（本地语音识别，FireRedASR2 CTC INT8 + Silero VAD）
+- NAudio 2.2.1（音频采集）
+- 导出 .docx 为手写最小化 OOXML，零额外 NuGet 依赖
+
+## 相关链接
+
+- GitHub 仓库：https://github.com/pengjie1115/FocusCapture
+- Release 下载：https://github.com/pengjie1115/FocusCapture/releases
+- 问题反馈：https://github.com/pengjie1115/FocusCapture/issues
+- 更新日志：https://github.com/pengjie1115/FocusCapture/blob/main/CHANGELOG.md
