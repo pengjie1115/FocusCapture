@@ -394,6 +394,7 @@ public partial class QuickViewWindow : Window
     /// <summary>查找按钮：弹出 SearchDialog 输入关键词，确认后进入 Search 模式替换列表。</summary>
     private void BtnSearch_Click(object sender, RoutedEventArgs e)
     {
+        if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureSearch, "搜索")) return;
         var dlg = new SearchDialog { Owner = this };
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Keyword)) return;
         _searchKeyword = dlg.Keyword.Trim();
@@ -448,6 +449,7 @@ public partial class QuickViewWindow : Window
 
     private void BtnExport_Click(object sender, RoutedEventArgs e)
     {
+        if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureExport, "导出")) return;
         try
         {
             var selected = GetSelectedEntries();

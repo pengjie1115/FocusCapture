@@ -348,6 +348,7 @@ public static class AIDialogHelper
     /// <summary>打开 AI 对话框；Key 为空时提示并返回</summary>
     public static void Open(ExplainMode mode, NoteEntry? targetNote = null, string? selectedText = null)
     {
+        if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureAiChat, "AI 问答")) return;
         if (_noteService == null || _settings == null) return;
 
         if (string.IsNullOrWhiteSpace(_settings.AiApiKey))

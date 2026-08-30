@@ -205,6 +205,7 @@ public partial class MainWindow : Window
 
     private void ShowVoiceInput()
     {
+        if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureVoiceInput, "语音输入")) return;
         if (_voiceWindow?.IsVisible == true) _voiceWindow.Hide(); else _voiceWindow?.Show();
     }
 

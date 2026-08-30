@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FocusCapture.Models;
+using FocusCapture.Services;
 
 namespace FocusCapture.Services.Sync;
 
@@ -204,6 +205,8 @@ public class SyncEngine
     public async Task<SyncResult> SyncNowAsync(bool auto = false)
     {
         if (_dek == null) return SyncResult.NotConfigured;
+        if (!LicenseGate.IsAllowed(LicenseGate.FeatureSync))
+            return SyncResult.Failed("同步是 FocusCapture 专业版功能，购买后即可使用");
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -260,6 +263,8 @@ public class SyncEngine
     public async Task<SyncResult> PullOnlyAsync(CancellationToken ct = default)
     {
         if (_dek == null) return SyncResult.NotConfigured;
+        if (!LicenseGate.IsAllowed(LicenseGate.FeatureSync))
+            return SyncResult.Failed("同步是 FocusCapture 专业版功能，购买后即可使用");
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
