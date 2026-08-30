@@ -30,3 +30,6 @@ Thumbs.db
 # Misc
 *.bak
 *.orig
+
+# Tool caches
+.workbuddy/
