@@ -2,6 +2,8 @@ using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Sync;
 using Microsoft.Win32;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 
 namespace FocusCapture.Windows;
 
@@ -25,7 +27,206 @@ public partial class SettingsWindow : Window
         _syncEngineProvider = syncEngineProvider; _onSyncConfigChanged = onSyncConfigChanged;
         InitializeComponent();
         _suppressEvents = false; // 初始化完成，允许事件处理
+        BuildSearchIndex();
+        ShowSection(0);
         LoadSettings(); KeyDown += OnKeyDown;
+    }
+
+    // ═══════ 板块导航 + 搜索（v3.7 设置大改版） ═══════
+
+    /// <summary>搜索索引条目（由 BuildSearchIndex 自动扫描生成）</summary>
+    private class SettingEntry
+    {
+        public required string Section { get; init; }
+        public required int SectionIndex { get; init; }
+        public required string Title { get; init; }
+        public string Hint { get; set; } = "";
+        public required FrameworkElement Target { get; init; }
+        public string Subtitle => string.IsNullOrEmpty(Hint) ? Section : $"{Section} · {Hint}";
+    }
+
+    private readonly List<SettingEntry> _searchIndex = new();
+    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "输入框", "云同步", "待办与提醒", "通用" };
+    private bool _navSuppress; // 程序化切换导航选中项时抑制事件
+
+    /// <summary>板块面板列表，顺序与 _sectionNames / 左侧导航一一对应</summary>
+    private StackPanel[] SectionPanels() => new[]
+    {
+        PanelHotkey, PanelAi, PanelAppearance, PanelDisplay,
+        PanelInput, PanelSync, PanelTodo, PanelGeneral
+    };
+
+    /*
+     * ══ 新增设置项的写死规则（自动扫描约定）══
+     * 1. 每个板块面板（PanelXxx）的【直接子元素】视为一行设置项；
+     *    紧跟在某行后面、且颜色为 #999999 的 TextBlock 视为该行的「说明文字」。
+     * 2. 设置项名称取行内第一个【非灰色、非空】的 TextBlock 文字；
+     *    独立摆放的非灰色 TextBlock 归为【下一行】的名称（如「笔记存储路径」）；
+     *    都没有时回退取第一个 Button 的 Content 文字。
+     * 3. 跳转/高亮目标取行内第一个可交互控件（Button/TextBox/PasswordBox/ComboBox/Slider/CheckBox/RadioButton）。
+     * 4. 名称、说明、板块名都参与搜索匹配。
+     * ⇒ 以后新增设置项只需把控件按上述结构加进对应板块面板的 XAML，搜索索引自动生效，无需改 C#。
+     * ⇒ 新增板块才需要动三处：导航 ListBox 加一项、_sectionNames 加名字、SectionPanels() 加面板。
+     */
+    private void BuildSearchIndex()
+    {
+        _searchIndex.Clear();
+        var panels = SectionPanels();
+        for (int i = 0; i < panels.Length; i++)
+        {
+            SettingEntry? last = null;
+            string? pendingTitle = null; // 板块内独立摆放的非灰色标签，归为下一行的名称（如「笔记存储路径」）
+            foreach (var child in panels[i].Children.OfType<FrameworkElement>())
+            {
+                // 板块内独立的灰色小字 = 上一行的说明
+                if (IsHintTextBlock(child, out var loneHint))
+                {
+                    if (last != null) last.Hint = loneHint;
+                    continue;
+                }
+                // 板块内独立的非灰色标签 = 下一行的名称
+                if (child is TextBlock label && !string.IsNullOrWhiteSpace(label.Text))
+                {
+                    pendingTitle = label.Text.Trim();
+                    continue;
+                }
+
+                var descendants = Walk(child).OfType<FrameworkElement>().ToList();
+                var target = descendants.FirstOrDefault(IsInteractiveControl);
+                if (target == null) continue; // 纯装饰行（分隔线等）不入索引
+
+                var title = pendingTitle
+                    ?? descendants.OfType<TextBlock>()
+                        .Where(t => !IsGray(t) && !string.IsNullOrWhiteSpace(t.Text))
+                        .Select(t => t.Text.Trim())
+                        .FirstOrDefault()
+                    ?? (target is Button b ? b.Content?.ToString() ?? "" : "").Trim();
+                if (title.Length == 0 && target is CheckBox cb) title = cb.Content?.ToString() ?? "";
+                if (title.Length == 0) continue;
+                pendingTitle = null;
+
+                // 行内嵌的灰色小字也可作说明
+                var inlineHint = descendants.OfType<TextBlock>()
+                    .Where(t => IsGray(t) && !string.IsNullOrWhiteSpace(t.Text))
+                    .Select(t => t.Text.Trim())
+                    .FirstOrDefault() ?? "";
+
+                last = new SettingEntry
+                {
+                    Section = _sectionNames[i], SectionIndex = i,
+                    Title = title, Hint = inlineHint, Target = target
+                };
+                _searchIndex.Add(last);
+            }
+        }
+    }
+
+    private static bool IsInteractiveControl(FrameworkElement fe) => fe is Button or TextBox
+        or PasswordBox or ComboBox or Slider or CheckBox or RadioButton;
+
+    private static bool IsGray(TextBlock t) =>
+        t.Foreground is SolidColorBrush b && b.Color == Color.FromRgb(0x99, 0x99, 0x99);
+
+    private static bool IsHintTextBlock(FrameworkElement fe, out string text)
+    {
+        if (fe is TextBlock t && IsGray(t) && !string.IsNullOrWhiteSpace(t.Text))
+        { text = t.Text.Trim(); return true; }
+        text = ""; return false;
+    }
+
+    /// <summary>先序遍历可视化树（含自身）</summary>
+    private static IEnumerable<DependencyObject> Walk(DependencyObject node)
+    {
+        yield return node;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+            foreach (var d in Walk(VisualTreeHelper.GetChild(node, i)))
+                yield return d;
+    }
+
+    /// <summary>切换到指定板块（右侧只显示对应面板）</summary>
+    private void ShowSection(int index)
+    {
+        var panels = SectionPanels();
+        for (int i = 0; i < panels.Length; i++)
+            panels[i].Visibility = i == index ? Visibility.Visible : Visibility.Collapsed;
+        SectionTitle.Text = _sectionNames[index];
+        ContentScroller.ScrollToTop();
+        _navSuppress = true;
+        NavList.SelectedIndex = index;
+        _navSuppress = false;
+    }
+
+    private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_navSuppress || NavList.SelectedIndex < 0) return;
+        ShowSection(NavList.SelectedIndex);
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var q = SearchBox.Text.Trim();
+        SearchWatermark.Visibility = q.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        BtnClearSearch.Visibility = q.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (q.Length == 0)
+        {
+            SearchResultsPanel.Visibility = Visibility.Collapsed;
+            NavList.Visibility = Visibility.Visible;
+            return;
+        }
+        var matches = _searchIndex
+            .Where(x => x.Title.Contains(q, StringComparison.OrdinalIgnoreCase)
+                     || x.Hint.Contains(q, StringComparison.OrdinalIgnoreCase)
+                     || x.Section.Contains(q, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        SearchCountText.Text = matches.Count > 0 ? $"{matches.Count} 个匹配项" : "无匹配项";
+        SearchResults.ItemsSource = matches;
+        NavList.Visibility = Visibility.Collapsed;
+        SearchResultsPanel.Visibility = Visibility.Visible;
+    }
+
+    private void BtnClearSearch_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = "";
+        Keyboard.Focus(SearchBox);
+    }
+
+    private void SearchResults_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SearchResults.SelectedItem is not SettingEntry entry) return;
+        SearchResults.SelectedIndex = -1; // 允许重复点击同一结果
+        ShowSection(entry.SectionIndex);
+        HighlightEntry(entry);
+    }
+
+    /// <summary>跳转到设置项：滚动定位 + 所在行短暂绿色高亮</summary>
+    private void HighlightEntry(SettingEntry entry)
+    {
+        var target = entry.Target;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            target.BringIntoView();
+
+            // 向上找到「板块面板的直接子元素」作为整行高亮宿主
+            DependencyObject node = target;
+            FrameworkElement? row = null;
+            while (node != null)
+            {
+                if (node is FrameworkElement fe && VisualTreeHelper.GetParent(fe) is StackPanel sp
+                    && sp.Name.StartsWith("Panel", StringComparison.Ordinal))
+                { row = fe; break; }
+                node = VisualTreeHelper.GetParent(node);
+            }
+            if (row is not Panel p) return;
+
+            var brush = new SolidColorBrush(Color.FromArgb(0x55, 0x4C, 0xAF, 0x50));
+            p.Background = brush;
+            var anim = new ColorAnimation(
+                Color.FromArgb(0x55, 0x4C, 0xAF, 0x50), Colors.Transparent,
+                new Duration(TimeSpan.FromSeconds(1.5)))
+            { FillBehavior = FillBehavior.Stop };
+            anim.Completed += (_, _) => p.Background = null;
+            brush.BeginAnimation(SolidColorBrush.ColorProperty, anim);
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private void LoadSettings()
@@ -35,6 +236,7 @@ public partial class SettingsWindow : Window
         BtnClipboardHotkey.Content = Win32.HotkeyToString(_settings.ClipboardToggleHotkey);
         BtnQuickViewHotkey.Content = Win32.HotkeyToString(_settings.QuickViewHotkey);
         BtnVoiceInputHotkey.Content = Win32.HotkeyToString(_settings.VoiceInputHotkey);
+        BtnSettingsHotkey.Content = Win32.HotkeyToString(_settings.SettingsHotkey);
         InputOpacitySlider.Value = _settings.InputOpacity;
         BallOpacitySlider.Value = _settings.FloatBallOpacity;
         QuickViewOpacitySlider.Value = _settings.QuickViewOpacity;
@@ -52,7 +254,50 @@ public partial class SettingsWindow : Window
         UpdateIconUI();
         LoadSyncSettings();
         LoadTodoSettings();
+        LoadInputSettings();
         _suppressEvents = false;
+    }
+
+    /// <summary>v3.6 输入框设置回填（自动隐藏模式/秒数 + 位置记忆）</summary>
+    private void LoadInputSettings()
+    {
+        AlwaysVisibleRadio.IsChecked = _settings.InputAlwaysVisible;
+        CustomHideRadio.IsChecked = !_settings.InputAlwaysVisible;
+        AutoHideSecondsInput.Text = _settings.InputAutoHideSeconds.ToString();
+        AutoHideSecondsInput.IsEnabled = !_settings.InputAlwaysVisible;
+        RememberPositionCheck.IsChecked = _settings.InputRememberPosition;
+    }
+
+    // ── v3.6 输入框：自动隐藏与位置记忆（改即保存） ──
+
+    private void AutoHideMode_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.InputAlwaysVisible = AlwaysVisibleRadio.IsChecked == true;
+        AutoHideSecondsInput.IsEnabled = !_settings.InputAlwaysVisible;
+        _settings.Save();
+    }
+
+    /// <summary>自定义秒数：输入过程中合法即保存（≥3 整数，上不封顶）；失焦时非法才回退原值，避免打断多位数输入</summary>
+    private void AutoHideSeconds_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var v = AutoHideSecondsInput.Text.Trim();
+        if (int.TryParse(v, out var n) && n >= 3) { _settings.InputAutoHideSeconds = n; _settings.Save(); }
+    }
+
+    private void AutoHideSeconds_LostFocus(object sender, RoutedEventArgs e)
+    {
+        var v = AutoHideSecondsInput.Text.Trim();
+        if (!int.TryParse(v, out var n) || n < 3)
+            AutoHideSecondsInput.Text = _settings.InputAutoHideSeconds.ToString();
+    }
+
+    private void RememberPosition_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.InputRememberPosition = RememberPositionCheck.IsChecked == true;
+        _settings.Save();
     }
 
     /// <summary>v3.5 待办与提醒设置回填</summary>
@@ -127,6 +372,8 @@ public partial class SettingsWindow : Window
     { _settings.QuickViewHotkey = hk; BtnQuickViewHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnQuickViewHotkey, hk); });
     private void BtnVoiceInput_Click(object sender, RoutedEventArgs e) => StartCapture(BtnVoiceInputHotkey, hk =>
     { _settings.VoiceInputHotkey = hk; BtnVoiceInputHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnVoiceInputHotkey, hk); });
+    private void BtnSettings_Click(object sender, RoutedEventArgs e) => StartCapture(BtnSettingsHotkey, hk =>
+    { _settings.SettingsHotkey = hk; BtnSettingsHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnSettingsHotkey, hk); });
 
     private void BtnReset_Click(object sender, RoutedEventArgs e)
     {
@@ -134,6 +381,7 @@ public partial class SettingsWindow : Window
         _settings.ClipboardToggleHotkey = new() { Modifiers = 3, Key = 0x70 };
         _settings.QuickViewHotkey = new() { Modifiers = 3, Key = 0x56 };
         _settings.VoiceInputHotkey = new() { Modifiers = 3, Key = 0x52 };
+        _settings.SettingsHotkey = new() { Modifiers = 3, Key = 0x53 };
         _settings.Save(); LoadSettings(); _onChanged?.Invoke();
     }
 
@@ -164,17 +412,18 @@ public partial class SettingsWindow : Window
         _settings.Save();
     }
 
-    /// <summary>汇总时间校验：HH:mm 且 00:00~23:59；非法即时回退原值</summary>
+    /// <summary>汇总时间：输入过程中合法（HH:mm，00:00~23:59）即保存；失焦时非法才回退原值，避免打断输入</summary>
     private void DailySummaryTime_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_suppressEvents) return;
         var v = DailySummaryTimeInput.Text.Trim();
         if (IsValidDailyTime(v)) { _settings.DailySummaryTime = v; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
+    }
+
+    private void DailySummaryTime_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!IsValidDailyTime(DailySummaryTimeInput.Text.Trim()))
             DailySummaryTimeInput.Text = _settings.DailySummaryTime;
-            DailySummaryTimeInput.CaretIndex = DailySummaryTimeInput.Text.Length;
-        }
     }
 
     private static bool IsValidDailyTime(string v)
@@ -185,17 +434,19 @@ public partial class SettingsWindow : Window
             && h >= 0 && h <= 23 && m >= 0 && m <= 59;
     }
 
-    /// <summary>正整数校验：非法即时回退原值</summary>
+    /// <summary>稍后提醒分钟数：输入过程中合法（正整数）即保存；失焦时非法才回退原值</summary>
     private void SnoozeMinutes_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_suppressEvents) return;
         var v = SnoozeMinutesInput.Text.Trim();
         if (int.TryParse(v, out var n) && n > 0) { _settings.SnoozeMinutes = n; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
+    }
+
+    private void SnoozeMinutes_LostFocus(object sender, RoutedEventArgs e)
+    {
+        var v = SnoozeMinutesInput.Text.Trim();
+        if (!int.TryParse(v, out var n) || n <= 0)
             SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
-            SnoozeMinutesInput.CaretIndex = SnoozeMinutesInput.Text.Length;
-        }
     }
 
     private void PopupCloseSeconds_TextChanged(object sender, TextChangedEventArgs e)
@@ -203,11 +454,13 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         var v = PopupCloseSecondsInput.Text.Trim();
         if (int.TryParse(v, out var n) && n > 0) { _settings.PopupAutoCloseSeconds = n; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
+    }
+
+    private void PopupCloseSeconds_LostFocus(object sender, RoutedEventArgs e)
+    {
+        var v = PopupCloseSecondsInput.Text.Trim();
+        if (!int.TryParse(v, out var n) || n <= 0)
             PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
-            PopupCloseSecondsInput.CaretIndex = PopupCloseSecondsInput.Text.Length;
-        }
     }
 
     private void InputOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)

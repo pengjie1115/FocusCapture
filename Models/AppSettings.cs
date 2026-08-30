@@ -21,6 +21,7 @@ public class AppSettings
     public HotkeyBinding SummonHotkey { get; set; } = new() { Modifiers = 1, Key = 0x20 };         // Alt+Space
     public HotkeyBinding ClipboardToggleHotkey { get; set; } = new() { Modifiers = 3, Key = 0x70 }; // Ctrl+Alt+F1
     public HotkeyBinding QuickViewHotkey { get; set; } = new() { Modifiers = 3, Key = 0x56 };       // Ctrl+Alt+V
+    public HotkeyBinding SettingsHotkey { get; set; } = new() { Modifiers = 3, Key = 0x53 };        // Ctrl+Alt+S：唤出设置面板
 
     // ── 剪贴板自动捕获 ──
     public bool ClipboardCaptureEnabled { get; set; } = false;
@@ -37,6 +38,13 @@ public class AppSettings
     // ── 悬浮球位置 ──
     public double BallLeft { get; set; } = -1;
     public double BallTop { get; set; } = -1;
+
+    // ── 输入框：自动隐藏与位置（v3.6）──
+    public bool InputAlwaysVisible { get; set; } = false;      // true = 始终显示，不自动隐藏
+    public int InputAutoHideSeconds { get; set; } = 15;        // 自定义隐藏秒数（最短 3，不设上限）
+    public bool InputRememberPosition { get; set; } = false;   // true = 唤起时出现在上次位置
+    public double InputLeft { get; set; } = -1;                // 上次拖动到的位置（-1 = 未拖动过）
+    public double InputTop { get; set; } = -1;
 
     // ── 开机自启 ──
     public bool AutoStart { get; set; } = false;
