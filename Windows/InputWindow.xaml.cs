@@ -9,6 +9,8 @@ public partial class InputWindow : Window
     private readonly Models.AppSettings _settings;
     private bool _isSaving;
     private DispatcherTimer? _idleTimer;
+    /// <summary>本次显示期间用户是否拖动过窗口（拖动后 AdjustHeight 不再吸回默认位置）</summary>
+    private bool _userDragged;
 
     /// <summary>v3.5：当前类型（Note/Todo）。Ctrl+T 走全局热键（MainWindow → ToggleType），不在输入框按键内处理防双触发。</summary>
     private string _currentType = "Note";
@@ -57,6 +59,7 @@ public partial class InputWindow : Window
             UpdateTypeButtons();
         }
         InputBox.Focus();   // 焦点还回输入框：否则回车触发的是按钮 Click 而非保存
+        RestartIdleTimer(); // v3.6：点击类型按钮也算交互，刷新倒计时
     }
 
     public void SetOpacity(double o) => Opacity = Math.Clamp(o, 0.3, 1.0);
@@ -65,33 +68,103 @@ public partial class InputWindow : Window
     {
         PositionWindow();
         InputBox.Focus();
-        _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _idleTimer = new DispatcherTimer();
         _idleTimer.Tick += (_, _) => { if (!_isSaving) Hide(); };
+        RestartIdleTimer();
+    }
+
+    /// <summary>
+    /// v3.6：按设置重启自动隐藏计时。始终显示 = 不计时；自定义 = 最短 3 秒上不封顶。
+    /// 打字/点击类型按钮等交互会调用本方法刷新倒计时，停止操作 N 秒后才隐藏。
+    /// </summary>
+    private void RestartIdleTimer()
+    {
+        if (_idleTimer == null) return;
+        _idleTimer.Stop();
+        if (_settings.InputAlwaysVisible) return;
+        _idleTimer.Interval = TimeSpan.FromSeconds(Math.Max(3, _settings.InputAutoHideSeconds));
         _idleTimer.Start();
     }
 
+    /// <summary>
+    /// v3.6：记住上次位置开启且已拖动过 → 出现在上次位置（夹取到当前工作区内，防换显示器后飞出屏幕）；
+    /// 否则用默认位置（底部居中偏上 80px，与旧版一致）。
+    /// </summary>
     private void PositionWindow()
     {
         var s = SystemParameters.WorkArea;
-        Left = (s.Width - Width) / 2 + s.Left;
-        Top = s.Bottom - Height - 80;
+        if (_settings.InputRememberPosition && _settings.InputLeft >= 0 && _settings.InputTop >= 0)
+        {
+            _userDragged = true; // 视为自定义位置：AdjustHeight 时保持底部锚定，不吸回默认位置
+            Left = Math.Clamp(_settings.InputLeft, s.Left, Math.Max(s.Left, s.Right - Width));
+            Top = Math.Clamp(_settings.InputTop, s.Top, Math.Max(s.Top, s.Bottom - Height));
+        }
+        else
+        {
+            _userDragged = false;
+            Left = (s.Width - Width) / 2 + s.Left;
+            Top = s.Bottom - Height - 80;
+        }
     }
 
-    private void Window_Deactivated(object sender, EventArgs e) { if (!_isSaving) Hide(); }
+    /// <summary>v3.6：按住空白/边框区域拖动整个输入框（文本框与按钮上不触发）</summary>
+    private void Border_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // 命中文本框或按钮时不拖动，保证正常编辑/点击
+        if (e.OriginalSource is DependencyObject d
+            && (IsInside<System.Windows.Controls.Primitives.TextBoxBase>(d)
+                || IsInside<System.Windows.Controls.Primitives.ButtonBase>(d))) return;
+        try
+        {
+            DragMove();
+            _userDragged = true;
+            _settings.InputLeft = Left;
+            _settings.InputTop = Top;
+            _settings.Save();
+        }
+        catch { /* DragMove 仅在左键按下时有效，忽略偶发异常 */ }
+    }
+
+    /// <summary>沿可视化树向上找，判断命中点是否在指定类型控件内（如 TextBox/Button）</summary>
+    private static bool IsInside<T>(DependencyObject d) where T : DependencyObject
+    {
+        while (d != null)
+        {
+            if (d is T) return true;
+            d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+        }
+        return false;
+    }
+
+    // v3.6：始终显示模式下失焦不隐藏，只有 Esc/保存/再次唤起快捷键才收起
+    private void Window_Deactivated(object sender, EventArgs e) { if (!_isSaving && !_settings.InputAlwaysVisible) Hide(); }
 
     private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         Placeholder.Visibility = string.IsNullOrEmpty(InputBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-        _idleTimer?.Stop(); _idleTimer?.Start();
+        RestartIdleTimer(); // v3.6：打字刷新自动隐藏倒计时
         AdjustHeight();
     }
 
+    /// <summary>
+    /// 按行数自适应高度。v3.6：用户拖动过（或记住了自定义位置）→ 底部锚定向上生长，
+    /// 保持用户摆放的位置不跳动；默认位置则维持旧的吸附底部行为。
+    /// </summary>
     private void AdjustHeight()
     {
         var lc = InputBox.LineCount;
-        Height = lc <= 5 ? Math.Max(80, lc * 22 + 40) : 190;
+        var newHeight = lc <= 5 ? Math.Max(80, lc * 22 + 40) : 190;
         var s = SystemParameters.WorkArea;
-        Top = s.Bottom - Height - 80;
+        if (_userDragged)
+        {
+            Top += Height - newHeight; // 底边不动，向上/下生长
+            Top = Math.Clamp(Top, s.Top, Math.Max(s.Top, s.Bottom - newHeight));
+        }
+        else
+        {
+            Top = s.Bottom - newHeight - 80;
+        }
+        Height = newHeight;
     }
 
     private void InputBox_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -158,7 +231,7 @@ public partial class InputWindow : Window
             InputBox.Focus();
             Keyboard.Focus(InputBox);
         }), DispatcherPriority.Input);
-        _idleTimer?.Start();
+        RestartIdleTimer();
     }
 
     public new void Hide()

@@ -50,7 +50,8 @@
 
     <Border CornerRadius="10" Background="#1E1E1E"
             Effect="{StaticResource BoxShadow}"
-            BorderBrush="#3A3A3A" BorderThickness="1">
+            BorderBrush="#3A3A3A" BorderThickness="1"
+            MouseLeftButtonDown="Border_MouseLeftButtonDown">
         <Grid Margin="12,10">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
