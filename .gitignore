@@ -33,3 +33,11 @@ Thumbs.db
 
 # Tool caches
 .workbuddy/
+
+# 内部开发文档（不推送仓库）
+docs/QUEST-*.md
+docs/TASK*.md
+docs/FEATURE-*.md
+docs/*-PRD.md
+docs/PROGRESS.md
+docs/fc-sync-test-archive/
