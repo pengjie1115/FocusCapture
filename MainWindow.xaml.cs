@@ -169,6 +169,7 @@ public partial class MainWindow : Window
             case HotkeyService.ID_QUICK_VIEW: ShowQuickView(); break;
             case HotkeyService.ID_VOICE_INPUT: ShowVoiceInput(); break;
             case HotkeyService.ID_TODO_SWITCH: _inputWindow?.ToggleType(); break;   // v3.5：全局切换笔记/待办类型
+            case HotkeyService.ID_SETTINGS: OpenSettings(); break;                  // v3.7：唤出设置面板
         }
     });
 

@@ -13,6 +13,7 @@ public class HotkeyService : IDisposable
     public const int ID_QUICK_VIEW = 1003;
     public const int ID_VOICE_INPUT = 1004;
     public const int ID_TODO_SWITCH = 1005;   // v3.5：输入框笔记/待办类型切换（全局热键，设置可改）
+    public const int ID_SETTINGS = 1006;      // v3.7：唤出设置面板
 
     public event Action<int>? HotkeyPressed; // 回调传热键 ID
 
@@ -31,6 +32,7 @@ public class HotkeyService : IDisposable
         Register(ID_QUICK_VIEW, _settings.QuickViewHotkey);
         Register(ID_VOICE_INPUT, _settings.VoiceInputHotkey);
         Register(ID_TODO_SWITCH, _settings.TodoSwitchHotkey);
+        Register(ID_SETTINGS, _settings.SettingsHotkey);
     }
 
     public void UnregisterAll()
@@ -40,6 +42,7 @@ public class HotkeyService : IDisposable
         Win32.UnregisterHotKey(_hwnd, ID_QUICK_VIEW);
         Win32.UnregisterHotKey(_hwnd, ID_VOICE_INPUT);
         Win32.UnregisterHotKey(_hwnd, ID_TODO_SWITCH);
+        Win32.UnregisterHotKey(_hwnd, ID_SETTINGS);
     }
 
     private void Register(int id, HotkeyBinding hk)
