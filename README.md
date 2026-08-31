@@ -10,9 +10,10 @@ FocusCapture 是一款 Windows 桌面端灵感捕获工具：你在任何窗口�
 
 <table>
 <tr>
-<td align="center" width="33%"><img src="docs/screenshots/settings.png" alt="设置界面" /><br /><b>设置界面</b><br />所有热键与不透明度一手掌控</td>
-<td align="center" width="33%"><img src="docs/screenshots/quickview.png" alt="灵感速览" /><br /><b>灵感速览</b><br />最近三天笔记 + 一键导出 Word/Markdown</td>
-<td align="center" width="33%"><img src="docs/screenshots/immersive-record.png" alt="沉浸记录" /><br /><b>沉浸记录</b><br />边说边记，全 C# 本地语音识别</td>
+<td align="center" width="25%"><img src="docs/screenshots/quickview.png" alt="灵感速览" /><br /><b>灵感速览</b><br />最近三天笔记 + 一键导出 Word/Markdown</td>
+<td align="center" width="25%"><img src="docs/screenshots/quickview-2.png" alt="速览增强" /><br /><b>速览 · 增强</b><br />笔记导入 + 区间筛选 + 全局查找</td>
+<td align="center" width="25%"><img src="docs/screenshots/settings.png" alt="设置面板" /><br /><b>设置面板</b><br />板块导航 + 全局搜索 + 深色主题</td>
+<td align="center" width="25%"><img src="docs/screenshots/input.png" alt="灵感输入" /><br /><b>灵感输入</b><br />自动隐藏计时 + 记住拖动位置</td>
 </tr>
 </table>
 

@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FocusCapture · 专注力捕捉 — 不打断你思路的灵感捕获器</title>
+<meta name="description" content="FocusCapture 是一款 Windows 桌面灵感捕获工具：复制即存、语音即记、悬浮球常驻，所有数据只存在你自己的电脑上。免费开源，离线可用。">
+<meta name="keywords" content="FocusCapture,灵感捕获,剪贴板,语音输入,本地语音识别,专注力工具,Windows,开源,WPF">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="FocusCapture · 不打断你思路的灵感捕获器">
+<meta property="og:description" content="复制即存、语音即记，所有数据只存在你自己的电脑上。免费开源，离线可用。">
+<meta property="og:url" content="https://pengjie1115.github.io/FocusCapture/">
+<meta property="og:image" content="https://pengjie1115.github.io/FocusCapture/screenshots/quickview.png">
+<meta property="og:site_name" content="FocusCapture">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="FocusCapture · 不打断你思路的灵感捕获器">
+<meta name="twitter:description" content="复制即存、语音即记，所有数据只存在你自己的电脑上。免费开源，离线可用。">
+<meta name="twitter:image" content="https://pengjie1115.github.io/FocusCapture/screenshots/quickview.png">
+
+<!-- JSON-LD: SoftwareApplication -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "FocusCapture",
+  "alternateName": "专注力捕捉",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Windows",
+  "softwareVersion": "0.2.0",
+  "description": "FocusCapture 是一款 Windows 桌面端灵感捕获工具：复制即存、语音即记、悬浮球常驻最前层，所有数据只存在你自己的电脑上，完全离线可用。",
+  "downloadUrl": "https://github.com/pengjie1115/FocusCapture/releases",
+  "license": "MIT",
+  "author": { "@type": "Person", "name": "pengjie1115" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
+  "featureList": [
+    "桌面悬浮球，一键直达输入/速览/设置/语音",
+    "剪贴板自动捕获，400ms 防抖自动去重",
+    "沉浸式语音输入，纯 C# 本地语音识别，离线可用",
+    "一键导出 Markdown / JSON / TXT / Word",
+    "数据 100% 本地存储，不上传任何服务器"
+  ]
+}
+</script>
+
+<style>
+:root{
+  --bg:#0A0E14; --bg-elev:#11161F; --bg-overlay:#1A2030;
+  --brand:#4ADE80; --brand-deep:#10B981; --brand-soft:#86EFAC;
+  --cta:#3B82F6; --cta-hover:#2563EB; --link:#60A5FA;
+  --text:#E5E7EB; --text-2:#9CA3AF; --text-3:#6B7280; --text-inverse:#0A0E14;
+  --border:#1F2937; --border-strong:#374151;
+  --ok:#22C55E; --warn:#F59E0B; --err:#EF4444; --info:#3B82F6;
+  --shadow-sm:0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 16px rgba(0,0,0,.3);
+  --shadow-lg:0 12px 32px rgba(0,0,0,.5);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Source Han Sans CN",sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:var(--link);text-decoration:none}
+a:hover{color:var(--text)}
+section{scroll-margin-top:80px}
+.container{max-width:1200px;margin:0 auto;padding:0 48px}
+@media(max-width:768px){.container{padding:0 32px}}
+@media(max-width:640px){.container{padding:0 16px}}
+
+/* ---------- 导航 ---------- */
+nav{position:sticky;top:0;left:0;right:0;z-index:50;background:rgba(10,14,20,.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid transparent;transition:border-color .3s}
+nav.scrolled{border-bottom-color:var(--border)}
+nav .container{display:flex;align-items:center;justify-content:space-between;height:64px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:16px;color:var(--text)}
+.brand .dot{width:12px;height:12px;border-radius:50%;background:var(--brand);box-shadow:0 0 10px rgba(74,222,128,.5)}
+.nav-links{display:flex;gap:26px;font-size:14px;color:var(--text-2)}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{display:flex;align-items:center;gap:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 22px;border-radius:8px;font-size:15px;font-weight:500;border:1px solid transparent;cursor:pointer;transition:background .15s ease-out,border-color .15s ease-out,color .15s ease-out}
+.btn-primary{background:var(--cta);color:#fff}
+.btn-primary:hover{background:var(--cta-hover);color:#fff}
+.btn-ghost{border-color:var(--border);color:var(--text)}
+.btn-ghost:hover{border-color:var(--border-strong);background:var(--bg-elev)}
+.btn-green{background:var(--brand);color:var(--text-inverse)}
+.btn-green:hover{background:var(--brand-deep);color:var(--text-inverse)}
+.btn-lg{padding:14px 34px;font-size:16px;border-radius:10px}
+.menu-btn{display:none;background:none;border:1px solid var(--border-strong);border-radius:8px;color:var(--text);width:38px;height:38px;cursor:pointer;align-items:center;justify-content:center}
+
+/* ---------- Hero ---------- */
+.hero{padding:130px 0 100px;text-align:center}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border-radius:999px;border:1px solid var(--border-strong);background:rgba(74,222,128,.08);color:var(--brand-soft);font-size:13px;margin-bottom:28px}
+.hero h1{font-size:clamp(32px,5vw,52px);font-weight:600;line-height:1.2;letter-spacing:-.02em;max-width:800px;margin:0 auto 22px}
+.hero h1 em{font-style:normal;color:var(--brand)}
+.hero p.sub{font-size:clamp(15px,2vw,18px);color:var(--text-2);max-width:640px;margin:0 auto 40px}
+.hero-cta{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:36px}
+.hero-meta{display:flex;gap:22px;justify-content:center;flex-wrap:wrap;font-size:13px;color:var(--text-3)}
+.hero-meta span{display:inline-flex;align-items:center;gap:6px}
+.hero-meta .ok-dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+
+/* ---------- 通用区块 ---------- */
+.section{padding:96px 0}
+.section-head{text-align:center;max-width:660px;margin:0 auto 56px}
+.section-head .tag{display:inline-block;font-size:13px;color:var(--brand);letter-spacing:2px;margin-bottom:12px;font-weight:500}
+.section-head h2{font-size:clamp(26px,3.6vw,36px);font-weight:600;letter-spacing:-.01em}
+.section-head p{color:var(--text-2);margin-top:14px;font-size:15px}
+
+/* ---------- 特性 ---------- */
+.features{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+.f-card{background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;padding:28px 24px;box-shadow:var(--shadow-md);transition:border-color .15s ease-out,transform .15s ease-out}
+.f-card:hover{border-color:var(--border-strong);transform:translateY(-3px)}
+.f-icon{width:44px;height:44px;border-radius:10px;background:rgba(74,222,128,.1);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:18px}
+.f-card h3{font-size:17px;font-weight:500;margin-bottom:8px}
+.f-card p{font-size:14px;color:var(--text-2)}
+
+/* ---------- 演示 ---------- */
+.showcase{display:grid;grid-template-columns:repeat(2,1fr);gap:24px}
+.shot{background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-md);transition:border-color .15s ease-out,transform .15s ease-out;cursor:zoom-in}
+.shot:hover{border-color:var(--border-strong);transform:translateY(-3px)}
+.shot img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover;object-position:top;background:#0A0C12}
+.shot figcaption{padding:16px 20px}
+.shot figcaption b{display:block;font-size:15px;font-weight:500;margin-bottom:4px}
+.shot figcaption span{font-size:13px;color:var(--text-2)}
+
+/* ---------- 隐私 ---------- */
+.privacy{background:var(--bg-elev);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.privacy-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.p-item{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:28px 26px}
+.p-item .p-num{font-size:13px;color:var(--brand);letter-spacing:1px;margin-bottom:10px;font-weight:500}
+.p-item h3{font-size:16px;font-weight:500;margin-bottom:8px}
+.p-item p{font-size:14px;color:var(--text-2)}
+
+/* ---------- 下载 ---------- */
+.download-box{background:var(--bg-elev);border:1px solid var(--border);border-radius:16px;padding:48px;display:grid;grid-template-columns:1.2fr .8fr;gap:40px;align-items:center;box-shadow:var(--shadow-md)}
+.dl-info h3{font-size:22px;font-weight:600;margin-bottom:10px}
+.dl-info p{color:var(--text-2);font-size:14px;margin-bottom:22px}
+.dl-meta{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:26px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid var(--border-strong);font-size:12px;color:var(--text-2)}
+.chip.ok{border-color:rgba(74,222,128,.35);color:var(--brand-soft)}
+.dl-side{border-left:1px solid var(--border);padding-left:40px}
+.dl-side h4{font-size:13px;color:var(--text-3);letter-spacing:1px;margin-bottom:14px;font-weight:500}
+.dl-side ul{list-style:none}
+.dl-side li{font-size:14px;color:var(--text-2);padding:7px 0;border-bottom:1px dashed var(--border)}
+.dl-side li:last-child{border-bottom:none}
+.dl-side code{background:var(--bg-overlay);padding:2px 7px;border-radius:6px;font-size:12.5px;color:var(--brand-soft);font-family:"Cascadia Code",Consolas,"JetBrains Mono",monospace}
+
+/* ---------- 上手 ---------- */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:52px}
+.step{background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;padding:26px;box-shadow:var(--shadow-sm)}
+.step .s-num{width:34px;height:34px;border-radius:8px;background:rgba(74,222,128,.1);color:var(--brand);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;margin-bottom:14px}
+.step h3{font-size:15px;font-weight:500;margin-bottom:6px}
+.step p{font-size:13.5px;color:var(--text-2)}
+.hotkey-wrap{background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.hotkey-row{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid var(--border);font-size:14px}
+.hotkey-row:last-child{border-bottom:none}
+.hotkey-row span{color:var(--text-2)}
+.hotkey-row kbd{background:var(--bg-overlay);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:6px;padding:3px 10px;font-family:"Cascadia Code",Consolas,"JetBrains Mono",monospace;font-size:13px;color:var(--text)}
+
+/* ---------- FAQ ---------- */
+.faq{max-width:760px;margin:0 auto}
+.faq-item{border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden;background:var(--bg-elev)}
+.faq-q{width:100%;background:none;border:none;color:var(--text);padding:18px 22px;font-size:15px;font-family:inherit;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.faq-q .chev{transition:transform .2s;color:var(--text-3)}
+.faq-item.open .chev{transform:rotate(45deg)}
+.faq-a{display:none;padding:0 22px 18px;font-size:14px;color:var(--text-2)}
+.faq-item.open .faq-a{display:block}
+
+/* ---------- 页脚 ---------- */
+footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--bg-elev)}
+.foot-grid{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:28px}
+.foot-brand b{font-size:16px;display:block;margin-bottom:6px}
+.foot-brand p{font-size:13px;color:var(--text-3);max-width:320px}
+.foot-links{display:flex;gap:22px;font-size:13.5px}
+.foot-links a{color:var(--text-2)}
+.foot-links a:hover{color:var(--text)}
+.foot-star{margin:28px 0 0;text-align:center}
+.foot-star .btn{margin-bottom:8px}
+.foot-star p{font-size:13px;color:var(--text-3)}
+.foot-bottom{margin-top:34px;padding-top:22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-size:12.5px;color:var(--text-3)}
+
+/* ---------- 动效 ---------- */
+.reveal{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+
+/* ---------- 灯箱 ---------- */
+.lightbox{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;padding:32px;cursor:zoom-out}
+.lightbox.open{display:flex}
+.lightbox img{max-width:100%;max-height:100%;border-radius:12px;border:1px solid var(--border-strong);box-shadow:var(--shadow-lg)}
+
+/* ---------- 响应式 ---------- */
+@media(max-width:1024px){
+  .features{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:900px){
+  .showcase,.privacy-grid,.steps{grid-template-columns:repeat(2,1fr)}
+  .download-box{grid-template-columns:1fr}
+  .dl-side{border-left:none;padding-left:0;border-top:1px solid var(--border);padding-top:26px}
+}
+@media(max-width:640px){
+  .features,.showcase,.privacy-grid,.steps{grid-template-columns:1fr}
+  .nav-links{display:none;position:absolute;top:64px;left:0;right:0;background:var(--bg-elev);border-bottom:1px solid var(--border);flex-direction:column;padding:14px 24px;gap:14px}
+  .nav-links.open{display:flex}
+  .menu-btn{display:flex}
+  .hero{padding:110px 0 80px}
+  .section{padding:70px 0}
+  .download-box{padding:32px 24px}
+}
+</style>
+</head>
+<body>
+
+<!-- 导航 -->
+<nav id="nav">
+  <div class="container">
+    <a class="brand" href="#top"><span class="dot"></span>FocusCapture</a>
+    <div class="nav-links" id="navLinks">
+      <a href="#features">特性</a>
+      <a href="#showcase">演示</a>
+      <a href="#privacy">隐私</a>
+      <a href="#download">下载</a>
+      <a href="#quickstart">上手</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">GitHub</a>
+      <button class="menu-btn" id="menuBtn" aria-label="菜单"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<header class="hero" id="top">
+  <div class="container">
+    <span class="hero-badge"><span class="ok-dot"></span>v0.2.0 · 免费开源 · 离线可用</span>
+    <h1>FocusCapture · <em>不打断你思路</em>的灵感捕获器</h1>
+    <p class="sub">复制即存、语音即记、悬浮球常驻最前层。你在任何窗口随手复制一段话、按一个热键说一句话，它就帮你存进本地笔记库——全程不打断手头的工作。</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary btn-lg" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">立即下载</a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">查看源码</a>
+    </div>
+    <div class="hero-meta">
+      <span><span class="ok-dot"></span>Windows 桌面端</span>
+      <span><span class="ok-dot"></span>.NET 8 / WPF</span>
+      <span><span class="ok-dot"></span>本地语音识别</span>
+      <span><span class="ok-dot"></span>MIT 开源</span>
+    </div>
+  </div>
+</header>
+
+<!-- 核心卖点 -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-head">
+      <span class="tag">FEATURES</span>
+      <h2>四个核心能力，一个都不打扰你</h2>
+      <p>灵感稍纵即逝，FocusCapture 让你的捕捉成本降到最低。</p>
+    </div>
+    <div class="features">
+      <div class="f-card reveal">
+        <div class="f-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg></div>
+        <h3>桌面悬浮球</h3>
+        <p>常驻最前层，可调不透明度。输入、速览、设置、语音、退出五大入口一键直达。</p>
+      </div>
+      <div class="f-card reveal">
+        <div class="f-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="6" width="16" height="14" rx="2"/><path d="M8 6V4a2 2 0 0 1 4 0v2" transform="translate(-2 0)"/></svg></div>
+        <h3>剪贴板自动捕获</h3>
+        <p>复制即自动存为笔记。400ms 防抖过滤「选中即复制」类工具，自动去重，可随时开关。</p>
+      </div>
+      <div class="f-card reveal">
+        <div class="f-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 12v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="20" x2="12" y2="22"/></svg></div>
+        <h3>沉浸式语音输入</h3>
+        <p>纯 C# 本地语音识别，中英双语。边说边记，离线可用，无需联网、不上传音频。</p>
+      </div>
+      <div class="f-card reveal">
+        <div class="f-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>数据全本地</h3>
+        <p>笔记、设置、模型全部存本机。卸载即清除，不涉及任何云端同步与服务器。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 演示 -->
+<section class="section" id="showcase" style="padding-top:0">
+  <div class="container">
+    <div class="section-head">
+      <span class="tag">PREVIEW</span>
+      <h2>真实界面，眼见为实</h2>
+      <p>点击任意截图可放大查看。</p>
+    </div>
+    <div class="showcase">
+      <figure class="shot reveal" onclick="openLightbox(this)">
+        <img src="screenshots/quickview.png" alt="灵感速览界面：最近三天笔记列表，支持长笔记折叠与回收站" loading="lazy">
+        <figcaption><b>灵感速览</b><span>最近三天笔记切换查看，支持长笔记折叠与回收站</span></figcaption>
+      </figure>
+      <figure class="shot reveal" onclick="openLightbox(this)">
+        <img src="screenshots/quickview-2.png" alt="灵感速览增强：笔记导入、区间筛选、全局查找、重复笔记红色标记" loading="lazy">
+        <figcaption><b>速览 · 增强</b><span>笔记导入、区间筛选、全局查找、重复笔记红色标记</span></figcaption>
+      </figure>
+      <figure class="shot reveal" onclick="openLightbox(this)">
+        <img src="screenshots/settings.png" alt="设置面板：左侧板块导航、全局搜索、拖拽占比，适配深色主题" loading="lazy">
+        <figcaption><b>设置面板</b><span>板块导航 + 全局搜索 + 可拖拽占比，深色主题统一</span></figcaption>
+      </figure>
+      <figure class="shot reveal" onclick="openLightbox(this)">
+        <img src="screenshots/input.png" alt="灵感输入面板：自动隐藏计时重启、记住拖动位置" loading="lazy">
+        <figcaption><b>灵感输入</b><span>自动隐藏计时重启，记住拖动位置，不再吸回默认位置</span></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 隐私 -->
+<section class="section privacy" id="privacy">
+  <div class="container">
+    <div class="section-head">
+      <span class="tag">PRIVACY</span>
+      <h2>你的数据，只属于你</h2>
+      <p>专注力工具处理的都是你的思想碎片，隐私是底线，不是卖点。</p>
+    </div>
+    <div class="privacy-grid">
+      <div class="p-item reveal">
+        <div class="p-num">01 / LOCAL</div>
+        <h3>数据 100% 本地</h3>
+        <p>笔记库存放在「文档\FocusCapture」，配置文件在本机 AppData。卸载/删除目录即完全清除。</p>
+      </div>
+      <div class="p-item reveal">
+        <div class="p-num">02 / OFFLINE</div>
+        <h3>语音离线识别</h3>
+        <p>语音引擎纯 C# 本地运行。首次使用自动下载模型到本机，之后完全离线，音频不出你的电脑。</p>
+      </div>
+      <div class="p-item reveal">
+        <div class="p-num">03 / OPEN</div>
+        <h3>开源可审计</h3>
+        <p>MIT 协议，全部代码公开在 GitHub。任何宣称的安全，都不如你自己能看到的代码可靠。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 下载 -->
+<section class="section" id="download">
+  <div class="container">
+    <div class="download-box reveal">
+      <div class="dl-info">
+        <h3>下载 FocusCapture</h3>
+        <p>单文件绿色版，无需安装 .NET 运行时，双击即可运行。Windows 10 / 11 64 位。</p>
+        <div class="dl-meta">
+          <span class="chip ok">单文件绿色版</span>
+          <span class="chip">约 176 MB</span>
+          <span class="chip ok">Win x64</span>
+          <span class="chip ok">免费开源</span>
+        </div>
+        <a class="btn btn-primary" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">前往 Releases 下载最新版</a>
+      </div>
+      <div class="dl-side">
+        <h4>从源码构建</h4>
+        <ul>
+          <li><code>git clone</code> 仓库到本地</li>
+          <li>需要 <code>.NET 8 SDK</code></li>
+          <li><code>dotnet restore</code> 还原依赖</li>
+          <li><code>dotnet publish</code> 产出单文件 exe</li>
+          <li>产物在 <code>bin/Release/</code> 下可直接分发</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 快速上手 -->
+<section class="section" id="quickstart" style="padding-top:0">
+  <div class="container">
+    <div class="section-head">
+      <span class="tag">QUICKSTART</span>
+      <h2>30 秒上手</h2>
+      <p>下载即用，无需配置。</p>
+    </div>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="s-num">1</div>
+        <h3>下载并运行</h3>
+        <p>从 Releases 下载 exe，双击启动，悬浮球出现在屏幕边缘。</p>
+      </div>
+      <div class="step reveal">
+        <div class="s-num">2</div>
+        <h3>随手复制</h3>
+        <p>在任何窗口复制一段话，自动存为笔记。或按 Alt+Space 主动记录。</p>
+      </div>
+      <div class="step reveal">
+        <div class="s-num">3</div>
+        <h3>随时导出</h3>
+        <p>Ctrl+Alt+V 打开速览，一键导出 Markdown / JSON / TXT / Word。</p>
+      </div>
+    </div>
+    <div class="hotkey-wrap reveal">
+      <div class="hotkey-row"><span>唤起灵感输入窗</span><kbd>Alt+Space</kbd></div>
+      <div class="hotkey-row"><span>剪贴板自动捕获 开/关</span><kbd>Ctrl+Alt+F1</kbd></div>
+      <div class="hotkey-row"><span>打开/关闭 灵感速览</span><kbd>Ctrl+Alt+V</kbd></div>
+      <div class="hotkey-row"><span>启动沉浸式语音输入</span><kbd>Ctrl+Alt+R</kbd></div>
+      <div class="hotkey-row"><span>语音输入窗内保存</span><kbd>Ctrl+S</kbd></div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section" id="faq" style="padding-top:0">
+  <div class="container">
+    <div class="section-head">
+      <span class="tag">FAQ</span>
+      <h2>常见问题</h2>
+    </div>
+    <div class="faq">
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">需要安装 .NET 运行时吗？<span class="chev">+</span></button>
+        <div class="faq-a">不需要。Release 提供单文件绿色版（self-contained），已内置 .NET 运行时，双击即运行。</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">语音识别需要联网吗？<span class="chev">+</span></button>
+        <div class="faq-a">首次使用语音输入时，程序会从国内可直连的镜像自动下载模型（约 740MB）到本机。下载完成后完全离线运行，音频不离开你的电脑。</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">我的笔记会同步到云端吗？<span class="chev">+</span></button>
+        <div class="faq-a">默认完全本地。可选开启 WebDAV 云同步（AES-256-GCM 端到端加密），授权码即钥匙，即使服务商也读不到你的内容。</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">支持哪些导出格式？<span class="chev">+</span></button>
+        <div class="faq-a">Markdown / JSON / TXT / Word（.docx）四种格式。时间、来源窗口、标签、内容字段可勾选，自动处理重名文件。</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">如何更新到新版本？<span class="chev">+</span></button>
+        <div class="faq-a">关注 GitHub Releases 页，下载新版 exe 覆盖即可。笔记与设置都会保留。</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">有手机版 / macOS 版吗？<span class="chev">+</span></button>
+        <div class="faq-a">目前仅支持 Windows 桌面端（10 / 11 64 位）。更多平台在 Roadmap 规划中，欢迎在 GitHub Issues 提建议。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 页脚 -->
+<footer>
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <b>FocusCapture</b>
+        <p>不打断你思路的灵感捕获器。复制即存、语音即记，数据只存在你自己的电脑上。</p>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/pengjie1115/FocusCapture/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/pengjie1115/FocusCapture/blob/main/README.md" target="_blank" rel="noopener">README</a>
+      </div>
+    </div>
+    <div class="foot-star">
+      <a class="btn btn-green" href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">Star 支持一下</a>
+      <p>如果这个工具有帮助，点个 Star 就是最大的支持。</p>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 pengjie1115 · MIT License</span>
+      <span>Windows · .NET 8 · WPF · 本地语音识别</span>
+    </div>
+  </div>
+</footer>
+
+<!-- 灯箱 -->
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('open')">
+  <img id="lightboxImg" src="" alt="截图放大">
+</div>
+
+<script>
+/* 滚动导航 */
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+  nav.classList.toggle('scrolled', window.scrollY > 10);
+}, { passive: true });
+
+/* 汉堡菜单 */
+const menuBtn = document.getElementById('menuBtn');
+const navLinks = document.getElementById('navLinks');
+menuBtn.addEventListener('click', () => navLinks.classList.toggle('open'));
+
+/* FAQ 折叠 */
+function toggleFaq(btn) {
+  btn.parentElement.classList.toggle('open');
+}
+
+/* 灯箱 */
+function openLightbox(fig) {
+  const img = fig.querySelector('img');
+  document.getElementById('lightboxImg').src = img.src;
+  document.getElementById('lightbox').classList.add('open');
+}
+
+/* 滚动渐入 */
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((e) => {
+    if (e.isIntersecting) {
+      e.target.classList.add('in');
+      observer.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.12 });
+document.querySelectorAll('.reveal').forEach((el) => observer.observe(el));
+</script>
+</body>
+</html>
