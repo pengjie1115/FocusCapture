@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Sync;
@@ -52,20 +51,7 @@ public partial class SettingsWindow : Window
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
         UpdateIconUI();
         LoadSyncSettings();
-        LoadTodoSettings();
         _suppressEvents = false;
-    }
-
-    /// <summary>v3.5 待办与提醒设置回填</summary>
-    private void LoadTodoSettings()
-    {
-        DefaultTypeCombo.SelectedIndex = _settings.InputDefaultType == "Todo" ? 1 : 0;
-        BtnTodoSwitchHotkey.Content = Win32.HotkeyToString(_settings.TodoSwitchHotkey);
-        DailySummaryCheck.IsChecked = _settings.DailySummaryEnabled;
-        DailySummaryTimeInput.Text = _settings.DailySummaryTime;
-        SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
-        PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
-        AskTimeCheck.IsChecked = _settings.AskTimeForDateOnly;
     }
 
     /// <summary>云同步设置回填（方案A 2026-08-15：授权码自动解锁，无主密码/恢复码）</summary>
@@ -136,79 +122,6 @@ public partial class SettingsWindow : Window
         _settings.QuickViewHotkey = new() { Modifiers = 3, Key = 0x56 };
         _settings.VoiceInputHotkey = new() { Modifiers = 3, Key = 0x52 };
         _settings.Save(); LoadSettings(); _onChanged?.Invoke();
-    }
-
-    // ── v3.5 待办与提醒（改即保存 + 即时校验） ──
-
-    private void DefaultType_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        _settings.InputDefaultType = DefaultTypeCombo.SelectedIndex == 1 ? "Todo" : "Note";
-        _settings.Save();
-    }
-
-    private void BtnTodoSwitch_Click(object sender, RoutedEventArgs e) => StartCapture(BtnTodoSwitchHotkey, hk =>
-    { _settings.TodoSwitchHotkey = hk; BtnTodoSwitchHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnTodoSwitchHotkey, hk); });
-
-    private void DailySummary_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        _settings.DailySummaryEnabled = DailySummaryCheck.IsChecked == true;
-        _settings.Save();
-    }
-
-    /// <summary>纯日期是否弹窗问几点（取消=默认当天 09:00）</summary>
-    private void AskTime_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        _settings.AskTimeForDateOnly = AskTimeCheck.IsChecked == true;
-        _settings.Save();
-    }
-
-    /// <summary>汇总时间校验：HH:mm 且 00:00~23:59；非法即时回退原值</summary>
-    private void DailySummaryTime_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        var v = DailySummaryTimeInput.Text.Trim();
-        if (IsValidDailyTime(v)) { _settings.DailySummaryTime = v; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
-            DailySummaryTimeInput.Text = _settings.DailySummaryTime;
-            DailySummaryTimeInput.CaretIndex = DailySummaryTimeInput.Text.Length;
-        }
-    }
-
-    private static bool IsValidDailyTime(string v)
-    {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(v, @"^\d{1,2}:\d{2}$")) return false;
-        var parts = v.Split(':');
-        return int.TryParse(parts[0], out var h) && int.TryParse(parts[1], out var m)
-            && h >= 0 && h <= 23 && m >= 0 && m <= 59;
-    }
-
-    /// <summary>正整数校验：非法即时回退原值</summary>
-    private void SnoozeMinutes_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        var v = SnoozeMinutesInput.Text.Trim();
-        if (int.TryParse(v, out var n) && n > 0) { _settings.SnoozeMinutes = n; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
-            SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
-            SnoozeMinutesInput.CaretIndex = SnoozeMinutesInput.Text.Length;
-        }
-    }
-
-    private void PopupCloseSeconds_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        var v = PopupCloseSecondsInput.Text.Trim();
-        if (int.TryParse(v, out var n) && n > 0) { _settings.PopupAutoCloseSeconds = n; _settings.Save(); }
-        else if (!string.IsNullOrEmpty(v))
-        {
-            PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
-            PopupCloseSecondsInput.CaretIndex = PopupCloseSecondsInput.Text.Length;
-        }
     }
 
     private void InputOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -382,45 +295,24 @@ public partial class SettingsWindow : Window
 
     // ── 云同步（QUEST-5 第八步：WebDAV 配置 / E2EE 主密码 / 同步控制 / 重置） ──
 
-    /// <summary>一键跳转坚果云网页端『安全-第三方应用管理』页，省去用户自己找入口。</summary>
-    private void BtnOpenAuthPage_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "https://www.jianguoyun.com/d/home#/safe",
-                UseShellExecute = true
-            });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show("打开浏览器失败，请手动访问：\nhttps://www.jianguoyun.com/d/home#/safe\n\n" + ex.Message,
-                "获取授权码", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-    }
-
     /// <summary>保存 WebDAV 配置 + 解锁/迁移 + 立即同步一次（授权码即钥匙：填一次永久有效，方案A 2026-08-15）。</summary>
     private async void BtnSyncConnect_Click(object sender, RoutedEventArgs e)
     {
         var url = SyncUrlInput.Text.Trim();
         var user = SyncUserInput.Text.Trim();
-        var token = SyncTokenInput.Password.Trim();
-        if (string.IsNullOrEmpty(user))
+        var token = SyncTokenInput.Password;
+        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(user))
         {
-            SyncStatusText.Text = "请先填写第①项：坚果云账号（注册邮箱）";
-            SyncUserInput.Focus();
+            SyncStatusText.Text = "请填写服务器地址、坚果云账号";
             return;
         }
-        if (string.IsNullOrEmpty(url)) url = _settings.Sync.WebDavUrl;   // 高级选项留空 = 沿用默认坚果云地址
         if (string.IsNullOrEmpty(token))
         {
             // 授权码留空 = 沿用已保存的（DPAPI 密文解出；应用重启后依然有效）
             var saved = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
             if (string.IsNullOrEmpty(saved))
             {
-                SyncStatusText.Text = "还差最后一步：点上方『获取授权码』生成并粘贴到第②项";
-                SyncTokenInput.Focus();
+                SyncStatusText.Text = "请填写坚果云授权码（网页端『安全-第三方应用管理』生成的应用密码）";
                 return;
             }
             token = saved;
@@ -454,18 +346,8 @@ public partial class SettingsWindow : Window
                 result = await engine.SyncNowAsync(auto: false);
             }
             SyncStatusText.Text = result.Success
-                ? $"✓ 连接成功，已同步（{_settings.Sync.LastSyncAt}），之后改动会自动同步"
+                ? $"连接成功，已同步（{_settings.Sync.LastSyncAt}）。建议勾选『自动同步』"
                 : "连接失败：" + result.Error;
-            if (result.Success && _settings.Sync.AutoSyncEnabled != true)
-            {
-                // 连接成功即默认开启自动同步：减少一步操作和一次理解成本
-                _settings.Sync.AutoSyncEnabled = true;
-                _settings.Save();
-                _suppressEvents = true;
-                AutoSyncCheck.IsChecked = true;
-                _suppressEvents = false;
-                engine.StartAutoSync();
-            }
         }
         catch (Exception ex)
         {
