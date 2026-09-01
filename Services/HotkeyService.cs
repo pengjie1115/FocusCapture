@@ -12,6 +12,7 @@ public class HotkeyService : IDisposable
     public const int ID_CLIPBOARD_TOGGLE = 1002;
     public const int ID_QUICK_VIEW = 1003;
     public const int ID_VOICE_INPUT = 1004;
+    public const int ID_TODO_SWITCH = 1005;   // v3.5：输入框笔记/待办类型切换（全局热键，设置可改）
 
     public event Action<int>? HotkeyPressed; // 回调传热键 ID
 
@@ -29,6 +30,7 @@ public class HotkeyService : IDisposable
         Register(ID_CLIPBOARD_TOGGLE, _settings.ClipboardToggleHotkey);
         Register(ID_QUICK_VIEW, _settings.QuickViewHotkey);
         Register(ID_VOICE_INPUT, _settings.VoiceInputHotkey);
+        Register(ID_TODO_SWITCH, _settings.TodoSwitchHotkey);
     }
 
     public void UnregisterAll()
@@ -37,6 +39,7 @@ public class HotkeyService : IDisposable
         Win32.UnregisterHotKey(_hwnd, ID_CLIPBOARD_TOGGLE);
         Win32.UnregisterHotKey(_hwnd, ID_QUICK_VIEW);
         Win32.UnregisterHotKey(_hwnd, ID_VOICE_INPUT);
+        Win32.UnregisterHotKey(_hwnd, ID_TODO_SWITCH);
     }
 
     private void Register(int id, HotkeyBinding hk)

@@ -14,10 +14,22 @@ public class NoteService
     // Windows 文件名非法字符
     private static readonly char[] InvalidFileChars = Path.GetInvalidFileNameChars();
 
+    /// <summary>静态整文件写锁（v3.5）：UpdateTodo（原地改行）与同步层 AppendLine/RemoveLines 共用，
+    /// 防后台同步（SyncEngine）与用户操作并发整文件重写互相覆盖。</summary>
+    private static readonly object FileWriteLock = new();
+
     /// <summary>速览行格式：- [yyyy-MM-dd HH:mm] 内容 — 来源: xxx（兼容旧格式 - [HH:mm]）。public 让 NoteImportService 复用同一份正则。</summary>
     public static readonly Regex NoteLineRegex = new(
         @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$",
         RegexOptions.Compiled);
+
+    /// <summary>
+    /// 待办展示/归类时间（v3，2026-08-28）：有 DueTime → 用 DueTime（待办归类到提醒日期，如"30号出去吃饭"归到 8/30）；
+    /// 无 DueTime（纯待办）→ 用创建时间。普通笔记恒为 Timestamp。
+    /// 统一原则：写入落盘、按日加载、日历计数、面板排序/显示全部走这里，避免各层口径漂移。
+    /// </summary>
+    public static DateTime TodoDisplayTime(NoteEntry e)
+        => e.Type == NoteType.Todo && e.DueTime.HasValue ? e.DueTime.Value : e.Timestamp;
 
     /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
     public event Action? NotesChanged;
@@ -41,7 +53,11 @@ public class NoteService
     /// <summary>软删除服务（暴露给 UI 层调用 MarkDeleted）</summary>
     public DeletedNoteService DeletedService => _deletedService;
 
-    public NoteEntry? SaveNote(string content, string? sourceWindow = null)
+    /// <summary>
+    /// 保存笔记/待办。type=Todo 时自动做本地规则时间识别（命中且是未来时间 → 设 DueTime；已过/未命中 → 纯待办）。
+    /// dueTime 非空（如输入框已弹窗确认过）→ 直接用显式值，跳过自动识别。
+    /// </summary>
+    public NoteEntry? SaveNote(string content, string? sourceWindow = null, NoteType type = NoteType.Note, DateTime? dueTime = null)
     {
         if (string.IsNullOrWhiteSpace(content)) return null;
 
@@ -63,12 +79,28 @@ public class NoteService
             entry.Content = content[tagMatch.Length..].Trim();
         }
 
+        // v3.5：待办类型 + 规则解析（命中且是未来时间 → 设 DueTime；已过 / 未命中 → 不设）
+        // v2：dueTime 显式传入（输入框已弹窗确认过）→ 优先用显式值
+        entry.Type = type;
+        if (type == NoteType.Todo)
+        {
+            if (dueTime.HasValue)
+                entry.DueTime = dueTime.Value;
+            else if (TimeParser.TryParse(entry.Content, out var due))
+                entry.DueTime = due;
+        }
+
         // 确定文件名
         string fileName;
         if (!string.IsNullOrEmpty(entry.Tag))
             fileName = $"{entry.Tag}.md";
         else
-            fileName = $"灵感_{DateTime.Now:yyyy-MM-dd}.md";
+        {
+            // v3（2026-08-28）：待办有提醒日期 → 归类写入该日期文件（如"30号出去吃饭"→ 灵感_2026-08-30.md，
+            // 保证 30 号面板能看到；普通笔记仍写当天文件）。entry.DueTime 在上方已赋值（显式 or 规则解析）。
+            var fileDate = TodoDisplayTime(entry).Date;
+            fileName = $"灵感_{fileDate:yyyy-MM-dd}.md";
+        }
 
         try
         {
@@ -80,11 +112,11 @@ public class NoteService
         catch (Exception ex)
         {
             Debug.WriteLine($"[FocusCapture] 写入笔记失败: {ex.Message}");
-            // 降级：不带标签写入默认文件
+            // 降级：不带标签写入默认文件（保持类型）
             if (!string.IsNullOrEmpty(entry.Tag))
             {
                 entry.Tag = null;
-                return SaveNote(content, sourceWindow);
+                return SaveNote(content, sourceWindow, type);
             }
             return null;
         }
@@ -294,6 +326,77 @@ public class NoteService
         }
     }
 
+    // ── v3.5 待办：UpdateTodo 原地改行（MD 只增不减的唯一例外，红线 2） ──
+
+    /// <summary>
+    /// 待办原地改行：更新内容/状态/提醒时间。用变更前字段定位原行 → 重建行文本 → 整文件重写该行。
+    /// 找不到原行返回 false。禁止追加新行；禁止改到非待办行（入口要求 Type=Todo）。
+    /// 顺序敏感：先定位后重建——禁止先套用变更再匹配（IsEntryLine 比较 line == entry.ToMarkdownLine()，
+    /// 先改字段后新行文本带 (状态:) 等后缀永远匹配不上原行，UpdateTodo 将恒返回 false）。
+    /// 与同步层 AppendLine/RemoveLines 共用 FileWriteLock，防后台同步与用户操作并发整文件重写互相覆盖。
+    /// </summary>
+    public bool UpdateTodo(NoteEntry entry, string? newContent = null, TodoStatus? status = null,
+        DateTime? dueTime = null, bool clearDue = false)
+    {
+        if (entry == null || entry.Type != NoteType.Todo) return false;
+
+        var filePath = FindEntryFile(entry);
+        if (filePath == null) return false;
+
+        lock (FileWriteLock)
+        {
+            try
+            {
+                var lines = File.ReadAllLines(filePath, Encoding.UTF8);
+
+                // 先定位：用变更前字段（调用方传入的 entry 尚未套用变更）精确整行匹配原行
+                var matchedIndex = -1;
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    if (IsEntryLine(lines[i].TrimEnd('\r'), entry)) { matchedIndex = i; break; }
+                }
+                if (matchedIndex < 0) return false;
+
+                // 后重建：以 entry 原始字段为底，套用变更，FormatTodoLine 与 ToMarkdownLine 同一套格式
+                var updated = CloneForUpdate(entry);
+                if (newContent != null) updated.Content = newContent.Trim();
+                if (clearDue) updated.DueTime = null;
+                else if (dueTime.HasValue) updated.DueTime = dueTime;
+                if (status.HasValue) updated.TodoStatus = status.Value;
+
+                lines[matchedIndex] = NoteEntry.FormatTodoLine(updated);
+                File.WriteAllLines(filePath, lines, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 待办更新失败 ({filePath}): {ex.Message}");
+                return false;
+            }
+        }
+
+        // 成功后把变更回写传入的 entry（防调用方后续再 UpdateTodo 用旧字段定位失败——面板徽标已办/右键设提醒/建议条设提醒
+        // 链路都会先后对同一条待办多次 UpdateTodo，定位必须始终用最新字段）
+        if (newContent != null) entry.Content = newContent.Trim();
+        if (clearDue) entry.DueTime = null;
+        else if (dueTime.HasValue) entry.DueTime = dueTime;
+        if (status.HasValue) entry.TodoStatus = status.Value;
+
+        NotesChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>浅克隆 NoteEntry（仅携带存储相关字段），供 UpdateTodo 以原始字段为底重建新行。变更不污染调用方传入的 entry。</summary>
+    private static NoteEntry CloneForUpdate(NoteEntry e) => new()
+    {
+        Timestamp = e.Timestamp,
+        Content = e.Content,
+        SourceWindow = e.SourceWindow,
+        Tag = e.Tag,
+        Type = e.Type,
+        DueTime = e.DueTime,
+        TodoStatus = e.TodoStatus
+    };
+
     /// <summary>精确匹配 entry 对应的存储行（新格式整行 / 旧格式 [HH:mm] 兼容）</summary>
     private static bool IsEntryLine(string line, NoteEntry entry)
     {
@@ -355,7 +458,8 @@ public class NoteService
                 if (fileName.StartsWith("灵感_")) continue; // already parsed
 
                 var fileEntries = ParseNotes(file, fileName, DateTime.Today);
-                result.AddRange(fileEntries.Where(e => e.Timestamp.Date == date.Date));
+                // v3（2026-08-28）：待办按 DueTime 归类日期过滤（有提醒的待办跟随提醒日期，普通笔记按创建日）
+                result.AddRange(fileEntries.Where(e => TodoDisplayTime(e).Date == date.Date));
             }
         }
 
@@ -412,6 +516,39 @@ public class NoteService
                         SourceWindow = marker == "AI" ? "AI 回填" : "手动编辑",
                         Tag = null
                     });
+                    continue;
+                }
+
+                // 普通行（v3.5 待办解析：必须放在 ParseMarkerLine 判定之后，否则待办正文以【编辑】/【AI 释义】开头会被误判成标记行）
+                if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
+                {
+                    var entry = new NoteEntry
+                    {
+                        Timestamp = ts,
+                        Type = NoteType.Todo,
+                        Content = rawContent,
+                        SourceWindow = source,
+                        Tag = tag
+                    };
+                    // 剥离 (提醒: …[, 状态: …]) 与独立 (状态: …) 属性（兼容组合/独立两种括号写法）
+                    var body = rawContent["【待办】".Length..].Trim();
+                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                    if (attrMatch.Success)
+                    {
+                        if (DateTime.TryParse(attrMatch.Groups[1].Value, out var due))
+                            entry.DueTime = due;
+                        if (attrMatch.Groups[2].Success)
+                            entry.TodoStatus = attrMatch.Groups[2].Value == "已办" ? TodoStatus.Done : TodoStatus.Read;
+                        body = body.Remove(attrMatch.Index, attrMatch.Length).Trim();
+                    }
+                    var stMatch = Regex.Match(body, @"\(状态: (已办|已读)\)");
+                    if (stMatch.Success)
+                    {
+                        entry.TodoStatus = stMatch.Groups[1].Value == "已办" ? TodoStatus.Done : TodoStatus.Read;
+                        body = body.Remove(stMatch.Index, stMatch.Length).Trim();
+                    }
+                    entry.Content = body;
+                    entries.Add(entry);
                     continue;
                 }
 
@@ -509,7 +646,14 @@ public class NoteService
                     };
                     if (_deletedService.IsDeleted(entry)) continue;
 
-                    var key = ts.Date;
+                    // v3（2026-08-28）：待办行按 DueTime 归类记红点（日历热力与面板归类同口径）
+                    DateTime? due = null;
+                    if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
+                    {
+                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                        if (attr.Success && DateTime.TryParse(attr.Groups[1].Value, out var d)) due = d;
+                    }
+                    var key = (due.HasValue ? due.Value.Date : ts.Date);
                     counts[key] = counts.GetValueOrDefault(key) + 1;
                 }
             }
@@ -564,17 +708,20 @@ public class NoteService
         return result;
     }
 
-    /// <summary>向指定文件追加一行（目录不存在自动创建）。line 必须是单行格式（含 \u23CE 转义）。</summary>
+    /// <summary>向指定文件追加一行（目录不存在自动创建）。line 必须是单行格式（含 \u23CE 转义）。共享 FileWriteLock 防并发覆盖。</summary>
     public void AppendLine(string relativePath, string line)
     {
         var safeName = Path.GetFileName(relativePath); // 防御路径穿越
         if (string.IsNullOrEmpty(safeName)) return;
         Directory.CreateDirectory(_settings.NotesPath);
         var filePath = Path.Combine(_settings.NotesPath, safeName);
-        File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+        lock (FileWriteLock)
+        {
+            File.AppendAllText(filePath, line + Environment.NewLine, Encoding.UTF8);
+        }
     }
 
-    /// <summary>从指定文件移除指定的行（按整行内容精确匹配），供"清空回收站后同步软删"与"冲突替换"用。</summary>
+    /// <summary>从指定文件移除指定的行（按整行内容精确匹配），供"清空回收站后同步软删"与"冲突替换"用。共享 FileWriteLock。</summary>
     public void RemoveLines(string relativePath, HashSet<string> lineContents)
     {
         var safeName = Path.GetFileName(relativePath);
@@ -582,15 +729,18 @@ public class NoteService
         var filePath = Path.Combine(_settings.NotesPath, safeName);
         if (!File.Exists(filePath)) return;
 
-        var lines = File.ReadAllLines(filePath, Encoding.UTF8);
-        var keep = new List<string>(lines.Length);
-        foreach (var rawLine in lines)
+        lock (FileWriteLock)
         {
-            var line = rawLine.TrimEnd('\r');
-            if (lineContents.Contains(line)) continue;
-            keep.Add(line);
+            var lines = File.ReadAllLines(filePath, Encoding.UTF8);
+            var keep = new List<string>(lines.Length);
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (lineContents.Contains(line)) continue;
+                keep.Add(line);
+            }
+            File.WriteAllLines(filePath, keep, Encoding.UTF8);
         }
-        File.WriteAllLines(filePath, keep, Encoding.UTF8);
     }
 
     /// <summary>MD 行本地时间戳 → ISO 8601 UTC 字符串（同步层 CreatedAt/UpdatedAt 约定，分钟精度、DateTimeKind 处理）。</summary>

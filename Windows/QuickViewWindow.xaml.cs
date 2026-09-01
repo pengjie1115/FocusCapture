@@ -18,10 +18,23 @@ public class StringToVisibilityConverter : IValueConverter
 public class NoteEntryViewModel : INotifyPropertyChanged
 {
     public NoteEntry Entry { get; }
-    public DateTime Timestamp => Entry.Timestamp;
+    // v3（2026-08-28）：待办有 DueTime → 显示 DueTime（归类到提醒日期后，时间列展示提醒时刻而非创建时刻）
+    public DateTime Timestamp => NoteService.TodoDisplayTime(Entry);
+    // v3.6（2026-08-28）：跨日期筛选（未到期档等）下非今天的条目带日期；今天只显示 HH:mm
+    public string DisplayTime =>
+        Timestamp.Date == DateTime.Today
+            ? Timestamp.ToString("HH:mm")
+            : Timestamp.ToString("MM-dd HH:mm");
     public string FirstLine => (Entry.EditedContent ?? Entry.Content).Split('\n')[0].Trim();
     public string SourceWindow => Entry.SourceWindow;
     public string? Tag => Entry.Tag;
+
+    // ── v3.5 待办展示属性 ──
+    public bool IsTodo => Entry.Type == NoteType.Todo;                                    // 待办徽标显示
+    public bool IsDone => Entry.Type == NoteType.Todo && Entry.TodoStatus == TodoStatus.Done;  // 已办：灰显+删除线+沉底
+    public bool IsRead => Entry.Type == NoteType.Todo && Entry.TodoStatus == TodoStatus.Read;  // 已读：橙字小标
+    public bool IsTodoNotDone => Entry.Type == NoteType.Todo && Entry.TodoStatus != TodoStatus.Done; // 未办（Open+Read，供「待办」筛选档）
+    public string? DueTimeText => Entry.DueTime?.ToString("MM-dd HH:mm");                  // 可有可无的提醒角标辅助
 
     /// <summary>展示内容：编辑过的笔记优先显示编辑后内容（存储层仍保留原行）</summary>
     public string Content => Entry.EditedContent ?? Entry.Content;
@@ -131,6 +144,10 @@ public partial class QuickViewWindow : Window
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
     private readonly Func<SyncEngine?>? _syncEngineProvider;   // 2026-08-15：注入引擎引用（引擎可能因配置变更重建，故传 provider）
+    private IChatProvider? _aiProvider;                        // v3.5：面板编辑时间识别 LLM 兜底（MainWindow 装配传入；设置变更后由 UpdateAiProvider 重建）
+
+    /// <summary>v3.5：设置窗口保存 AI 配置后由 MainWindow 调用来重建共享 provider</summary>
+    public void UpdateAiProvider(IChatProvider? p) => _aiProvider = p;
     private ExportDialog? _exportDialog;
     private List<NoteEntryViewModel> _viewModels = new();
     private DateTime _selectedDate = DateTime.Today;
@@ -146,12 +163,25 @@ public partial class QuickViewWindow : Window
 
     private enum NoteLoadMode { Date, Range, Search }
 
-    public QuickViewWindow(NoteService noteService, AppSettings settings, Func<SyncEngine?>? syncEngineProvider = null)
+    // ── v3.5 筛选（内存层过滤，切日期/刷新后保持生效；字段驱动，非前端一次性 filter） ──
+    // v2（2026-08-28）：新增第 5 档 Future（未到期=明天及以后），与其余档互斥
+    // v3（2026-08-28）：来源筛选 string 单选 → HashSet 多选（空集=全部来源）
+    private readonly HashSet<string> _typeFilter = new(StringComparer.Ordinal) { "All" }; // All / Note / Todo(未办) / Done(已办) / Future(未到期)，多选组合
+    private readonly HashSet<string> _sourceFilter = new(StringComparer.Ordinal);         // 选中来源集合，空=全部来源
+    private List<string> _availableSources = new();   // v3.6 修复：当前加载范围【筛选前】的全量来源，供来源下拉取选项，避免选中后其它来源选项消失
+
+    // ── v3.5 编辑时间识别建议条 ──
+    private NoteEntryViewModel? _suggestVm;                                                // 建议条关联的条目（保存后同步了 Content）
+    private DateTime? _suggestDue;                                                         // 待设为提醒的时间
+    private DispatcherTimer? _suggestTimer;                                                // 建议条 10 秒自动消失
+
+    public QuickViewWindow(NoteService noteService, AppSettings settings, Func<SyncEngine?>? syncEngineProvider = null, IChatProvider? aiProvider = null)
     {
         InitializeComponent();
         _noteService = noteService;
         _settings = settings;
         _syncEngineProvider = syncEngineProvider;
+        _aiProvider = aiProvider;
         Opacity = settings.QuickViewOpacity;
         // AI 助手名称自定义：标题栏入口按钮文案同源读取（三处入口之一）
         BtnAiAsk.Content = string.IsNullOrWhiteSpace(settings.AiAssistantName) ? "AI 问答" : settings.AiAssistantName;
@@ -176,18 +206,107 @@ public partial class QuickViewWindow : Window
     private void ReloadNotes()
     {
         // 2026-08-15：按当前加载模式分派（Date / Range / Search）
-        var entries = _loadMode switch
-        {
-            NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
-            NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
-            _ => _noteService.LoadNotes(_selectedDate)
-        };
-        _viewModels = entries.Select(e => new NoteEntryViewModel(e)).ToList();
+        // v2（2026-08-28）：未到期档跨日期加载全部笔记（未来待办不在任何单日列表里），内存筛选
+        var entries = _typeFilter.Contains("Future")
+            ? _noteService.LoadAllEntries()
+            : _loadMode switch
+            {
+                NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
+                NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
+                _ => _noteService.LoadNotes(_selectedDate)
+            };
+
+        // v3.6 修复：来源下拉选项取自【筛选前】的全量来源，否则选中某来源后其它来源条目被筛掉、
+        // 选项随之消失、无法继续多选（用户原痛点）。先聚合全量来源供 UpdateSourceFilterOptions 使用。
+        _availableSources = entries.Select(e => e.SourceWindow).Where(s => !string.IsNullOrEmpty(s))
+            .Distinct().OrderBy(s => s).ToList();
+        // v3.5：筛选在内存层应用（ReloadNotes 后），切日期/刷新后保持生效——不是前端一次性 filter
+        var filtered = ApplyFilters(entries);
+        // v3.5：已办沉底——先分桶（已办 → 桶 1 沉底，普通+未办 → 桶 0），桶内按时间倒序。
+        // v3（2026-08-28 二次修复）：旧实现用 ThenBy 做沉底，但 ThenBy 只在时间相同时生效，
+        // 时间不同的已办永远排不沉 → 必须把「是否已办」放主排序键。恢复待办后自动回桶 0 正常排序。
+        var sorted = filtered
+            .OrderBy(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done ? 1 : 0)
+            .ThenByDescending(e => NoteService.TodoDisplayTime(e));
+
+        _viewModels = sorted.Select(e => new NoteEntryViewModel(e)).ToList();
         ApplyDuplicateMarkers();
+        UpdateSourceFilterOptions();   // v3.6：来源下拉从【全量来源】聚合（_availableSources 已在筛选前算好），刷新后仍保持选中
         NotesList.ItemsSource = _viewModels;
         UpdateEmptyHint();
         UpdateSelectionUI();
         UpdateModeIndicator();
+    }
+
+    /// <summary>v3.5：类型多选 + 来源 筛选（内存过滤；“全部”时不过滤）。
+    /// v2：未到期档（Future）= 明天及以后的未办待办，与类型档互斥优先。</summary>
+    private IEnumerable<NoteEntry> ApplyFilters(IEnumerable<NoteEntry> entries)
+    {
+        if (_typeFilter.Contains("Future"))
+        {
+            // 未到期：明天及以后的未办待办（今天还没到时间的归「待办」档）
+            entries = entries.Where(e => e.Type == NoteType.Todo && e.TodoStatus != TodoStatus.Done
+                && e.DueTime.HasValue && e.DueTime.Value.Date > DateTime.Today);
+        }
+        else if (!_typeFilter.Contains("All"))
+        {
+            var showNote = _typeFilter.Contains("Note");
+            var showTodo = _typeFilter.Contains("Todo");   // 「待办」档=未办（Open+Read，不含已办）
+            var showDone = _typeFilter.Contains("Done");   // 「已办」档=仅 Done
+            entries = entries.Where(e =>
+                (showNote && e.Type != NoteType.Todo) ||
+                (showTodo && e.Type == NoteType.Todo && e.TodoStatus != TodoStatus.Done) ||
+                (showDone && e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Done));
+        }
+        if (_sourceFilter.Count > 0)
+            entries = entries.Where(e => !string.IsNullOrEmpty(e.SourceWindow) && _sourceFilter.Contains(e.SourceWindow));
+        return entries;
+    }
+
+    /// <summary>v3.6：来源多选下拉——基于当前加载范围【筛选前】的全量来源重建 Popup 列表，保留 _sourceFilter 选中；同步框内文本。
+    /// 修复：原从筛选后的 _viewModels 聚合来源，选中某来源后其它来源条目被筛掉、选项消失，无法多选。改为用 _availableSources。</summary>
+    private void UpdateSourceFilterOptions()
+    {
+        var sources = _availableSources;   // 筛选前全量来源，不受当前选中状态影响
+
+        // 剔除已失效的选中来源（当前加载范围不再出现）
+        _sourceFilter.RemoveWhere(s => !sources.Contains(s));
+
+        SourceFilterList.Children.Clear();
+        foreach (var src in sources)
+        {
+            var selected = _sourceFilter.Contains(src);
+            var btn = new Button
+            {
+                Content = (selected ? "✓ " : "") + src,
+                Tag = src,
+                Height = 26,
+                Margin = new Thickness(0, 1, 0, 1),
+                Padding = new Thickness(8, 0, 8, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Foreground = selected ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)) : new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                FontSize = 12,
+                Cursor = Cursors.Hand
+            };
+            btn.Click += (_, _) => ToggleSource(src);
+            SourceFilterList.Children.Add(btn);
+        }
+
+        // 框内文本：未选=空白，已选=「已选 N 个来源」
+        SourceFilterText.Text = _sourceFilter.Count == 0 ? "" : $"已选 {_sourceFilter.Count} 个来源";
+        SourceFilterText.Foreground = _sourceFilter.Count == 0
+            ? new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88))
+            : new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+    }
+
+    /// <summary>v3.6：来源选项点击 → 切换选中（点一下选中、再点取消）→ 重新筛选。ReloadNotes 内部 UpdateSourceFilterOptions
+    /// 已用全量来源重建勾选样式，故无需单独刷新；多选并集 + 即时生效，无需确认按钮。</summary>
+    private void ToggleSource(string source)
+    {
+        if (!_sourceFilter.Add(source)) _sourceFilter.Remove(source);
+        ReloadNotes();
     }
 
     /// <summary>
@@ -212,18 +331,22 @@ public partial class QuickViewWindow : Window
 
     private void UpdateEmptyHint()
     {
-        EmptyHint.Text = _loadMode switch
-        {
-            NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
-            NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
-            _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
-        };
+        EmptyHint.Text = _typeFilter.Contains("Future")
+            ? "没有未到期的待办"
+            : _loadMode switch
+            {
+                NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
+                NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
+                _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
+            };
         EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdateModeIndicator()
     {
-        if (_loadMode == NoteLoadMode.Range)
+        if (_typeFilter.Contains("Future"))
+            ModeIndicator.Text = "筛选：未到期（明天及以后）";
+        else if (_loadMode == NoteLoadMode.Range)
             ModeIndicator.Text = $"区间：{_rangeStart:yyyy-MM-dd}  ~  {_rangeEnd:yyyy-MM-dd}";
         else if (_loadMode == NoteLoadMode.Search)
             ModeIndicator.Text = $"查找：\"{_searchKeyword}\"";
@@ -505,6 +628,18 @@ public partial class QuickViewWindow : Window
         {
             _contextTarget = target.DataContext as NoteEntryViewModel;
         }
+        // v3.5：「设置提醒/取消提醒」仅待办条目可用（普通笔记置灰）。
+        // 注意：MenuItem 在 ContextMenu 自己的 namescope 内，x:Name 不会提升为窗口字段，
+        // 这里通过 cm.Items 遍历（按 Header 识别），避免直接字段访问。
+        var isTodo = _contextTarget?.IsTodo == true;
+        if (sender is ContextMenu cm)
+        {
+            foreach (var item in cm.Items.OfType<MenuItem>())
+            {
+                if (item.Header is string h && (h == "设置提醒…" || h == "取消提醒"))
+                    item.IsEnabled = isTodo;
+            }
+        }
     }
 
     private NoteEntryViewModel? _contextTarget;
@@ -558,6 +693,202 @@ public partial class QuickViewWindow : Window
         }
         CancelEditState(vm);
         Refresh();   // 2026-08-15 修复：原 _viewModels.Remove + Items.Refresh() 对 ItemsSource=List 不触发 UI 重绘（List 无集合通知且 Items.Refresh 对 ItemsSource 模式无效），单条删除后不实时刷新；统一走 ReloadNotes 全量重载（与批量删除路径一致）
+    }
+
+    // ── v3.5 右键提醒（仅待办显示） ──
+
+    /// <summary>右键「设置提醒」：弹出 yyyy-MM-dd HH:mm 输入对话框 → UpdateTodo 原地设提醒时间（正文带当前展示内容，防覆盖编辑）</summary>
+    private void CtxSetDue_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm == null || !vm.IsTodo) return;
+        var dlg = new DueTimeDialog(vm.Entry.DueTime) { Owner = this };
+        if (dlg.ShowDialog() != true || !dlg.DueTime.HasValue) return;
+        if (_noteService.UpdateTodo(vm.Entry,
+                newContent: vm.Entry.EditedContent ?? vm.Entry.Content,
+                dueTime: dlg.DueTime.Value))
+            Refresh();
+        else
+            System.Windows.MessageBox.Show("设置提醒失败：未在笔记文件中找到该条目", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    /// <summary>右键「取消提醒」：UpdateTodo 清除提醒时间（正文带当前展示内容，防覆盖编辑）</summary>
+    private void CtxClearDue_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = GetContextTarget(sender);
+        if (vm == null || !vm.IsTodo) return;
+        if (_noteService.UpdateTodo(vm.Entry,
+                newContent: vm.Entry.EditedContent ?? vm.Entry.Content,
+                clearDue: true))
+            Refresh();
+        else
+            System.Windows.MessageBox.Show("取消提醒失败：未在笔记文件中找到该条目", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    /// <summary>
+    /// v3.5：待办徽标点击 → 已办（原地改行 + 落盘）。e.Handled 吞事件防冒泡触发条目复制。
+    /// v3（2026-08-28）：可撤销——再点「已办」→ 恢复为「待办」（Open）。兜底场景：用户标记完成后又觉得该事
+    /// 只是暂时没时间做、仍可优化，恢复后继续保留在待办列表。
+    /// </summary>
+    private void TodoBadge_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is Border b && b.DataContext is NoteEntryViewModel vm)
+        {
+            e.Handled = true;
+            if (!vm.IsTodo) return;
+            var next = vm.IsDone ? TodoStatus.Open : TodoStatus.Done;
+            if (_noteService.UpdateTodo(vm.Entry,
+                    newContent: vm.Entry.EditedContent ?? vm.Entry.Content,
+                    status: next))
+                Refresh();
+        }
+    }
+
+    // ── v3.5 筛选（类型多选 + 来源） ──
+
+    private void TypeFilter_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton btn || btn.Tag is not string tag) return;
+
+        // 点「全部」：清空其余档位，只留 All
+        if (tag == "All")
+        {
+            _typeFilter.Clear();
+            _typeFilter.Add("All");
+            FilterAll.IsChecked = true;
+            FilterNote.IsChecked = false;
+            FilterTodo.IsChecked = false;
+            FilterDone.IsChecked = false;
+            FilterFuture.IsChecked = false;
+        }
+        // 点「未到期」：与其余档互斥，只留 Future
+        else if (tag == "Future")
+        {
+            _typeFilter.Clear();
+            if (btn.IsChecked == true) _typeFilter.Add("Future");
+            else _typeFilter.Add("All");
+            FilterAll.IsChecked = !_typeFilter.Contains("Future");
+            FilterNote.IsChecked = false;
+            FilterTodo.IsChecked = false;
+            FilterDone.IsChecked = false;
+            if (!_typeFilter.Contains("Future")) FilterFuture.IsChecked = false;
+        }
+        else
+        {
+            // 点类型档：移除未到期档
+            if (_typeFilter.Remove("Future")) FilterFuture.IsChecked = false;
+            _typeFilter.Remove("All");
+            if (btn.IsChecked == true) _typeFilter.Add(tag);
+            else _typeFilter.Remove(tag);
+            // 四档全取消 → 自动回「全部」
+            if (_typeFilter.Count == 0)
+            {
+                _typeFilter.Add("All");
+                FilterAll.IsChecked = true;
+            }
+            else
+            {
+                FilterAll.IsChecked = false;
+            }
+        }
+        ReloadNotes();
+    }
+
+    // ── v3.6：来源多选 popup 外部点击关闭（Popup 默认 StaysOpen=True 后手动维护可见性） ──
+    /// <summary>v3.6：来源筛选框点击 → 开/合下拉。开 popup 时注册窗口级外击监听；关时清理。</summary>
+    private void SourceFilterBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (SourceFilterPopup.IsOpen)
+            CloseSourcePopup();
+        else
+        {
+            UpdateSourceFilterOptions();
+            SourceFilterPopup.IsOpen = true;
+            Mouse.AddMouseDownHandler(this, OnWindowMouseDown_OutsideSourcePopup);
+        }
+    }
+
+    private void CloseSourcePopup()
+    {
+        SourceFilterPopup.IsOpen = false;
+        Mouse.RemoveMouseDownHandler(this, OnWindowMouseDown_OutsideSourcePopup);
+    }
+
+    /// <summary>点 popup 外（不在按钮也不在 popup 子树内）→ 关 popup。OriginalSource 判断所属控件路径。</summary>
+    private void OnWindowMouseDown_OutsideSourcePopup(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject src)
+        {
+            if (IsDescendantOf(src, SourceFilterBtn) || IsDescendantOf(src, SourceFilterPopup.Child))
+                return;
+        }
+        CloseSourcePopup();
+    }
+
+    /// <summary>沿 VisualTree 向上查找 ancestor 中是否包含 target。</summary>
+    private static bool IsDescendantOf(DependencyObject node, DependencyObject? ancestor)
+    {
+        if (ancestor == null) return false;
+        var cur = node;
+        while (cur != null)
+        {
+            if (cur == ancestor) return true;
+            cur = System.Windows.Media.VisualTreeHelper.GetParent(cur);
+        }
+        return false;
+    }
+
+    // ── v3.5 编辑时间识别建议条 ──
+
+    /// <summary>显示建议条（编辑框区域上方浮出，10 秒自动消失）。文案用 TimeParser.FormatNaturalTime 生成。</summary>
+    private void ShowSuggestBar(DateTime due)
+    {
+        SuggestText.Text = $"检测到{TimeParser.FormatNaturalTime(due)}，设为提醒？";
+        // 定位：建议条浮在当前编辑条目容器上方（Canvas 覆盖层坐标）
+        if (_suggestVm != null && NotesList.ItemContainerGenerator.ContainerFromItem(_suggestVm) is FrameworkElement container)
+        {
+            try
+            {
+                var p = container.TransformToVisual(FloatToolbarCanvas).Transform(new Point(0, 0));
+                Canvas.SetLeft(SuggestBar, Math.Max(0, Math.Min(p.X, FloatToolbarCanvas.ActualWidth - SuggestBar.ActualWidth - 4)));
+                Canvas.SetTop(SuggestBar, Math.Max(0, p.Y - SuggestBar.ActualHeight - 4));
+            }
+            catch { Canvas.SetLeft(SuggestBar, 10); Canvas.SetTop(SuggestBar, 10); }
+        }
+        else { Canvas.SetLeft(SuggestBar, 10); Canvas.SetTop(SuggestBar, 10); }
+
+        SuggestBar.Visibility = Visibility.Visible;
+        _suggestTimer?.Stop();
+        _suggestTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _suggestTimer.Tick += (_, _) => { _suggestTimer.Stop(); HideSuggestBar(); };
+        _suggestTimer.Start();
+    }
+
+    private void HideSuggestBar()
+    {
+        _suggestTimer?.Stop();
+        SuggestBar.Visibility = Visibility.Collapsed;
+        _suggestVm = null;
+        _suggestDue = null;
+    }
+
+    /// <summary>设为提醒：UpdateTodo(newContent: vm.Content(已同步新正文), dueTime) 原地改行</summary>
+    private void SuggestDueSet_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = _suggestVm;
+        var due = _suggestDue;
+        HideSuggestBar();
+        if (vm == null || !due.HasValue) return;
+        if (_noteService.UpdateTodo(vm.Entry, newContent: vm.Entry.Content, dueTime: due.Value))
+            Refresh();
+    }
+
+    /// <summary>忽略：仅收起建议条，编辑内容保留</summary>
+    private void SuggestDueIgnore_Click(object sender, RoutedEventArgs e)
+    {
+        HideSuggestBar();
     }
 
     /// <summary>双击进入编辑态：沉浸式锁定时弹窗拦截</summary>
@@ -645,15 +976,20 @@ public partial class QuickViewWindow : Window
         vm.CancelEdit();
 
         var win = new NoteEditWindow(_noteService, vm,
-            $"编辑笔记 · {vm.Entry.Timestamp:yyyy-MM-dd HH:mm}")
+            $"编辑笔记 · {vm.Entry.Timestamp:yyyy-MM-dd HH:mm}", _aiProvider)
         { Owner = this };
 
         if (win.ShowDialog() == true)
             Refresh();
     }
 
-    /// <summary>保存编辑：追加【编辑】标记行（MD 只增不减），成功后重新加载面板</summary>
-    private void SaveEditNote(NoteEntryViewModel vm)
+    /// <summary>
+    /// 保存编辑（v3.5 改造）：笔记走 AppendEdit 追加【编辑】行（现状不变）；待办走 TodoEditService.SaveEdited
+    /// 原地改行（红线 2 例外，禁止追加【编辑】行）。保存成功后对待办做时间识别——规则优先（TimeParser），
+    /// 规则未命中才调 LLM 兜底（DetectDueAsync），识别到未来时间弹建议条；未识别到时间不自动清除原提醒。
+    /// async void：LLM 调用放后台线程（DetectDueAsync 内部），禁止 UI 线程同步阻塞等 LLM。
+    /// </summary>
+    private async void SaveEditNote(NoteEntryViewModel vm)
     {
         if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
         {
@@ -664,7 +1000,7 @@ public partial class QuickViewWindow : Window
         }
 
         // 分离 AI 释义块（编辑时拼接显示，保存时剥离开来保持"MD 只增不减"结构）：
-        // 只保存主内容为【编辑】行；释义行只能由 AI 对话框追加，编辑框内改动不写回存储
+        // 主内容保存；释义行只能由 AI 对话框追加，编辑框内改动不写回存储
         var (contentToSave, _) = NoteEntryViewModel.SplitEditText(vm.EditText?.Trim() ?? "");
         if (string.IsNullOrEmpty(contentToSave))
         {
@@ -673,22 +1009,41 @@ public partial class QuickViewWindow : Window
             return;
         }
 
-        // 内容未变化：不追加冗余【编辑】行
+        // 内容未变化：不追加冗余【编辑】行也不改行
         var displayBase = vm.Entry.EditedContent ?? vm.Entry.Content;
         if (contentToSave != displayBase)
         {
-            if (!_noteService.AppendEdit(vm.Entry, contentToSave))
+            if (!TodoEditService.SaveEdited(_noteService, vm.Entry, contentToSave))
             {
                 System.Windows.MessageBox.Show("保存失败：未在笔记文件中找到该条目，可能已被外部修改", "错误",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 vm.CancelEdit();
                 return;
             }
-            vm.Entry.EditedContent = contentToSave;
+            // 存储层状态同步：
+            // - 待办原地改行 → Content 即新正文（供后续 UpdateTodo 定位用变更前字段）
+            // - 笔记追加【编辑】行 → EditedContent 即展示新内容（原行不动）
+            if (vm.Entry.Type == NoteType.Todo)
+                vm.Entry.Content = contentToSave;
+            else
+                vm.Entry.EditedContent = contentToSave;
         }
 
         CancelEditState(vm);
         Refresh();
+
+        // v3.5：待办时间识别建议（规则优先；规则未命中才调 LLM 兜底；未配 Key/异常 → 优雅降级不弹建议条不崩）
+        // v2：ResolveDueAsync 统一处理——裸时钟已过弹三选一、纯日期弹"问几点"、未来时间直接返回
+        if (vm.Entry.Type == NoteType.Todo)
+        {
+            var due = await TodoEditService.ResolveDueAsync(this, contentToSave, _aiProvider);
+            if (due.HasValue)
+            {
+                _suggestVm = vm;
+                _suggestDue = due.Value;
+                ShowSuggestBar(due.Value);
+            }
+        }
     }
 
     // ── 编辑态浮动工具条 ──

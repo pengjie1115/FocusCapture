@@ -42,6 +42,26 @@
                      MouseLeave="Ball_MouseLeave"
                      MouseLeftButtonUp="Ball_MouseLeftButtonUp"
                      MouseMove="Ball_MouseMove"/>
+
+            <!-- v3.5：未办待办角标（右上角小圆标，count<=0 隐藏；存在已读暂缓 → 红，否则绿；点击打开汇总窗须吞事件防冒泡触发拖拽/唤出） -->
+            <Border x:Name="Badge"
+                    MinWidth="18" Height="18"
+                    CornerRadius="9"
+                    Background="#4CAF50"
+                    BorderBrush="#FFFFFF" BorderThickness="1"
+                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Margin="0,-2,-2,0"
+                    Padding="4,0"
+                    Cursor="Hand"
+                    Visibility="Collapsed"
+                    MouseLeftButtonDown="Badge_MouseLeftButtonDown">
+                <TextBlock x:Name="BadgeText"
+                           Text=""
+                           Foreground="White"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           TextAlignment="Center"/>
+            </Border>
         </Grid>
     </Grid>
 </Window>
