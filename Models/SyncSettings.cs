@@ -36,6 +36,9 @@ public class SyncSettings
     /// <summary>待推软删清单（清空回收站时压入 Deleted=true 的笔记，推送成功后清空）。</summary>
     public List<SyncNote> PendingDeletes { get; set; } = new();
 
+    /// <summary>待推恢复清单（回收站恢复时压入的笔记 ID，推送成功后清空）：push 时覆盖云端删除标记，防恢复被旧墓碑误杀。</summary>
+    public List<string> PendingRestores { get; set; } = new();
+
     /// <summary>上次同步结果展示（"成功" / "失败: 原因" / ""）。</summary>
     public string LastSyncResult { get; set; } = "";
 

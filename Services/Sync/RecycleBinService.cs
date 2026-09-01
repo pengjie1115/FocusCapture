@@ -156,6 +156,33 @@ public class RecycleBinService
         return purged;
     }
 
+    /// <summary>
+    /// 按内容批量移除回收站记录（回收站双向同步用）：他端"恢复/彻底删除"传播到本机时，
+    /// 清掉与本端 (相对路径 + 原始行) 匹配的记录。单次扫描目录，避免逐条重复 IO。
+    /// 返回移除的记录数。
+    /// </summary>
+    public int RemoveMatchingBatch(IEnumerable<(string RelativePath, string Line)> items)
+    {
+        var wanted = items.Where(x => !string.IsNullOrEmpty(x.RelativePath) && !string.IsNullOrEmpty(x.Line)).ToList();
+        if (!Directory.Exists(_binDir) || wanted.Count == 0) return 0;
+        var removed = 0;
+        foreach (var file in Directory.GetFiles(_binDir, "recycle-*.json"))
+        {
+            try
+            {
+                var entry = JsonSerializer.Deserialize<RecycleBinEntry>(File.ReadAllText(file, Encoding.UTF8));
+                if (entry == null) continue;
+                var hit = wanted.RemoveAll(w => string.Equals(entry.RelativePath, w.RelativePath, StringComparison.Ordinal)
+                                                && entry.Lines.Contains(w.Line)) > 0;
+                if (!hit) continue;
+                File.Delete(file);
+                removed++;
+            }
+            catch { /* 损坏记录跳过 */ }
+        }
+        return removed;
+    }
+
     /// <summary>清理过期记录（启动时调用）</summary>
     private void CleanupExpired()
     {

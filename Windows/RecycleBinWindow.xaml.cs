@@ -123,6 +123,13 @@ public partial class RecycleBinWindow : Window
         if (selected.Count == 0) return;
 
         var restored = _recycleBin.RestoreBatch(selected, _noteService);
+        if (restored > 0 && _syncEngine != null)
+        {
+            // 恢复 → PendingRestores 压入（push 覆盖云端删除标记）+ 触发同步传播到其他设备
+            foreach (var (_, entry) in selected)
+                _syncEngine.QueuePendingRestore(entry.RelativePath, entry.Lines);
+            _noteService.RaiseNotesChanged();
+        }
         if (restored < selected.Count)
         {
             System.Windows.MessageBox.Show(

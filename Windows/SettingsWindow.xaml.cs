@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Sync;
@@ -295,24 +296,45 @@ public partial class SettingsWindow : Window
 
     // ── 云同步（QUEST-5 第八步：WebDAV 配置 / E2EE 主密码 / 同步控制 / 重置） ──
 
+    /// <summary>一键跳转坚果云网页端『安全-第三方应用管理』页，省去用户自己找入口。</summary>
+    private void BtnOpenAuthPage_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "https://www.jianguoyun.com/d/home#/safe",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("打开浏览器失败，请手动访问：\nhttps://www.jianguoyun.com/d/home#/safe\n\n" + ex.Message,
+                "获取授权码", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
     /// <summary>保存 WebDAV 配置 + 解锁/迁移 + 立即同步一次（授权码即钥匙：填一次永久有效，方案A 2026-08-15）。</summary>
     private async void BtnSyncConnect_Click(object sender, RoutedEventArgs e)
     {
         var url = SyncUrlInput.Text.Trim();
         var user = SyncUserInput.Text.Trim();
-        var token = SyncTokenInput.Password;
-        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(user))
+        var token = SyncTokenInput.Password.Trim();
+        if (string.IsNullOrEmpty(user))
         {
-            SyncStatusText.Text = "请填写服务器地址、坚果云账号";
+            SyncStatusText.Text = "请先填写第①项：坚果云账号（注册邮箱）";
+            SyncUserInput.Focus();
             return;
         }
+        if (string.IsNullOrEmpty(url)) url = _settings.Sync.WebDavUrl;   // 高级选项留空 = 沿用默认坚果云地址
         if (string.IsNullOrEmpty(token))
         {
             // 授权码留空 = 沿用已保存的（DPAPI 密文解出；应用重启后依然有效）
             var saved = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
             if (string.IsNullOrEmpty(saved))
             {
-                SyncStatusText.Text = "请填写坚果云授权码（网页端『安全-第三方应用管理』生成的应用密码）";
+                SyncStatusText.Text = "还差最后一步：点上方『获取授权码』生成并粘贴到第②项";
+                SyncTokenInput.Focus();
                 return;
             }
             token = saved;
@@ -346,8 +368,18 @@ public partial class SettingsWindow : Window
                 result = await engine.SyncNowAsync(auto: false);
             }
             SyncStatusText.Text = result.Success
-                ? $"连接成功，已同步（{_settings.Sync.LastSyncAt}）。建议勾选『自动同步』"
+                ? $"✓ 连接成功，已同步（{_settings.Sync.LastSyncAt}），之后改动会自动同步"
                 : "连接失败：" + result.Error;
+            if (result.Success && _settings.Sync.AutoSyncEnabled != true)
+            {
+                // 连接成功即默认开启自动同步：减少一步操作和一次理解成本
+                _settings.Sync.AutoSyncEnabled = true;
+                _settings.Save();
+                _suppressEvents = true;
+                AutoSyncCheck.IsChecked = true;
+                _suppressEvents = false;
+                engine.StartAutoSync();
+            }
         }
         catch (Exception ex)
         {

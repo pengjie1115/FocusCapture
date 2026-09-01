@@ -30,6 +30,8 @@ public class SyncNote
     public string UpdatedAt { get; set; } = "";   // ISO 8601 UTC，明文（对账需要）
     [JsonPropertyName("deleted")]
     public bool Deleted { get; set; }
+    [JsonPropertyName("purged")]
+    public bool Purged { get; set; }              // true=已彻底删除（回收站已清空）：他端应删除本地行并清除回收站记录，不入回收站
     [JsonPropertyName("deviceId")]
     public string DeviceId { get; set; } = "";    // 最后修改设备
     [JsonPropertyName("prevContent")]

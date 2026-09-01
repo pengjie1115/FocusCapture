@@ -22,6 +22,9 @@ public class NoteService
     /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
     public event Action? NotesChanged;
 
+    /// <summary>本机删除事件（DeleteNote 成功后触发）：(相对路径, 被删的原始行)。SyncEngine 订阅后生成删除标记随下次同步传播。</summary>
+    public event Action<string, IReadOnlyList<string>>? LinesDeleted;
+
     /// <summary>回收站服务（公开：SyncEngine 软删落地、UI 层复用同一实例）。</summary>
     public RecycleBinService RecycleBin => _recycleBin;
 
@@ -280,6 +283,7 @@ public class NoteService
                 return false;
             }
             File.WriteAllLines(filePath, keep, Encoding.UTF8);
+            LinesDeleted?.Invoke(Path.GetFileName(filePath), removedLines);
             NotesChanged?.Invoke();
             return true;
         }

@@ -52,6 +52,7 @@ public class SyncEngine
         _provider = provider;
         _backoffSeconds = backoffSeconds ?? DefaultBackoffSeconds;
         _settings.Sync.EnsureDeviceId();
+        _noteService.LinesDeleted += OnLinesDeleted;   // 删除即同步：移入回收站时生成删除标记（不再等清空回收站）
         _mergeTimer = new Timer(_ => OnMergeWindowElapsed(), null, Timeout.Infinite, Timeout.Infinite);
         _pollTimer = new Timer(_ => OnPollElapsed(), null, Timeout.Infinite, Timeout.Infinite);
     }
@@ -314,6 +315,9 @@ public class SyncEngine
         foreach (var x in _noteService.ReadAllLines())
             localLines[SyncNote.ComputeId(x.RelativePath, x.Line)] = x;
 
+        // 回收站清理 / 恢复传播的批量收集（单次扫描目录，避免逐条重复 IO）
+        var binRemovals = new List<(string RelativePath, string Line)>();
+
         foreach (var cloud in pull.Notes)
         {
             if (cloud.DeviceId == _settings.Sync.DeviceId) continue;   // 回声识别：自己推的不拉回
@@ -330,26 +334,52 @@ public class SyncEngine
                 continue;
             }
 
+            // 本机刚恢复过的行：云端旧删除/清空标记作废（push 会以活行覆盖墓碑）
+            if (_settings.Sync.PendingRestores.Contains(cloud.Id)) continue;
+
+            if (cloud.Purged)
+            {
+                // 彻底删除传播（他端已清空回收站）：清本机回收站对应记录；本机还有活行则直接删（不入回收站）
+                var relPurged = ResolveRelativePath(cloud);
+                binRemovals.Add((relPurged, content));
+                if (localLines.TryGetValue(cloud.Id, out var live))
+                    _noteService.RemoveLines(live.RelativePath, new HashSet<string> { live.Line });
+                continue;
+            }
+
             if (cloud.Deleted)
             {
                 // 软删落地：本地有对应行 → 移入回收站（先写回收站成功再删行，QUEST-5 §2 铁律）
                 if (localLines.TryGetValue(cloud.Id, out var local))
                 {
+                    // 本机行时间戳 ≥ 删除时间 → 本机是删除后重新录入的同内容行，本机 wins（push 覆盖墓碑）
+                    var tombLocal = ParseLocalDateTime(cloud.UpdatedAt);
+                    var lineTs = TryParseLineTimestamp(local.Line);
+                    if (lineTs.HasValue && lineTs.Value >= tombLocal) continue;
                     if (_noteService.RecycleBin.Add(local.RelativePath, new[] { local.Line }))
                         _noteService.RemoveLines(local.RelativePath, new HashSet<string> { local.Line });
+                }
+                else
+                {
+                    // 本机没有该行（如 B 从未见过这条）：仅落回收站，供查看/恢复（回收站双向同步）
+                    _noteService.RecycleBin.Add(ResolveRelativePath(cloud), new[] { content });
                 }
             }
             else
             {
                 if (!localLines.ContainsKey(cloud.Id))
                 {
-                    // 云端新行（他端新增）→ 按 Tags/灵感日规则写回原文件（保持原始行格式不变）
+                    // 云端新行（他端新增/他端恢复）→ 按 Tags/灵感日规则写回原文件（保持原始行格式不变）
                     var relativePath = ResolveRelativePath(cloud);
                     _noteService.AppendLine(relativePath, content);
+                    binRemovals.Add((relativePath, content));   // 他端恢复传播：清掉本机回收站的对应删除记录
                 }
                 // 本地已有同 ID 行：同 ID = 同内容，无需操作（本地事实源 wins）
             }
         }
+
+        if (binRemovals.Count > 0)
+            _noteService.RecycleBin.RemoveMatchingBatch(binRemovals);
 
         // 游标推进（只进不退）
         if (!string.IsNullOrEmpty(pull.NewSince))
@@ -364,29 +394,49 @@ public class SyncEngine
     {
         // 1) 本机集合：明文行 → SyncNote（Content=完整原始行密文；Tags 从文件名；ID 用原始行哈希）
         var localNotes = new List<SyncNote>();
+        var localTsById = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         foreach (var (rel, line, entry) in _noteService.ReadAllLines())
         {
             var ts = NoteService.ToUtcIsoString(entry.Timestamp);
+            var id = SyncNote.ComputeId(rel, line);
             localNotes.Add(new SyncNote
             {
-                Id = SyncNote.ComputeId(rel, line),
+                Id = id,
                 Content = CryptoService.Encrypt(_dek!, line),
                 Tags = string.IsNullOrEmpty(entry.Tag) ? [] : new[] { entry.Tag },
                 CreatedAt = ts,
                 UpdatedAt = ts,
                 DeviceId = _settings.Sync.DeviceId,
             });
+            localTsById[id] = entry.Timestamp;
         }
 
         // 2) 合并（2026-08-13 审查修正，deviceId 稳定版）：
         //    - 云端全量保留（含他端行、本机旧推的行、软删驻留行）——本机推过的行不重复生成，
         //      否则 DeviceId 被改写、每次同步云端桶都变（回声识别失效）；
         //    - 本机新行（云端没有该 ID 的）TryAdd 加入——MD 只增不减：修改=追加新行（新 ID），同 ID 行内容必相同；
+        //    - 本机活行 vs 云端墓碑：恢复清单内、或行时间戳晚于删除时间（删除后重录）→ 覆盖墓碑
+        //      （UpdatedAt=now 保证他端增量拉取可见），否则墓碑保持（本机推过的删除不复活）；
         //    - PendingDeletes 覆盖（本机软删 wins），被覆盖的云端版本进 PrevContent 快照（密文）。
         var byId = new Dictionary<string, SyncNote>(StringComparer.Ordinal);
         var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
         foreach (var cloud in cloudAll) byId[cloud.Id] = cloud;
-        foreach (var n in localNotes) byId.TryAdd(n.Id, n);
+        foreach (var n in localNotes)
+        {
+            if (byId.TryGetValue(n.Id, out var existing) && existing.Deleted)
+            {
+                var tombLocal = ParseLocalDateTime(existing.UpdatedAt);
+                var isRestore = _settings.Sync.PendingRestores.Contains(n.Id);
+                var isRecreated = localTsById.TryGetValue(n.Id, out var lineTs) && lineTs >= tombLocal;
+                if (isRestore || isRecreated)
+                {
+                    n.UpdatedAt = NoteService.ToUtcIsoString(DateTime.Now);   // 视为最新变更，他端增量拉取可见
+                    byId[n.Id] = n;
+                }
+                continue;   // 墓碑仍新 → 保持墓碑，不复活
+            }
+            byId.TryAdd(n.Id, n);
+        }
         foreach (var d in _settings.Sync.PendingDeletes)
         {
             if (byId.TryGetValue(d.Id, out var old) && old.Deleted != d.Deleted)
@@ -397,8 +447,9 @@ public class SyncEngine
         // 3) 整桶覆盖上传（Provider 内分桶 PUT + 孤儿桶清理 + meta 更新）
         var result = await _provider.PushAsync(byId.Values.ToList(), _settings.Sync.LastCursor, ct).ConfigureAwait(false);
 
-        // 4) 成功后清 PendingDeletes + 推进游标
+        // 4) 成功后清 PendingDeletes / PendingRestores + 推进游标
         _settings.Sync.PendingDeletes.Clear();
+        _settings.Sync.PendingRestores.Clear();
         if (!string.IsNullOrEmpty(result.NewSince))
             _settings.Sync.LastCursor = result.NewSince;
         _settings.Save();
@@ -416,10 +467,11 @@ public class SyncEngine
     }
 
     /// <summary>
-    /// 清空回收站联动（QUEST-5 第五步 2）：把全部被清空记录转为 Deleted=true 的 SyncNote 压入 PendingDeletes。
+    /// 清空回收站联动（QUEST-5 第五步 2）：把全部被清空记录转为 Deleted=true + Purged=true 的 SyncNote 压入 PendingDeletes。
     /// Content 用完整原始行密文（与普通行一致）；Tags 规则同 ReadAllLines（灵感_*.md → []，其余 → [文件名]）。
     /// CreatedAt 用原始行时间戳；**UpdatedAt 必须用软删发生时间（Now）**——否则增量拉取
     /// （UpdatedAt &gt;= since 过滤）会把软删标记漏掉（原行时间戳 ≤ 他端游标）。
+    /// Purged=true 表示"彻底删除"：他端删除本地行并清除回收站记录（回收站双向同步），不再入回收站。
     /// </summary>
     public void QueueRecycleBinPurge(List<RecycleBinEntry> purgedEntries)
     {
@@ -439,6 +491,7 @@ public class SyncEngine
                     CreatedAt = NoteService.ToUtcIsoString(ts),
                     UpdatedAt = nowUtc,
                     Deleted = true,
+                    Purged = true,
                     DeviceId = _settings.Sync.DeviceId,
                 });
             }
@@ -447,12 +500,65 @@ public class SyncEngine
         NotifyLocalChange();
     }
 
+    /// <summary>
+    /// 回收站恢复联动：把恢复的行 ID 压入 PendingRestores，push 时以活行覆盖云端删除标记
+    /// （防止恢复的行被云端旧墓碑再次"删掉"），并触发同步传播到其他设备。
+    /// </summary>
+    public void QueuePendingRestore(string relativePath, IEnumerable<string> lines)
+    {
+        var added = false;
+        foreach (var line in lines)
+        {
+            var id = SyncNote.ComputeId(relativePath, line);
+            if (!_settings.Sync.PendingRestores.Contains(id))
+            {
+                _settings.Sync.PendingRestores.Add(id);
+                added = true;
+            }
+        }
+        if (!added) return;
+        _settings.Save();
+        NotifyLocalChange();
+    }
+
+    /// <summary>
+    /// 删除即同步（NoteService.LinesDeleted 订阅入口）：移入回收站的行立即生成 Deleted=true 墓碑
+    /// 压入 PendingDeletes，随下次 push 以覆盖形式上传——云端活动记录只剩未删的行。
+    /// </summary>
+    private void OnLinesDeleted(string relativePath, IReadOnlyList<string> lines)
+    {
+        if (_dek == null || lines.Count == 0) return;   // 未配置同步：无云端可传播
+        var nowUtc = NoteService.ToUtcIsoString(DateTime.Now);
+        var tag = GetTagFromFileName(relativePath);
+        foreach (var line in lines)
+        {
+            _settings.Sync.PendingDeletes.Add(new SyncNote
+            {
+                Id = SyncNote.ComputeId(relativePath, line),
+                Content = CryptoService.Encrypt(_dek, line),
+                Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
+                CreatedAt = NoteService.ToUtcIsoString(ParseLineTimestamp(line)),
+                UpdatedAt = nowUtc,
+                Deleted = true,
+                DeviceId = _settings.Sync.DeviceId,
+            });
+        }
+        _settings.Save();
+        NotifyLocalChange();
+    }
+
     private static DateTime ParseLineTimestamp(string line)
+    {
+        return TryParseLineTimestamp(line) ?? DateTime.Now;
+    }
+
+    /// <summary>解析 MD 行的本地时间戳（分钟精度）；解析失败返回 null（供"删除后重录"新旧判定用，不兜底 Now）。</summary>
+    private static DateTime? TryParseLineTimestamp(string line)
     {
         var m = System.Text.RegularExpressions.Regex.Match(line, @"- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]");
         return m.Success && DateTime.TryParse($"{m.Groups[1].Value} {m.Groups[2].Value}", out var ts)
             ? ts
-            : DateTime.Now;
+            : null;
     }
 
     private static string GetTagFromFileName(string relativePath)
@@ -474,6 +580,7 @@ public class SyncEngine
             await _provider.PushAsync(Array.Empty<SyncNote>(), null, ct).ConfigureAwait(false);   // 清空云端桶
             _settings.Sync.LastCursor = "";
             _settings.Sync.PendingDeletes.Clear();
+            _settings.Sync.PendingRestores.Clear();
             _settings.Save();
             await PushFlowAsync(ct).ConfigureAwait(false);   // 全量重传
             _settings.Sync.LastSyncResult = "成功（已重置并全量重传）";
