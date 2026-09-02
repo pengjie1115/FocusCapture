@@ -169,4 +169,7 @@ public partial class DailySummaryWindow : Window
         Hide();
         SummaryList.Children.Clear();
     }
+
+    /// <summary>v3.7：右上角 ✕ 关闭按钮 —— 手动关闭，任何状态（含空态）都可退出弹窗。</summary>
+    private void BtnClose_Click(object sender, RoutedEventArgs e) => HidePopup();
 }

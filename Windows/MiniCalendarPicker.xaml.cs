@@ -41,6 +41,7 @@ public partial class MiniCalendarPicker : UserControl
         DayGrid.Children.Clear();
 
         var counts = _noteService.LoadNoteCounts(_displayMonth.Year, _displayMonth.Month);
+        var todoDates = _noteService.LoadTodoDueDates(_displayMonth.Year, _displayMonth.Month);
         var daysInMonth = DateTime.DaysInMonth(_displayMonth.Year, _displayMonth.Month);
 
         // 周日起始对齐
@@ -51,7 +52,9 @@ public partial class MiniCalendarPicker : UserControl
         for (var day = 1; day <= daysInMonth; day++)
         {
             var date = new DateTime(_displayMonth.Year, _displayMonth.Month, day);
-            DayGrid.Children.Add(CreateDayCell(date, counts.GetValueOrDefault(date)));
+            // v3.7：未来且有未办待办的日期加绿色角标（与 CalendarWindow 同口径）
+            var hasTodo = date > DateTime.Today && todoDates.Contains(date);
+            DayGrid.Children.Add(CreateDayCell(date, counts.GetValueOrDefault(date), hasTodo));
         }
 
         // 补足整行，保持网格整齐
@@ -62,7 +65,7 @@ public partial class MiniCalendarPicker : UserControl
     private static Border CreateEmptyCell()
         => new() { Height = 34, Margin = new Thickness(1) };
 
-    private Button CreateDayCell(DateTime date, int count)
+    private Button CreateDayCell(DateTime date, int count, bool hasTodo = false)
     {
         // 4 档热力色（从 ThemeService 取，不硬编码）
         var (bg, fg) = count switch
@@ -85,11 +88,16 @@ public partial class MiniCalendarPicker : UserControl
             Cursor = Cursors.Hand,
         };
 
-        // 当前选中日期高亮；今天加浅色描边
+        // v3.7 描边优先级：选中 > 未来有待办（绿色边框） > 今天
         if (date == _selectedDate)
         {
             btn.BorderThickness = new Thickness(2);
             btn.BorderBrush = FromHex(_theme.Accent);
+        }
+        else if (hasTodo)
+        {
+            btn.BorderThickness = new Thickness(2);
+            btn.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
         }
         else if (date == DateTime.Today)
         {

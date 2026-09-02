@@ -28,12 +28,21 @@
             CornerRadius="8" Padding="12"
             Opacity="0.96">
         <StackPanel>
-            <TextBlock x:Name="TitleText"
-                       Text="今日待办汇总"
-                       Foreground="#E0E0E0"
-                       FontSize="14" FontWeight="Bold"
-                       Margin="0,0,0,10"
-                       HorizontalAlignment="Center"/>
+            <Grid Margin="0,0,0,10">
+                <TextBlock x:Name="TitleText"
+                           Text="今日待办汇总"
+                           Foreground="#E0E0E0"
+                           FontSize="14" FontWeight="Bold"
+                           HorizontalAlignment="Center"/>
+                <!-- v3.7：始终提供关闭按钮，杜绝空态弹窗无自动收起且无法关闭的问题 -->
+                <Button x:Name="BtnClose"
+                        Content="✕"
+                        Width="24" Height="24"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="#888888" FontSize="12" Padding="0"
+                        Click="BtnClose_Click"/>
+            </Grid>
             <TextBlock x:Name="EmptyText"
                        Text="今天没有待处理事项"
                        Foreground="#888888"

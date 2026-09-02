@@ -340,7 +340,11 @@ public class NoteService
     {
         if (entry == null || entry.Type != NoteType.Todo) return false;
 
-        var filePath = FindEntryFile(entry);
+        // v3.7 修复：按行精确查找所在文件——FindEntryFile 按 entry 时间戳日期猜文件
+        // （只查 灵感_{日期}.md + 标签文件），但存在行内日期与文件名不一致的历史数据
+        // （如 8-28 创建的待办行躺在 灵感_2026-08-30.md 里）→ 永远找不到 → "清理失败"。
+        // 这里遍历全部 md，哪一行 IsEntryLine 匹配就改哪个文件，天然兜底所有错位情况。
+        var filePath = FindEntryFileByLine(entry);
         if (filePath == null) return false;
 
         lock (FileWriteLock)
@@ -397,16 +401,45 @@ public class NoteService
         TodoStatus = e.TodoStatus
     };
 
-    /// <summary>精确匹配 entry 对应的存储行（新格式整行 / 旧格式 [HH:mm] 兼容）</summary>
+    /// <summary>精确匹配 entry 对应的存储行（新格式整行 / v3.5 旧待办格式无秒 / v2.0 旧格式 [HH:mm] 兼容）。
+    /// v3.7 回退分支：9月2日秒级落盘改动前的待办行 (提醒: yyyy-MM-dd HH:mm) 无秒，
+    /// 解析侧兼容（补 :00）但 ToMarkdownLine 生成带秒行 → 整行匹配恒失败 → UpdateTodo/编辑保存全部报"找不到条目"。
+    /// 此处仅加匹配分支定位旧行，不产生/不修改任何时间值；匹配成功后行会被重写为带秒新格式（旧数据自然迁移）。</summary>
     private static bool IsEntryLine(string line, NoteEntry entry)
     {
         if (line == entry.ToMarkdownLine()) return true;
+
+        // v3.5 旧待办格式回退：同 FormatTodoLine 但提醒时间到分钟（秒为 :00 时与新版同串，天然去重）
+        if (entry.Type == NoteType.Todo && line == NoteEntry.FormatTodoLine(entry, withSeconds: false)) return true;
 
         var escaped = entry.Content
             .Replace("\r\n", "\n")
             .Replace("\n", "\u23CE");
         var old = $"- [{entry.Timestamp:HH:mm}] {escaped}";
         return line == old || line == old + $" — 来源: {entry.SourceWindow}";
+    }
+
+    /// <summary>按行精确查找 entry 所在 md 文件：遍历全部 .md，任一行 IsEntryLine 匹配即返回该文件；找不到返回 null。
+    /// 与 FindEntryFile（按前缀猜文件）的区别：不依赖"行内日期 == 文件名日期"假设，供 UpdateTodo 定位历史错位数据。</summary>
+    private string? FindEntryFileByLine(NoteEntry entry)
+    {
+        if (!Directory.Exists(_settings.NotesPath)) return null;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            try
+            {
+                foreach (var raw in File.ReadAllLines(file, Encoding.UTF8))
+                {
+                    if (IsEntryLine(raw.TrimEnd('\r'), entry)) return file;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 按行查找待办失败 ({file}): {ex.Message}");
+            }
+        }
+        return null;
     }
 
     /// <summary>
@@ -531,8 +564,9 @@ public class NoteService
                         Tag = tag
                     };
                     // 剥离 (提醒: …[, 状态: …]) 与独立 (状态: …) 属性（兼容组合/独立两种括号写法）
+                    // v3.7：提醒时间兼容带秒（新）与不带秒（旧，按 :00 补齐）两种落盘格式
                     var body = rawContent["【待办】".Length..].Trim();
-                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(?:, 状态: (已办|已读))?\)");
                     if (attrMatch.Success)
                     {
                         if (DateTime.TryParse(attrMatch.Groups[1].Value, out var due))
@@ -650,7 +684,7 @@ public class NoteService
                     DateTime? due = null;
                     if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
                     {
-                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(?:, 状态: (已办|已读))?\)");
                         if (attr.Success && DateTime.TryParse(attr.Groups[1].Value, out var d)) due = d;
                     }
                     var key = (due.HasValue ? due.Value.Date : ts.Date);
@@ -663,6 +697,59 @@ public class NoteService
             }
         }
         return counts;
+    }
+
+    /// <summary>
+    /// 统计指定月份「有未办待办（Open/Read）」的日期集合（按 DueTime 归类，排除软删除与已办）。
+    /// v3.7：供日历热力图给未来有待办的日期画角标——只标未办，已办不再占用注意力。
+    /// </summary>
+    public HashSet<DateTime> LoadTodoDueDates(int year, int month)
+    {
+        var dates = new HashSet<DateTime>();
+        if (!Directory.Exists(_settings.NotesPath)) return dates;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            var tag = Path.GetFileNameWithoutExtension(file);
+            // 旧格式行无日期：灵感文件按文件名日期归属，标签文件按"今天"归属（与 LoadNoteCounts 一致）
+            var dateContext = tag.StartsWith("灵感_")
+                ? DateTime.TryParseExact(tag["灵感_".Length..], "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var fd) ? fd : DateTime.Today
+                : DateTime.Today;
+
+            try
+            {
+                var lines = File.ReadAllLines(file, Encoding.UTF8);
+                foreach (var line in lines)
+                {
+                    var match = NoteLineRegex.Match(line);
+                    if (!match.Success) continue;
+
+                    var rawContent = match.Groups[3].Value.Replace("\u23CE", "\n");
+                    if (!rawContent.StartsWith("【待办】", StringComparison.Ordinal)) continue; // 只看待办行
+
+                    var day = match.Groups[1].Success
+                        ? match.Groups[1].Value.Trim()
+                        : dateContext.ToString("yyyy-MM-dd");
+                    if (!DateTime.TryParse($"{day} {match.Groups[2].Value}", out var ts)) continue;
+
+                    var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(?:, 状态: (已办|已读))?\)");
+                    if (!attr.Success || !DateTime.TryParse(attr.Groups[1].Value, out var due)) continue;
+                    if (attr.Groups[2].Value == "已办") continue; // 已办不标角标
+                    if (due.Year != year || due.Month != month) continue;
+
+                    // 排除已软删除
+                    var entry = new NoteEntry { Timestamp = ts, Content = rawContent };
+                    if (_deletedService.IsDeleted(entry)) continue;
+
+                    dates.Add(due.Date);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 待办日期统计失败 ({file}): {ex.Message}");
+            }
+        }
+        return dates;
     }
 
     // ── 同步层行级读写扩展（QUEST-5 任务2）：只新增方法，不改现有方法 ──

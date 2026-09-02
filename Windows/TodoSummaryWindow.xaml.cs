@@ -21,6 +21,9 @@ public partial class TodoSummaryWindow : Window
     private readonly NoteService _notes;
     private readonly AppSettings _settings;
 
+    /// <summary>v3.7：当前显示的全部未办条目（已提醒暂缓+待处理+已过期），供一键清理使用</summary>
+    private readonly List<NoteEntry> _visibleEntries = new();
+
     public TodoSummaryWindow(NoteService notes, AppSettings settings)
     {
         InitializeComponent();
@@ -46,6 +49,7 @@ public partial class TodoSummaryWindow : Window
         PendingList.Children.Clear();
         ReadList.Children.Clear();
         OverdueList.Children.Clear();
+        _visibleEntries.Clear();
 
         EmptyText.Visibility = (read.Count == 0 && openPending.Count == 0 && openOverdue.Count == 0)
             ? Visibility.Visible : Visibility.Collapsed;
@@ -53,10 +57,36 @@ public partial class TodoSummaryWindow : Window
         ReadHeaderText.Visibility = read.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         PendingHeaderText.Visibility = openPending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         OverdueHeaderText.Visibility = openOverdue.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        BtnCleanAll.Visibility = (read.Count + openPending.Count + openOverdue.Count) == 0
+            ? Visibility.Collapsed : Visibility.Visible;
 
-        foreach (var e in read) ReadList.Children.Add(BuildReadRow(e));
-        foreach (var e in openPending) PendingList.Children.Add(BuildPendingRow(e));
-        foreach (var e in openOverdue) OverdueList.Children.Add(BuildPendingRow(e));
+        foreach (var e in read) { ReadList.Children.Add(BuildReadRow(e)); _visibleEntries.Add(e); }
+        foreach (var e in openPending) { PendingList.Children.Add(BuildPendingRow(e)); _visibleEntries.Add(e); }
+        foreach (var e in openOverdue) { OverdueList.Children.Add(BuildPendingRow(e)); _visibleEntries.Add(e); }
+    }
+
+    /// <summary>v3.7：一键清理——把当前显示的全部未办标为已完成（Done，落盘保留可追溯），带二次确认。
+    /// 逐条 UpdateTodo；个别失败（如文件被外部改动）不影响其余条目，最后汇总提示。</summary>
+    private void BtnCleanAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (_visibleEntries.Count == 0) return;
+
+        var result = System.Windows.MessageBox.Show(
+            $"确认清理全部 {_visibleEntries.Count} 条待办？\n\n它们将被标记为「已完成」，不再出现在待办汇总中。",
+            "一键清理", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (result != MessageBoxResult.OK) return;
+
+        var failed = 0;
+        foreach (var entry in _visibleEntries.ToList())
+        {
+            if (!_notes.UpdateTodo(entry, newContent: entry.EditedContent ?? entry.Content, status: TodoStatus.Done))
+                failed++;
+        }
+
+        ReloadFromNotes();
+        if (failed > 0)
+            System.Windows.MessageBox.Show($"{failed} 条清理失败（未在笔记文件中找到，可能已被外部修改）", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     /// <summary>待处理行：按钮按类型补全（同每日汇总）。</summary>
