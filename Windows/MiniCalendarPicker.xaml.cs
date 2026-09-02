@@ -76,34 +76,9 @@ public partial class MiniCalendarPicker : UserControl
             _ => (FromHex(_theme.Heat3Bg), FromHex(_theme.Heat3Fg)),
         };
 
-        // v3.7：未来有待办 → 右上角绿色圆点角标（与 CalendarWindow 同款）
-        object content = date.Day;
-        if (hasTodo)
-        {
-            var grid = new System.Windows.Controls.Grid();
-            var num = new System.Windows.Controls.TextBlock
-            {
-                Text = date.Day.ToString(),
-                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
-                VerticalAlignment = System.Windows.VerticalAlignment.Center
-            };
-            var dot = new System.Windows.Shapes.Ellipse
-            {
-                Width = 6,
-                Height = 6,
-                Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50)),
-                HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-                VerticalAlignment = System.Windows.VerticalAlignment.Top,
-                Margin = new Thickness(0, 3, 3, 0)
-            };
-            grid.Children.Add(num);
-            grid.Children.Add(dot);
-            content = grid;
-        }
-
         var btn = new Button
         {
-            Content = content,
+            Content = date.Day,
             Height = 34,
             Margin = new Thickness(1),
             FontSize = 11,
@@ -113,11 +88,16 @@ public partial class MiniCalendarPicker : UserControl
             Cursor = Cursors.Hand,
         };
 
-        // 当前选中日期高亮；今天加浅色描边
+        // v3.7 描边优先级：选中 > 未来有待办（绿色边框） > 今天
         if (date == _selectedDate)
         {
             btn.BorderThickness = new Thickness(2);
             btn.BorderBrush = FromHex(_theme.Accent);
+        }
+        else if (hasTodo)
+        {
+            btn.BorderThickness = new Thickness(2);
+            btn.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
         }
         else if (date == DateTime.Today)
         {

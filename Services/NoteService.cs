@@ -340,7 +340,11 @@ public class NoteService
     {
         if (entry == null || entry.Type != NoteType.Todo) return false;
 
-        var filePath = FindEntryFile(entry);
+        // v3.7 修复：按行精确查找所在文件——FindEntryFile 按 entry 时间戳日期猜文件
+        // （只查 灵感_{日期}.md + 标签文件），但存在行内日期与文件名不一致的历史数据
+        // （如 8-28 创建的待办行躺在 灵感_2026-08-30.md 里）→ 永远找不到 → "清理失败"。
+        // 这里遍历全部 md，哪一行 IsEntryLine 匹配就改哪个文件，天然兜底所有错位情况。
+        var filePath = FindEntryFileByLine(entry);
         if (filePath == null) return false;
 
         lock (FileWriteLock)
@@ -413,6 +417,29 @@ public class NoteService
             .Replace("\n", "\u23CE");
         var old = $"- [{entry.Timestamp:HH:mm}] {escaped}";
         return line == old || line == old + $" — 来源: {entry.SourceWindow}";
+    }
+
+    /// <summary>按行精确查找 entry 所在 md 文件：遍历全部 .md，任一行 IsEntryLine 匹配即返回该文件；找不到返回 null。
+    /// 与 FindEntryFile（按前缀猜文件）的区别：不依赖"行内日期 == 文件名日期"假设，供 UpdateTodo 定位历史错位数据。</summary>
+    private string? FindEntryFileByLine(NoteEntry entry)
+    {
+        if (!Directory.Exists(_settings.NotesPath)) return null;
+
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+        {
+            try
+            {
+                foreach (var raw in File.ReadAllLines(file, Encoding.UTF8))
+                {
+                    if (IsEntryLine(raw.TrimEnd('\r'), entry)) return file;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 按行查找待办失败 ({file}): {ex.Message}");
+            }
+        }
+        return null;
     }
 
     /// <summary>
