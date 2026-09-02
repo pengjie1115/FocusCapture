@@ -44,8 +44,9 @@ public class NoteEntry
 
     /// <summary>
     /// 待办行格式化（与 UpdateTodo 重建行共用同一套格式，v3.5）。
-    /// 行内属性顺序固定：`【待办】正文 (提醒: yyyy-MM-dd HH:mm, 状态: 已办)`——
+    /// 行内属性顺序固定：`【待办】正文 (提醒: yyyy-MM-dd HH:mm:ss, 状态: 已办)`——
     /// 有提醒+有状态为组合括号（逗号分隔），仅有其一输出单独括号，无属性不带括号。
+    /// v3.7：提醒时间落盘精确到秒（此前到分钟，秒被截断导致提醒总在整分钟触发）；界面展示仍只到分钟。
     /// </summary>
     public static string FormatTodoLine(NoteEntry e)
     {
@@ -57,7 +58,7 @@ public class NoteEntry
 
         if (e.DueTime.HasValue)
         {
-            line += $" (提醒: {e.DueTime:yyyy-MM-dd HH:mm}";
+            line += $" (提醒: {e.DueTime:yyyy-MM-dd HH:mm:ss}";
             if (e.TodoStatus != TodoStatus.Open)
                 line += $", 状态: {(e.TodoStatus == TodoStatus.Done ? "已办" : "已读")}";
             line += ")";

@@ -531,8 +531,9 @@ public class NoteService
                         Tag = tag
                     };
                     // 剥离 (提醒: …[, 状态: …]) 与独立 (状态: …) 属性（兼容组合/独立两种括号写法）
+                    // v3.7：提醒时间兼容带秒（新）与不带秒（旧，按 :00 补齐）两种落盘格式
                     var body = rawContent["【待办】".Length..].Trim();
-                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                    var attrMatch = Regex.Match(body, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(?:, 状态: (已办|已读))?\)");
                     if (attrMatch.Success)
                     {
                         if (DateTime.TryParse(attrMatch.Groups[1].Value, out var due))
@@ -650,7 +651,7 @@ public class NoteService
                     DateTime? due = null;
                     if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
                     {
-                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?:, 状态: (已办|已读))?\)");
+                        var attr = Regex.Match(rawContent, @"\(提醒: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)(?:, 状态: (已办|已读))?\)");
                         if (attr.Success && DateTime.TryParse(attr.Groups[1].Value, out var d)) due = d;
                     }
                     var key = (due.HasValue ? due.Value.Date : ts.Date);
