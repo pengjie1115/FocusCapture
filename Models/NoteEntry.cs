@@ -47,8 +47,9 @@ public class NoteEntry
     /// 行内属性顺序固定：`【待办】正文 (提醒: yyyy-MM-dd HH:mm:ss, 状态: 已办)`——
     /// 有提醒+有状态为组合括号（逗号分隔），仅有其一输出单独括号，无属性不带括号。
     /// v3.7：提醒时间落盘精确到秒（此前到分钟，秒被截断导致提醒总在整分钟触发）；界面展示仍只到分钟。
+    /// withSeconds=false 生成旧版分钟精度行文本，仅供 IsEntryLine 回退匹配旧格式落盘行（不用于写盘）。
     /// </summary>
-    public static string FormatTodoLine(NoteEntry e)
+    public static string FormatTodoLine(NoteEntry e, bool withSeconds = true)
     {
         var time = e.Timestamp.ToString("yyyy-MM-dd HH:mm");
         var escaped = e.Content
@@ -58,7 +59,10 @@ public class NoteEntry
 
         if (e.DueTime.HasValue)
         {
-            line += $" (提醒: {e.DueTime:yyyy-MM-dd HH:mm:ss}";
+            var dueStr = withSeconds
+                ? e.DueTime.Value.ToString("yyyy-MM-dd HH:mm:ss")
+                : e.DueTime.Value.ToString("yyyy-MM-dd HH:mm");
+            line += $" (提醒: {dueStr}";
             if (e.TodoStatus != TodoStatus.Open)
                 line += $", 状态: {(e.TodoStatus == TodoStatus.Done ? "已办" : "已读")}";
             line += ")";

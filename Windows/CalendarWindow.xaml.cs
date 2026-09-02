@@ -54,6 +54,7 @@ public partial class CalendarWindow : Window
         DayGrid.Children.Clear();
 
         var counts = _noteService.LoadNoteCounts(_displayMonth.Year, _displayMonth.Month);
+        var todoDates = _noteService.LoadTodoDueDates(_displayMonth.Year, _displayMonth.Month);
         var daysInMonth = DateTime.DaysInMonth(_displayMonth.Year, _displayMonth.Month);
 
         // 周日起始对齐
@@ -64,7 +65,9 @@ public partial class CalendarWindow : Window
         for (var day = 1; day <= daysInMonth; day++)
         {
             var date = new DateTime(_displayMonth.Year, _displayMonth.Month, day);
-            DayGrid.Children.Add(CreateDayCell(date, counts.GetValueOrDefault(date)));
+            // v3.7：未来且有未办待办的日期加绿色角标（一眼看出哪天有事要做）
+            var hasTodo = date > DateTime.Today && todoDates.Contains(date);
+            DayGrid.Children.Add(CreateDayCell(date, counts.GetValueOrDefault(date), hasTodo));
         }
 
         // 补足整行，保持网格整齐
@@ -75,7 +78,7 @@ public partial class CalendarWindow : Window
     private static Border CreateEmptyCell()
         => new() { Height = 34, Margin = new Thickness(1) };
 
-    private Button CreateDayCell(DateTime date, int count)
+    private Button CreateDayCell(DateTime date, int count, bool hasTodo = false)
     {
         // 4 档热力色（从 ThemeService 取，不硬编码；主题切换后取当前主题色）
         var (bg, fg) = count switch
@@ -86,9 +89,34 @@ public partial class CalendarWindow : Window
             _ => (FromHex(_theme.Heat3Bg), FromHex(_theme.Heat3Fg)),
         };
 
+        // v3.7：未来有待办 → 右上角绿色圆点角标（Grid 承载数字+圆点，不干扰热力色与描边）
+        object content = date.Day;
+        if (hasTodo)
+        {
+            var grid = new System.Windows.Controls.Grid();
+            var num = new System.Windows.Controls.TextBlock
+            {
+                Text = date.Day.ToString(),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = System.Windows.VerticalAlignment.Center
+            };
+            var dot = new System.Windows.Shapes.Ellipse
+            {
+                Width = 6,
+                Height = 6,
+                Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50)),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+                VerticalAlignment = System.Windows.VerticalAlignment.Top,
+                Margin = new Thickness(0, 3, 3, 0)
+            };
+            grid.Children.Add(num);
+            grid.Children.Add(dot);
+            content = grid;
+        }
+
         var btn = new Button
         {
-            Content = date.Day,
+            Content = content,
             Height = 34,
             Margin = new Thickness(1),
             FontSize = 11,
