@@ -47,7 +47,7 @@
 | codex/quest-v3-sync | 云同步 v3（主体已合入） | 主体合入，独有 docs 类提交 | 00306cb |
 | codex/quest1-ai-provider | AI provider 接入/日历弹窗修复 | 已合入 main | 7bff665 |
 | feature/asr-pure-csharp | ASR 纯 C# 迁移（早期尝试） | 已合入 main（后续语音功能被移除） | 371b491 |
-| feature/license-gate | v0.2.0 发版：LicenseGate+设置面板大改版+输入框v3.6 | 功能已 cherry-pick 进 main，独有 docs 类提交 | 2f752f0 |
+| feature/license-gate | v0.2.0 发版：LicenseGate+设置面板大改版+输入框v3.6 | 功能已 cherry-pick 进 main，独有 docs 类提交（远程已删 2026-09-02） | 2f752f0 |
 | feature/restore-0831 | 8-31 版本恢复分支 | 已合入 main | 78588e2 |
 | feature/todo-reminder | 待办提醒 phase1-2 | 已合入 main | 48cf98d |
 | feature/todo-reminder-phase3 | 待办提醒 phase3 | 已合入 main | 1c36957 |
@@ -57,9 +57,9 @@
 | feature/inspiration-sync-buttons | 灵感速览云同步入口/回收站多选（早期并行版） | 功能已在 main（最终版 ef37b64 等） | e2df13b |
 | feature/import-range-search | 区间筛选迷你日历 Popup | 已合入 main | 90a135c |
 
-## 五、远程分支状态
+## 五、远程分支状态（2026-09-02 更新）
 
 | 远程 | 分支 | 备注 |
 |------|------|------|
 | Gitee（origin） | main | 旧分支已删（2026-09-01） |
-| GitHub | main | 4 个旧分支待删（2026-09-01 网络失败未删成，恢复后补：codex/quest-v3-sync、codex/quest1-ai-provider、feature/license-gate、feature/todo-reminder-phase4） |
+| GitHub | main | 4 个残留分支已全部删除（2026-09-02：codex/quest-v3-sync、codex/quest1-ai-provider、feature/todo-reminder-phase4、feature/license-gate），GitHub 远程仅剩 main |
