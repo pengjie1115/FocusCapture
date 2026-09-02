@@ -33,8 +33,7 @@
 
 | 分支 | 功能板块 | 状态 | 最后提交 |
 |------|---------|------|---------|
-| main | 主线（当前最新版 v0.2.x） | 活跃 | 78588e2 |
-| fix/todo-reminder-optimizations | 待办提醒优化：严格到点弹窗/弹窗超时默认稍后提醒/每日汇总空态关闭按钮+开关 | 进行中 | — |
+| main | 主线（当前最新版 v0.2.x） | 活跃 | 395efdb |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
 | feature/annotation-quote | 批注功能（选中文字一键批注） | 永久搁置（2026-08 拍板），3 个独有提交未合入 | f33d0d0 |
 
@@ -44,6 +43,7 @@
 
 | 原分支 | 功能板块 | 删除方式 | 最后提交 |
 |--------|---------|---------|---------|
+| fix/todo-reminder-optimizations | 待办提醒优化：严格到点弹窗/超时默认稍后提醒/每日汇总空态关闭+开关/时间精确到秒/旧格式待办兼容+一键清理 | 已合入 main（2026-09-02，merge 395efdb） | 784a855 |
 | codex/new-feature | 灵感速览最近3天切换 | 已合入 main | bb90fb4 |
 | codex/quest-v3-sync | 云同步 v3（主体已合入） | 主体合入，独有 docs 类提交 | 00306cb |
 | codex/quest1-ai-provider | AI provider 接入/日历弹窗修复 | 已合入 main | 7bff665 |
