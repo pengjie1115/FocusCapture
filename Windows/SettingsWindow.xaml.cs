@@ -306,6 +306,7 @@ public partial class SettingsWindow : Window
         DefaultTypeCombo.SelectedIndex = _settings.InputDefaultType == "Todo" ? 1 : 0;
         BtnTodoSwitchHotkey.Content = Win32.HotkeyToString(_settings.TodoSwitchHotkey);
         DailySummaryCheck.IsChecked = _settings.DailySummaryEnabled;
+        DailySummaryEmptyCheck.IsChecked = _settings.DailySummaryEmptyPopup;
         DailySummaryTimeInput.Text = _settings.DailySummaryTime;
         SnoozeMinutesInput.Text = _settings.SnoozeMinutes.ToString();
         PopupCloseSecondsInput.Text = _settings.PopupAutoCloseSeconds.ToString();
@@ -401,6 +402,14 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _settings.DailySummaryEnabled = DailySummaryCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    /// <summary>v3.7：当天无待办是否仍弹每日汇总弹窗（默认弹）</summary>
+    private void DailySummaryEmpty_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.DailySummaryEmptyPopup = DailySummaryEmptyCheck.IsChecked == true;
         _settings.Save();
     }
 

@@ -74,11 +74,13 @@ public class ReminderService
 
         if (_stopped) return;
         var now = DateTime.Now;
+        var today = now.Date;
 
-        // 到点待办：Type=Todo && TodoStatus=Open && DueTime ∈ (now-30s, now+30s] 且进程内未弹过
+        // v3.7 修复：到点判定改为 DueTime ∈ (now-30s, now]，严格不早于设定时间弹窗。
+        // 下限保留 -30s：tick 被系统繁忙延迟时，刚过点的条目仍会补弹（不会漏），但绝不提前。
         var due = entries.Where(e =>
             e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Open &&
-            e.DueTime.HasValue && e.DueTime.Value > now.AddSeconds(-30) && e.DueTime.Value <= now.AddSeconds(30))
+            e.DueTime.HasValue && e.DueTime.Value > now.AddSeconds(-30) && e.DueTime.Value <= now)
             .ToList();
 
         List<NoteEntry> toShow = new();
@@ -95,11 +97,15 @@ public class ReminderService
             foreach (var g in groups) _showDuePopups?.Invoke(g.ToList());
         }
 
-        // 每日汇总：启用且命中 DailySummaryTime 且该触发分钟当日未弹过
+        // 每日汇总：启用且命中 DailySummaryTime 且该触发分钟当日未弹过。
+        // v3.7：DailySummaryEmptyPopup=false 时，当天无未办待办则跳过空态弹窗。
         if (_settings.DailySummaryEnabled && TryMatchHhmm(now, _settings.DailySummaryTime))
         {
             var mark = now.ToString("yyyy-MM-dd HH:mm");
-            if (_dailyShownAt.Add(mark)) _showDailySummary?.Invoke();
+            bool hasOpenToday = entries.Any(e => e.Type == NoteType.Todo && e.TodoStatus == TodoStatus.Open
+                && (!e.DueTime.HasValue || e.DueTime.Value.Date <= today));
+            if (_dailyShownAt.Add(mark) && (_settings.DailySummaryEmptyPopup || hasOpenToday))
+                _showDailySummary?.Invoke();
         }
 
         // 角标刷新：复用后台线程已载入的 entries，避免 UI 线程每 30s 再读一次文件

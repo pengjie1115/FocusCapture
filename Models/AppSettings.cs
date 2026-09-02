@@ -80,6 +80,7 @@ public class AppSettings
     public string InputDefaultType { get; set; } = "Note";                       // "Note" / "Todo"
     public HotkeyBinding TodoSwitchHotkey { get; set; } = new() { Modifiers = 2, Key = 0x54 }; // Ctrl+T，全局热键（RegisterHotKey），可能与其他应用冲突，设置可改
     public bool DailySummaryEnabled { get; set; } = true;
+    public bool DailySummaryEmptyPopup { get; set; } = true;                      // v3.7：当天无待办时是否仍弹汇总弹窗（默认弹）
     public string DailySummaryTime { get; set; } = "18:00";                       // "HH:mm"
     public int SnoozeMinutes { get; set; } = 10;
     public int PopupAutoCloseSeconds { get; set; } = 10;

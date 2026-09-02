@@ -570,6 +570,15 @@
                     </DockPanel>
 
                     <DockPanel Margin="0,8">
+                        <TextBlock Text="空态也弹汇总" Width="130" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="DailySummaryEmptyCheck"
+                                  Foreground="#E0E0E0" VerticalAlignment="Center"
+                                  Checked="DailySummaryEmpty_Changed" Unchecked="DailySummaryEmpty_Changed">
+                            <TextBlock Text="勾选=当天没有待办也弹「今日待办汇总」；取消=无待办时不弹" TextWrapping="Wrap"/>
+                        </CheckBox>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
                         <TextBlock Text="汇总时间（HH:mm）" Width="130" VerticalAlignment="Center"/>
                         <TextBox x:Name="DailySummaryTimeInput" Width="100" HorizontalAlignment="Left"
                                  Style="{StaticResource DarkTextBox}" MaxLength="5"
