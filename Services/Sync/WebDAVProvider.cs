@@ -229,7 +229,7 @@ public class WebDAVProvider : ISyncProvider
             var code = (int)resp.StatusCode;
             var msg = code switch
             {
-                401 => "坚果云授权码无效，请在坚果云网页端『安全-第三方应用管理』重新生成",
+                401 => "坚果云授权码无效，请在坚果云客户端（或手机 APP）『设置 → 第三方应用管理』重新生成",
                 503 or 429 => $"坚果云限流 (HTTP {code})",
                 _ => $"{action}失败 (HTTP {code})：{target}"
             };

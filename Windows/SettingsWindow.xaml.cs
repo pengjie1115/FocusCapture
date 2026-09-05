@@ -765,7 +765,7 @@ public partial class SettingsWindow : Window
             var saved = Models.SyncSettings.UnprotectToken(_settings.Sync.WebDavToken);
             if (string.IsNullOrEmpty(saved))
             {
-                SyncStatusText.Text = "请填写坚果云授权码（网页端『安全-第三方应用管理』生成的应用密码）";
+                SyncStatusText.Text = "请填写坚果云授权码（坚果云客户端『设置 → 第三方应用管理』生成的应用密码）";
                 return;
             }
             token = saved;

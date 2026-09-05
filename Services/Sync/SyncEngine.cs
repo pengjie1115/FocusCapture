@@ -240,7 +240,7 @@ public class SyncEngine
                 catch (SyncProviderException ex)
                 {
                     var msg = ex.IsAuth
-                        ? "坚果云授权码无效，请在坚果云网页端『安全-第三方应用管理』重新生成"
+                        ? "坚果云授权码无效，请在坚果云客户端（或手机 APP）『设置 → 第三方应用管理』重新生成"
                         : ex.Message;
                     return Fail(msg);
                 }
@@ -284,7 +284,7 @@ public class SyncEngine
         catch (SyncProviderException ex)
         {
             var msg = ex.IsAuth
-                ? "坚果云授权码无效，请在坚果云网页端『安全-第三方应用管理』重新生成"
+                ? "坚果云授权码无效，请在坚果云客户端（或手机 APP）『设置 → 第三方应用管理』重新生成"
                 : ex.Message;
             return Fail(msg);
         }
