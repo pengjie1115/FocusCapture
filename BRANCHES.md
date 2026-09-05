@@ -34,6 +34,7 @@
 | 分支 | 功能板块 | 状态 | 最后提交 |
 |------|---------|------|---------|
 | main | 主线（当前最新版 v0.2.x） | 活跃 | 395efdb |
+| feature/date-numeric-recognition | 待办日期识别新增数字式 10/8、10-8、2026/10/8（月在前，合法性校验，已过不识别） | 开发中（已提交 c8a7e8d，暂不合入 main） | c8a7e8d |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
 | feature/annotation-quote | 批注功能（选中文字一键批注） | 永久搁置（2026-08 拍板），3 个独有提交未合入 | f33d0d0 |
 
