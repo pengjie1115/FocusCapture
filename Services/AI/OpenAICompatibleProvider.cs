@@ -27,7 +27,7 @@ public class OpenAICompatibleProvider : IChatProvider
     {
         _baseUrl = (baseUrl ?? "").Trim().TrimEnd('/');
         _apiKey = apiKey ?? "";
-        _model = string.IsNullOrWhiteSpace(model) ? "agnes-2.5-flash" : model;
+        _model = model ?? "";   // 不再 fallback 到固定模型；请求时由 BuildRequest 校验空值
     }
 
     /// <summary>非流式补全：解析 choices[0].message.content</summary>
@@ -141,6 +141,9 @@ public class OpenAICompatibleProvider : IChatProvider
 
     private HttpRequestMessage BuildRequest(IReadOnlyList<ChatMessage> messages, bool stream, int? maxTokens = null)
     {
+        if (string.IsNullOrWhiteSpace(_model))
+            throw new InvalidOperationException("未配置模型名称，请在设置 → AI 模型中填写模型名称。");
+
         var payload = new
         {
             model = _model,

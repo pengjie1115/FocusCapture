@@ -56,7 +56,7 @@ public class AppSettings
     // ── AI 模型 ──
     public string AiBaseUrl { get; set; } = "https://apihub.agnes-ai.cn/v1";
     public string AiApiKey { get; set; } = "";
-    public string AiModel { get; set; } = "agnes-2.5-flash";
+    public string AiModel { get; set; } = "";   // 不再预置：模型更新快，交给用户自填
     public string AiAssistantName { get; set; } = "AI 问答";
 
     // ── 外观 ──
