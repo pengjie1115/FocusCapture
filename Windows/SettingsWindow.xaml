@@ -549,7 +549,7 @@
                                      BorderBrush="#555555" Padding="6,4"
                                      VerticalAlignment="Center"/>
                     </DockPanel>
-                    <TextBlock Text="坚果云网页端『安全-第三方应用管理』生成的应用密码；已保存过可留空沿用（重新填写即更换）"
+                    <TextBlock Text="坚果云客户端（或手机 APP）『设置 → 第三方应用管理』生成的应用密码；已保存过可留空沿用（重新填写即更换）"
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
 
                     <DockPanel Margin="0,12,0,0">
