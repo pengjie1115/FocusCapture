@@ -358,6 +358,12 @@
                 <!-- ── 板块 1：AI 模型 ── -->
                 <StackPanel x:Name="PanelAi" Margin="24,18" Visibility="Collapsed">
                     <DockPanel Margin="0,4">
+                        <TextBlock Text="模型供应商" Width="130" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="AiProviderCombo" Style="{StaticResource DarkComboBox}"
+                                  SelectionChanged="AiProvider_SelectionChanged"/>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
                         <TextBlock Text="API Base URL" Width="130" VerticalAlignment="Center"/>
                         <TextBox x:Name="AiBaseUrlInput" Style="{StaticResource DarkTextBox}"
                                  TextChanged="AiBaseUrl_TextChanged"/>
@@ -365,8 +371,21 @@
 
                     <DockPanel Margin="0,8">
                         <TextBlock Text="API Key（用户自备）" Width="130" VerticalAlignment="Center"/>
-                        <TextBox x:Name="AiApiKeyInput" Style="{StaticResource DarkTextBox}"
-                                 TextChanged="AiApiKey_TextChanged"/>
+                        <Button x:Name="AiKeyApplyLink" DockPanel.Dock="Right" Content="申请 Key"
+                                Click="AiKeyApplyLink_Click" ToolTip="用系统浏览器打开该供应商的 API Key 申请页"
+                                Margin="6,0,0,0"/>
+                        <Button x:Name="AiKeyToggle" DockPanel.Dock="Right" Content="👁"
+                                Click="AiKeyToggle_Click" ToolTip="显示 / 隐藏密钥"
+                                Width="34" Padding="2,2" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="6,0,6,0"/>
+                        <Grid>
+                            <!-- 星号态：PasswordBox；明文态：切到下方 TextBox 显示明文，两者各自落盘、切换时单向同步 -->
+                            <PasswordBox x:Name="AiApiKeyInput" PasswordChanged="AiApiKey_PasswordChanged"
+                                         VerticalContentAlignment="Center" Padding="6,4"/>
+                            <TextBox x:Name="AiApiKeyPlain" Style="{StaticResource DarkTextBox}"
+                                     TextChanged="AiApiKeyPlain_TextChanged"
+                                     Visibility="Collapsed"
+                                     VerticalContentAlignment="Center"/>
+                        </Grid>
                     </DockPanel>
 
                     <DockPanel Margin="0,8">

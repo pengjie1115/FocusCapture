@@ -36,6 +36,7 @@
 | main | 主线（当前最新版 v0.2.x） | 活跃 | 395efdb |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
 | feature/annotation-quote | 批注功能（选中文字一键批注） | 永久搁置（2026-08 拍板），3 个独有提交未合入 | f33d0d0 |
+| feature/ai-provider-presets | AI 模型板块：供应商预设下拉（6 家+自定义）/BaseURL 自动填充/密钥遮罩+小眼睛/API Key 申请页跳转 | 开发中（已提交含修复，未合并 main） | 384883d |
 
 ## 四、已删除分支归档（2026-09-01 清理，功能均已确认在 main）
 

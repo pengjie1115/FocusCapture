@@ -245,12 +245,21 @@ public partial class SettingsWindow : Window
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
         NotesPathText.Text = _settings.NotesPath;
         AutoStartCheck.IsChecked = _settings.AutoStart;
+        // 供应商下拉：6 预设 + 自定义（Tag=null 表示自定义）
+        AiProviderCombo.Items.Clear();
+        foreach (var p in AiProviders.Presets)
+            AiProviderCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
+        AiProviderCombo.Items.Add(new ComboBoxItem { Content = AiProviders.Custom, Tag = null });
+
         AiBaseUrlInput.Text = _settings.AiBaseUrl;
-        AiApiKeyInput.Text = _settings.AiApiKey;
+        AiApiKeyInput.Password = _settings.AiApiKey;
         AiModelInput.Text = _settings.AiModel;
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+
+        // 按 BaseUrl 反推选中项（匹配不上→自定义）
+        SelectProviderByUrl(_settings.AiBaseUrl);
         UpdateIconUI();
         LoadSyncSettings();
         LoadTodoSettings();
@@ -483,13 +492,102 @@ public partial class SettingsWindow : Window
     { if (_suppressEvents) return; _settings.AutoStart = AutoStartCheck.IsChecked == true; SetAutoStart(_settings.AutoStart); _settings.Save(); }
 
     private void AiBaseUrl_TextChanged(object sender, TextChangedEventArgs e)
-    { if (_suppressEvents) return; _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim(); _settings.Save(); }
+    {
+        if (_suppressEvents) return;
+        _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
+        _settings.Save();
+        SelectProviderByUrl(_settings.AiBaseUrl);   // 手改 BaseUrl 后反推：匹配不上自动切「自定义」
+    }
 
-    private void AiApiKey_TextChanged(object sender, TextChangedEventArgs e)
-    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyInput.Text.Trim(); _settings.Save(); }
+    private void AiApiKey_PasswordChanged(object sender, RoutedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyInput.Password; _settings.Save(); }
 
     private void AiModel_TextChanged(object sender, TextChangedEventArgs e)
     { if (_suppressEvents) return; _settings.AiModel = AiModelInput.Text.Trim(); _settings.Save(); }
+
+    // ── 供应商联动 / 密钥显隐 / 申请跳转 ──
+
+    /// <summary>按 BaseUrl 反推预设并选中对应项；匹配不上选「自定义」。同步更新跳转按钮可见性。
+    /// 注意：保存并恢复 _suppressEvents 原值——此方法会在 LoadSettings（抑制中）与用户改 BaseUrl（未抑制）两种场景调用，
+    /// 不可在 finally 强制设 false，否则会提前解除 LoadSettings 的全程抑制，致后续板块回填误触发事件。</summary>
+    private void SelectProviderByUrl(string? baseUrl)
+    {
+        var prev = _suppressEvents;
+        _suppressEvents = true;
+        try
+        {
+            var matched = AiProviders.MatchByUrl(baseUrl);
+            int idx = -1;
+            for (int i = 0; i < AiProviders.Presets.Count; i++)
+                if (ReferenceEquals(AiProviders.Presets[i], matched)) { idx = i; break; }
+            AiProviderCombo.SelectedIndex = idx >= 0 ? idx : AiProviders.Presets.Count;   // 最后一项=自定义
+            UpdateKeyApplyVisibility(matched is not null);
+        }
+        finally { _suppressEvents = prev; }
+    }
+
+    private void UpdateKeyApplyVisibility(bool visible)
+        => AiKeyApplyLink.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>选预设→自动填 BaseUrl；选自定义→清空 BaseUrl 交给用户自行输入。</summary>
+    private void AiProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var preset = (AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as AiProviderPreset;
+        UpdateKeyApplyVisibility(preset is not null);
+        if (preset is not null)
+        {
+            if (AiBaseUrlInput.Text.Trim() != preset.BaseUrl)
+                AiBaseUrlInput.Text = preset.BaseUrl;   // 触发 AiBaseUrl_TextChanged 落盘（反推仍命中本预设，不切自定义）
+        }
+        else
+        {
+            // 自定义：清空 BaseUrl，交给用户自行输入（触发 TextChanged 落空值并反推仍为自定义）
+            if (!string.IsNullOrEmpty(AiBaseUrlInput.Text))
+                AiBaseUrlInput.Text = "";
+        }
+    }
+
+    private bool _aiKeyVisible;
+    private void AiKeyToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _aiKeyVisible = !_aiKeyVisible;
+        if (_aiKeyVisible)
+        {
+            // 切到明文：把 PasswordBox 当前内容带到明文框（设 Text 会触发 TextChanged，抑制避免重复落盘）
+            var prev = _suppressEvents;
+            _suppressEvents = true;
+            try { AiApiKeyPlain.Text = AiApiKeyInput.Password; }
+            finally { _suppressEvents = prev; }
+            AiApiKeyInput.Visibility = Visibility.Collapsed;
+            AiApiKeyPlain.Visibility = Visibility.Visible;
+            AiApiKeyPlain.Focus();
+            AiApiKeyPlain.CaretIndex = AiApiKeyPlain.Text.Length;
+        }
+        else
+        {
+            // 切回星号：把明文框内容带回 PasswordBox
+            var prev = _suppressEvents;
+            _suppressEvents = true;
+            try { AiApiKeyInput.Password = AiApiKeyPlain.Text; }
+            finally { _suppressEvents = prev; }
+            AiApiKeyPlain.Visibility = Visibility.Collapsed;
+            AiApiKeyInput.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>明文态编辑：落盘真实值。星号态编辑走 AiApiKey_PasswordChanged。切换时单向同步由 AiKeyToggle_Click 负责。</summary>
+    private void AiApiKeyPlain_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyPlain.Text; _settings.Save(); }
+
+    private void AiKeyApplyLink_Click(object sender, RoutedEventArgs e)
+    {
+        var preset = (AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as AiProviderPreset;
+        var url = preset?.KeyApplyUrl;
+        if (string.IsNullOrEmpty(url)) return;
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        catch { /* 无默认浏览器或被取消，静默 */ }
+    }
 
     private void AiAssistantName_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -507,9 +605,16 @@ public partial class SettingsWindow : Window
         {
             // 先落盘当前输入框内容，确保用所见即所得的配置测试
             _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
-            _settings.AiApiKey = AiApiKeyInput.Text.Trim();
+            _settings.AiApiKey = _aiKeyVisible ? AiApiKeyPlain.Text : AiApiKeyInput.Password;
             _settings.AiModel = AiModelInput.Text.Trim();
             _settings.Save();
+
+            if (string.IsNullOrWhiteSpace(_settings.AiModel))
+            {
+                AiTestResult.Text = "请先填写模型名称";
+                AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+                return;   // finally 会复位 _testingAi 与按钮
+            }
 
             BtnTestAi.IsEnabled = false;
             AiTestResult.Text = "连接中...";

@@ -354,7 +354,15 @@ public static class AIDialogHelper
         if (string.IsNullOrWhiteSpace(_settings.AiApiKey))
         {
             System.Windows.MessageBox.Show(_owner ?? Application.Current.MainWindow,
-                "请先在设置中配置 AI 模型", "提示",
+                "请先在设置中配置 API Key", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.AiModel))
+        {
+            System.Windows.MessageBox.Show(_owner ?? Application.Current.MainWindow,
+                "请先在设置 → AI 模型中填写模型名称", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
