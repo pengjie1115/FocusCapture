@@ -12,6 +12,7 @@ namespace FocusCapture.Services;
 /// - 凌晨时段：凌晨3点 / 凌晨十二点（v1 会把凌晨十二点认成中午12点）
 /// - 合成时段词：今晚8点 / 明早8点 / 明晚9点（规范化拆成 日期词+时段）
 /// - 日期表达：本月30号 / 30号 / 8月27号 / 大后天 / 下周三 / 下个月5号
+/// - 数字日期：10/8 / 10-8 / 2026/10/8（月在前；月 1-12、日 1-31 合法才识别；日期已过不识别、不顺延）
 /// - 相对时长：半小时后 / 一个半小时后 / 一刻钟后（v1 只认纯数字）
 /// 解析出的时间若已过当前时刻 → TryParse 返回 false（不设提醒）；
 /// 裸时钟（纯"8点"式，无时段无日期）已过 → Parse 的 IsBareClock=true 暴露给 UI 弹确认（用户决策）。
@@ -22,6 +23,8 @@ public static class TimeParser
     private static readonly (string From, string To)[] NormalizeRules =
     {
         ("：", ":"),
+        ("／", "/"),
+        ("－", "-"),
         ("今晚", "今天晚上"),
         ("明早", "明天早上"),
         ("明晚", "明天晚上"),
@@ -35,6 +38,9 @@ public static class TimeParser
 
     // ── 日期/时段上下文（只在时刻之前查找）──
     private static readonly Regex AbsDateRe = new(@"\d{4}-\d{1,2}-\d{1,2}", RegexOptions.Compiled);
+    // 数字斜杠/横杠日期：2026/10/8、10/8、10-8（月在前）。前后禁数字粘连（防"138-1234"误伤）；
+    // 全角 ／－ 已在 Normalize 归一为半角。
+    private static readonly Regex SlashDateRe = new(@"(?<!\d)(?:(\d{4})[/-])?(\d{1,2})[/-](\d{1,2})(?!\d)", RegexOptions.Compiled);
     private static readonly Regex MonthDayRe = new(@"([0-9零一二三四五六七八九十两]+)月([0-9零一二三四五六七八九十两]+)[日号]", RegexOptions.Compiled);
     private static readonly Regex NextMonthRe = new(@"下个月([0-9零一二三四五六七八九十两]+)[日号]", RegexOptions.Compiled);
     private static readonly Regex WeekRe = new(@"(下?)(?:周|星期)([一二三四五六日天])", RegexOptions.Compiled);
@@ -135,6 +141,21 @@ public static class TimeParser
         var abs = LastMatch(AbsDateRe, prefix);
         if (abs != null && DateTime.TryParse(abs.Value, out var absDate))
             return (absDate.Date, true);
+
+        // 1.5 数字斜杠/横杠 2026/10/8、10/8、10-8（月在前）。月 1-12、日 1-31 合法才认；
+        // 日期已过（含带年份的过去日期）→ 视为未识别，继续走后面规则（用户决策：数字式不顺延明年）
+        var sd = LastMatch(SlashDateRe, prefix);
+        if (sd != null)
+        {
+            var month = int.Parse(sd.Groups[2].Value);
+            var day = int.Parse(sd.Groups[3].Value);
+            if (month is >= 1 and <= 12 && day is >= 1 and <= 31)
+            {
+                var year = sd.Groups[1].Success ? int.Parse(sd.Groups[1].Value) : now.Year;
+                var t = BuildMonthDay(year, month, day, hour, minute);
+                if (t.Date >= now.Date) return (t.Date, true);
+            }
+        }
 
         // 2. 月日 X月X[日号]（今年已过 → 明年）
         var mm = LastMatch(MonthDayRe, prefix);
