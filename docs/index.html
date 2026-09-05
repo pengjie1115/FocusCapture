@@ -118,6 +118,7 @@ nav .container{display:flex;align-items:center;justify-content:space-between;hei
 .shot{background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-md);transition:border-color .15s ease-out,transform .15s ease-out;cursor:zoom-in}
 .shot:hover{border-color:var(--border-strong);transform:translateY(-3px)}
 .shot img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover;object-position:top;background:#0A0C12}
+.shot img.fit{object-fit:contain;object-position:center}
 .shot figcaption{padding:16px 20px}
 .shot figcaption b{display:block;font-size:15px;font-weight:500;margin-bottom:4px}
 .shot figcaption span{font-size:13px;color:var(--text-2)}
@@ -223,6 +224,7 @@ footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--b
     </div>
     <div class="nav-cta">
       <a class="btn btn-ghost" href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-ghost" href="https://gitee.com/pj1115/FocusCapture" target="_blank" rel="noopener">Gitee</a>
       <button class="menu-btn" id="menuBtn" aria-label="菜单"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
     </div>
   </div>
@@ -235,7 +237,8 @@ footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--b
     <h1>FocusCapture · <em>不打断你思路</em>的灵感捕获器</h1>
     <p class="sub">复制即存、语音即记、悬浮球常驻最前层。你在任何窗口随手复制一段话、按一个热键说一句话，它就帮你存进本地笔记库——全程不打断手头的工作。</p>
     <div class="hero-cta">
-      <a class="btn btn-primary btn-lg" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">立即下载</a>
+      <a class="btn btn-primary btn-lg" href="https://gitee.com/pj1115/FocusCapture/releases" target="_blank" rel="noopener">立即下载</a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">GitHub 下载</a>
       <a class="btn btn-ghost btn-lg" href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">查看源码</a>
     </div>
     <div class="hero-meta">
@@ -302,7 +305,7 @@ footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--b
         <figcaption><b>设置面板</b><span>板块导航 + 全局搜索 + 可拖拽占比，深色主题统一</span></figcaption>
       </figure>
       <figure class="shot reveal" onclick="openLightbox(this)">
-        <img src="screenshots/input.png" alt="灵感输入面板：自动隐藏计时重启、记住拖动位置" loading="lazy">
+        <img class="fit" src="screenshots/input.png" alt="灵感输入面板：自动隐藏计时重启、记住拖动位置" loading="lazy">
         <figcaption><b>灵感输入</b><span>自动隐藏计时重启，记住拖动位置，不再吸回默认位置</span></figcaption>
       </figure>
     </div>
@@ -350,7 +353,8 @@ footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--b
           <span class="chip ok">Win x64</span>
           <span class="chip ok">免费开源</span>
         </div>
-        <a class="btn btn-primary" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">前往 Releases 下载最新版</a>
+        <a class="btn btn-primary" href="https://gitee.com/pj1115/FocusCapture/releases" target="_blank" rel="noopener">前往 Gitee 下载（国内更快）</a>
+        <a class="btn btn-ghost" href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">前往 GitHub Releases</a>
       </div>
       <div class="dl-side">
         <h4>从源码构建</h4>
@@ -449,6 +453,8 @@ footer{border-top:1px solid var(--border);padding:52px 0 40px;background:var(--b
         <a href="https://github.com/pengjie1115/FocusCapture" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/pengjie1115/FocusCapture/releases" target="_blank" rel="noopener">Releases</a>
         <a href="https://github.com/pengjie1115/FocusCapture/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://gitee.com/pj1115/FocusCapture" target="_blank" rel="noopener">Gitee</a>
+        <a href="https://gitee.com/pj1115/FocusCapture/releases" target="_blank" rel="noopener">Gitee Releases</a>
         <a href="https://github.com/pengjie1115/FocusCapture/blob/main/README.md" target="_blank" rel="noopener">README</a>
       </div>
     </div>

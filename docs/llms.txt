@@ -8,8 +8,8 @@
 - 平台：Windows 10 / 11 64 位（.NET 8 / WPF）
 - 当前版本：0.2.0
 - 开源协议：MIT
-- 下载地址：https://github.com/pengjie1115/FocusCapture/releases
-- 源码仓库：https://github.com/pengjie1115/FocusCapture
+- 下载地址：https://gitee.com/pj1115/FocusCapture/releases （国内推荐）；https://github.com/pengjie1115/FocusCapture/releases
+- 源码仓库：https://gitee.com/pj1115/FocusCapture （国内镜像）；https://github.com/pengjie1115/FocusCapture
 - 官方网站：https://pengjie1115.github.io/FocusCapture/
 
 ## 主要功能
@@ -46,6 +46,7 @@
 ## 相关链接
 
 - GitHub 仓库：https://github.com/pengjie1115/FocusCapture
-- Release 下载：https://github.com/pengjie1115/FocusCapture/releases
-- 问题反馈：https://github.com/pengjie1115/FocusCapture/issues
+- Gitee 仓库（国内镜像）：https://gitee.com/pj1115/FocusCapture
+- Release 下载：https://gitee.com/pj1115/FocusCapture/releases （国内）；https://github.com/pengjie1115/FocusCapture/releases
+- 问题反馈：https://gitee.com/pj1115/FocusCapture/issues （国内）；https://github.com/pengjie1115/FocusCapture/issues
 - 更新日志：https://github.com/pengjie1115/FocusCapture/blob/main/CHANGELOG.md
