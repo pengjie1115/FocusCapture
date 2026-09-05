@@ -93,6 +93,8 @@ public class WebDAVProvider : ISyncProvider
 
     public async Task<List<SyncNote>> FullAsync(CancellationToken ct)
     {
+        // 拉取路径同样确保目录存在（修复换账号/云端目录缺失时首次拉取 PROPFIND 404 直接报错，2026-09-05）
+        await EnsureDirectoryAsync(ct).ConfigureAwait(false);
         var files = await ListFilesAsync(ct).ConfigureAwait(false);
         var notes = new List<SyncNote>();
         foreach (var f in files.Where(f => f.StartsWith("notes-", StringComparison.Ordinal) &&
