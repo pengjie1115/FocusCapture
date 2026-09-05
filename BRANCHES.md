@@ -42,6 +42,9 @@
 
 | 原分支 | 功能板块 | 删除方式 | 最后提交 |
 |--------|---------|---------|---------|
+| feature/sync-auto-mkdir | 云同步自动建目录：拉取路径补 EnsureDirectory 保护 + 探测白名单补 400（坚果云实测）；含授权码 4 处文案修复 | 已合入 main（2026-09-05，ff 至 ea5be50） | ea5be50 |
+| feature/sync-hint-text-fix | 授权码提示文案改客户端申请路径（xaml 1 处 + cs 4 处） | 已合入 main（2026-09-05，经 sync-auto-mkdir 叠加合入） | c204f3b |
+| feature/build-trim-iconfix | 构建裁剪图标修复 | 本地残留清理（远程已删，功能已在 main） | 27b1c02 |
 | feature/date-numeric-recognition | 待办日期识别新增数字式 10/8、10-8、2026/10/8（月在前，合法性校验，已过不识别） | 已合入 main（2026-09-05，merge 713a1d1） | c8a7e8d |
 | feature/reminder-sound | 提醒音效 MVP（4 款内置+wav/mp3 自定义上传+音量/试听） | **未合入直接删除**（2026-09-05，确认放弃该功能） | d620f79 |
 | feature/annotation-quote | 批注功能（选中文字一键批注，UIA 三层取文） | **未合入直接删除**（2026-09-05，搁置功能确认放弃） | f33d0d0 |
