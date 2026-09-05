@@ -529,22 +529,56 @@ public partial class SettingsWindow : Window
     private void UpdateKeyApplyVisibility(bool visible)
         => AiKeyApplyLink.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
 
-    /// <summary>选预设→自动填 BaseUrl；选自定义→不动 BaseUrl（留空给用户填）。</summary>
+    /// <summary>选预设→自动填 BaseUrl；选自定义→清空 BaseUrl 交给用户自行输入。</summary>
     private void AiProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressEvents) return;
         var preset = (AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as AiProviderPreset;
         UpdateKeyApplyVisibility(preset is not null);
-        if (preset is not null && AiBaseUrlInput.Text.Trim() != preset.BaseUrl)
-            AiBaseUrlInput.Text = preset.BaseUrl;   // 触发 AiBaseUrl_TextChanged 落盘（反推仍命中本预设，不切自定义）
+        if (preset is not null)
+        {
+            if (AiBaseUrlInput.Text.Trim() != preset.BaseUrl)
+                AiBaseUrlInput.Text = preset.BaseUrl;   // 触发 AiBaseUrl_TextChanged 落盘（反推仍命中本预设，不切自定义）
+        }
+        else
+        {
+            // 自定义：清空 BaseUrl，交给用户自行输入（触发 TextChanged 落空值并反推仍为自定义）
+            if (!string.IsNullOrEmpty(AiBaseUrlInput.Text))
+                AiBaseUrlInput.Text = "";
+        }
     }
 
     private bool _aiKeyVisible;
     private void AiKeyToggle_Click(object sender, RoutedEventArgs e)
     {
         _aiKeyVisible = !_aiKeyVisible;
-        AiApiKeyInput.PasswordChar = _aiKeyVisible ? '\0' : '●';   // '\0' = 明文显示
+        if (_aiKeyVisible)
+        {
+            // 切到明文：把 PasswordBox 当前内容带到明文框（设 Text 会触发 TextChanged，抑制避免重复落盘）
+            var prev = _suppressEvents;
+            _suppressEvents = true;
+            try { AiApiKeyPlain.Text = AiApiKeyInput.Password; }
+            finally { _suppressEvents = prev; }
+            AiApiKeyInput.Visibility = Visibility.Collapsed;
+            AiApiKeyPlain.Visibility = Visibility.Visible;
+            AiApiKeyPlain.Focus();
+            AiApiKeyPlain.CaretIndex = AiApiKeyPlain.Text.Length;
+        }
+        else
+        {
+            // 切回星号：把明文框内容带回 PasswordBox
+            var prev = _suppressEvents;
+            _suppressEvents = true;
+            try { AiApiKeyInput.Password = AiApiKeyPlain.Text; }
+            finally { _suppressEvents = prev; }
+            AiApiKeyPlain.Visibility = Visibility.Collapsed;
+            AiApiKeyInput.Visibility = Visibility.Visible;
+        }
     }
+
+    /// <summary>明文态编辑：落盘真实值。星号态编辑走 AiApiKey_PasswordChanged。切换时单向同步由 AiKeyToggle_Click 负责。</summary>
+    private void AiApiKeyPlain_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyPlain.Text; _settings.Save(); }
 
     private void AiKeyApplyLink_Click(object sender, RoutedEventArgs e)
     {
@@ -571,7 +605,7 @@ public partial class SettingsWindow : Window
         {
             // 先落盘当前输入框内容，确保用所见即所得的配置测试
             _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
-            _settings.AiApiKey = AiApiKeyInput.Password;
+            _settings.AiApiKey = _aiKeyVisible ? AiApiKeyPlain.Text : AiApiKeyInput.Password;
             _settings.AiModel = AiModelInput.Text.Trim();
             _settings.Save();
 
