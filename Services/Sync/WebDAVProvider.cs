@@ -145,12 +145,12 @@ public class WebDAVProvider : ISyncProvider
 
     // ── WebDAV 方言 ──
 
-    /// <summary>首次同步前确保 Base URL 目录存在：PROPFIND 404/405/409 → MKCOL（坚果云自定义子目录不会自动存在，QUEST-5 审查补充）。</summary>
+    /// <summary>首次同步前确保 Base URL 目录存在：PROPFIND 400/404/405/409 → MKCOL（坚果云自定义子目录不会自动存在，QUEST-5 审查补充；400 为坚果云对不存在目录的实测返回，2026-09-05 新设备验证补充）。</summary>
     private async Task EnsureDirectoryAsync(CancellationToken ct)
     {
         var (exists, status) = await PropFindAsync(ct).ConfigureAwait(false);
         if (exists) return;
-        if (status == 404 || status == 405 || status == 409)
+        if (status == 400 || status == 404 || status == 405 || status == 409)
             await MkColAsync(ct).ConfigureAwait(false);
         else
             throw new SyncProviderException(status, $"WebDAV 目录探测失败 (HTTP {status})");
