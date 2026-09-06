@@ -61,6 +61,7 @@ public partial class AIDialogWindow : Window
     private bool _closed;
     private int _sessionGeneration; // 新会话时递增，旧流据此自我中止
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
+    private bool _agentRulesAdded;        // Agent 系统规则每会话只注入一次
 
     public AIDialogWindow(NoteService noteService, AppSettings settings)
     {
@@ -245,6 +246,7 @@ public partial class AIDialogWindow : Window
     private async Task SendViaAgentAsync(string text, ChatBubbleViewModel current, int generation)
     {
         EnsureAgentRegistry();
+        AppendAgentRulesOnce();
         var agent = new AgentRunService(_provider, _registry!, _session!)
         {
             ConfirmHandler = desc => Task.FromResult(System.Windows.MessageBox.Show(
@@ -252,6 +254,7 @@ public partial class AIDialogWindow : Window
                 $"AI 请求执行以下操作：\n\n{desc}\n\n确认执行？",
                 "AI 操作确认",
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
+            WriteConfirmEnabled = _settings.AgentWriteConfirmPopup,
             StatusCallback = msg =>
             {
                 if (generation == _sessionGeneration && !current.IsUser)
@@ -264,6 +267,19 @@ public partial class AIDialogWindow : Window
         current.Content = string.IsNullOrWhiteSpace(reply) ? "（模型未返回内容）" : reply;
     }
 
+    /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
+    private void AppendAgentRulesOnce()
+    {
+        if (_session == null || _agentRulesAdded) return;
+        _session.AppendSystemRules(
+            "[Agent 工具规则]\n" +
+            "1. 工具执行返回的结果是唯一事实来源：工具返回成功才可以说完成；返回失败必须如实告知。严禁在没有调用工具、或工具未返回成功的情况下宣称已完成任何操作。\n" +
+            "2. 执行任何写操作（新增/修改/删除笔记或待办）之前，必须先在回复中列出将要执行的具体动作，等用户明确同意后再调用工具执行。\n" +
+            "3. 没有对应工具的能力就直说做不到，不要编造替代方案的结果。\n" +
+            "4. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。");
+        _agentRulesAdded = true;
+    }
+
     /// <summary>装配工具注册表：本地工具 + 各外发目的地能力（新增目的地在此注册一行）</summary>
     private void EnsureAgentRegistry()
     {
@@ -272,6 +288,10 @@ public partial class AIDialogWindow : Window
         registry.Register(new SearchNotesTool(_noteService));
         registry.Register(new ListTodosTool(_noteService));
         registry.Register(new SaveQuickNoteTool(_noteService));
+        registry.Register(new CreateTodoTool(_noteService));
+        registry.Register(new CompleteTodoTool(_noteService));
+        registry.Register(new ReopenTodoTool(_noteService));
+        registry.Register(new DeleteNoteTool(_noteService));
 
         var getNote = new GetNoteDestination(_settings);
         foreach (var capability in getNote.Capabilities)

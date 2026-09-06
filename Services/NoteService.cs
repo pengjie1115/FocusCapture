@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using FocusCapture.Models;
 using FocusCapture.Services.Sync;
@@ -111,7 +111,7 @@ public class NoteService
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[FocusCapture] 写入笔记失败: {ex.Message}");
+            AppLog.Error("Note", "写入笔记失败", ex);
             // 降级：不带标签写入默认文件（保持类型）
             if (!string.IsNullOrEmpty(entry.Tag))
             {
@@ -173,7 +173,7 @@ public class NoteService
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[FocusCapture] 编辑保存失败 ({filePath}): {ex.Message}");
+            AppLog.Error("Note", $"编辑保存失败 ({filePath})", ex);
             return false;
         }
     }
@@ -205,7 +205,7 @@ public class NoteService
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[FocusCapture] AI 回填失败 ({filePath}): {ex.Message}");
+            AppLog.Error("Note", $"AI 回填失败 ({filePath})", ex);
             return false;
         }
     }
@@ -257,7 +257,7 @@ public class NoteService
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[FocusCapture] 读取笔记文件失败 ({filePath}): {ex.Message}");
+            AppLog.Error("Note", $"读取笔记文件失败 ({filePath})", ex);
         }
         return false;
     }
@@ -311,7 +311,7 @@ public class NoteService
             // 见 QUEST-5 §2 铁律与反作弊 9；不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
             if (!_recycleBin.Add(Path.GetFileName(filePath), removedLines))
             {
-                Debug.WriteLine($"[FocusCapture] 删除中止：回收站写入失败，原行保留 ({filePath})");
+                AppLog.Error("Note", $"删除中止：回收站写入失败，原行保留 ({filePath})");
                 return false;
             }
             File.WriteAllLines(filePath, keep, Encoding.UTF8);
@@ -321,7 +321,7 @@ public class NoteService
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[FocusCapture] 删除笔记失败 ({filePath}): {ex.Message}");
+            AppLog.Error("Note", $"删除笔记失败 ({filePath})", ex);
             return false;
         }
     }
@@ -373,7 +373,7 @@ public class NoteService
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[FocusCapture] 待办更新失败 ({filePath}): {ex.Message}");
+                AppLog.Error("Note", $"待办更新失败 ({filePath})", ex);
                 return false;
             }
         }
@@ -436,7 +436,7 @@ public class NoteService
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[FocusCapture] 按行查找待办失败 ({file}): {ex.Message}");
+                AppLog.Error("Note", $"按行查找待办失败 ({file})", ex);
             }
         }
         return null;

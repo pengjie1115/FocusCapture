@@ -6,6 +6,7 @@ namespace FocusCapture.Services.Agent;
 /// <summary>
 /// function calling 主循环：发消息（带 tools）→ 执行 tool_calls（写类先过确认闸）→ 结果回填 → 再发。
 /// 最多 5 轮工具往返；带 tools 请求 4xx 时自动去 tools 降级为普通问答一次。
+/// 写操作确认策略由 WriteConfirmEnabled 控制（默认关，靠系统提示词对话内确认 + 回收站 + 运行日志兜底）。
 /// </summary>
 public class AgentRunService
 {
@@ -15,8 +16,11 @@ public class AgentRunService
     private readonly AgentToolRegistry _registry;
     private readonly ChatSessionService _session;
 
-    /// <summary>确认闸回调（UI 弹窗实现）：返回 true = 用户确认执行。null 时非只读工具直接拒绝执行。</summary>
+    /// <summary>确认闸回调（UI 弹窗实现）：返回 true = 用户确认执行。仅 WriteConfirmEnabled=true 时调用。</summary>
     public Func<string, Task<bool>>? ConfirmHandler { get; set; }
+
+    /// <summary>写操作是否需要弹窗确认（设置开关，默认 false = 不弹，对话内确认为主）</summary>
+    public bool WriteConfirmEnabled { get; set; }
 
     /// <summary>状态回调（如"正在调用工具: xxx"），UI 用于更新气泡提示</summary>
     public Action<string>? StatusCallback { get; set; }
@@ -31,6 +35,7 @@ public class AgentRunService
     /// <summary>处理一条用户消息，返回最终答复文本（同时写入会话历史）</summary>
     public async Task<string> RunAsync(string userMessage, CancellationToken ct = default)
     {
+        AppLog.Info("Agent", $"用户消息：{Trunc(userMessage, 200)}");
         _session.AddUser(userMessage);
 
         for (var round = 0; round < MaxToolRounds; round++)
@@ -42,15 +47,25 @@ public class AgentRunService
             }
             catch (LlmRequestException ex) when (ex.StatusCode >= 400 && ex.StatusCode < 500)
             {
+                AppLog.Warn("Agent", $"带 tools 请求 4xx（{ex.StatusCode}），降级普通问答：{Trunc(ex.Message, 200)}");
                 return await FallbackPlainChatAsync("当前模型不支持工具调用，已切换普通问答模式。", ct);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Agent", $"模型请求异常", ex);
+                throw;
             }
 
             if (result.ToolCalls.Count == 0)
             {
                 var final = result.Content ?? "";
+                AppLog.Info("Agent", $"第 {round + 1} 轮无工具调用，最终答复 {final.Length} 字");
                 _session.AddAssistant(final);
                 return final;
             }
+
+            AppLog.Info("Agent", $"第 {round + 1} 轮模型请求 {result.ToolCalls.Count} 个工具：" +
+                string.Join("; ", result.ToolCalls.Select(tc => $"{tc.Name}({Trunc(tc.ArgumentsJson, 150)})")));
 
             // assistant 消息（含 tool_calls 原始 JSON，回传模型必需）
             var toolCallsJson = JsonSerializer.Serialize(result.ToolCalls.Select(tc => new
@@ -65,25 +80,41 @@ public class AgentRunService
             {
                 StatusCallback?.Invoke($"正在调用工具: {call.Name}");
                 var toolResult = await ExecuteToolWithGateAsync(call, ct);
+                AppLog.Info("Agent", $"工具 {call.Name} 返回：{Trunc(toolResult, 300)}");
                 _session.AddToolResult(call.Id, toolResult);
             }
         }
 
+        AppLog.Warn("Agent", $"工具调用达 {MaxToolRounds} 轮上限，强制收尾");
         return await FallbackPlainChatAsync("（本轮工具调用已达上限）请基于以上工具结果直接给出最终回答。", ct);
     }
 
     private async Task<string> ExecuteToolWithGateAsync(ToolCallItem call, CancellationToken ct)
     {
         if (!_registry.TryGetTool(call.Name, out var tool))
+        {
+            AppLog.Warn("Agent", $"模型调用了不存在的工具：{call.Name}");
             return $"错误：不存在名为「{call.Name}」的工具。可用工具：{_registry.DescribeAvailable()}";
+        }
 
         if (!tool.IsReadOnly)
         {
-            if (ConfirmHandler == null)
-                return "错误：该操作需要用户确认，但当前环境不支持确认交互，已取消。";
-            var confirmed = await ConfirmHandler(tool.DescribeAction(call.ArgumentsJson));
-            if (!confirmed)
-                return "用户已取消该操作。请停止此动作，不要重复尝试。";
+            if (WriteConfirmEnabled)
+            {
+                if (ConfirmHandler == null)
+                {
+                    AppLog.Warn("Agent", $"工具 {call.Name} 需确认但无确认处理器，已拒绝");
+                    return "错误：该操作需要用户确认，但当前环境不支持确认交互，已取消。";
+                }
+                var confirmed = await ConfirmHandler(tool.DescribeAction(call.ArgumentsJson));
+                AppLog.Info("Agent", $"工具 {call.Name} 弹窗确认结果：{(confirmed ? "通过" : "用户取消")}");
+                if (!confirmed)
+                    return "用户已取消该操作。请停止此动作，不要重复尝试。";
+            }
+            else
+            {
+                AppLog.Info("Agent", $"写操作（弹窗关闭）：{tool.DescribeAction(call.ArgumentsJson)}");
+            }
         }
 
         try
@@ -92,6 +123,7 @@ public class AgentRunService
         }
         catch (Exception ex)
         {
+            AppLog.Error("Agent", $"工具 {call.Name} 执行异常，参数：{Trunc(call.ArgumentsJson, 300)}", ex);
             return $"工具 {call.Name} 执行出错：{ex.Message}";
         }
     }
@@ -110,6 +142,7 @@ public class AgentRunService
         }
         catch (Exception ex)
         {
+            AppLog.Error("Agent", $"降级普通问答也失败", ex);
             content = $"（模型请求失败：{ex.Message}）";
         }
 
@@ -117,4 +150,6 @@ public class AgentRunService
         _session.AddAssistant(full);
         return full;
     }
+
+    private static string Trunc(string s, int len) => s.Length <= len ? s : s[..len] + "…";
 }

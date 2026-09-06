@@ -1,9 +1,13 @@
+using FocusCapture.Services;
+
 namespace FocusCapture;
 
 public partial class App : WpfApp
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        AppLog.Info("App", $"FocusCapture 启动（{typeof(App).Assembly.GetName().Version}）");
+
         // 全局异常兜底：防止静默崩溃，确保用户能看到错误信息。
         // 2026-08-13 审查修正：可恢复的 UI 异常（如绑定错误）不再强制 Shutdown(1)——
         // 记录日志 + 弹窗提示 + Handled 继续运行，避免"报错→点确定→闪退"（回收站窗口教训，见 QUEST-5 §2 WPF 绑定铁律）。
@@ -42,6 +46,7 @@ public partial class App : WpfApp
 
     private static void LogCrash(string source, Exception ex)
     {
+        AppLog.Error("Crash", $"{source} 未处理异常", ex);
         try
         {
             var dir = Path.Combine(

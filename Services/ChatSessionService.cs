@@ -29,6 +29,13 @@ public class ChatSessionService
 
     public IReadOnlyList<ChatMessage> Messages => _messages;
 
+    /// <summary>向首条 system 消息追加规则文本（Agent 模式防幻觉红线用）</summary>
+    public void AppendSystemRules(string rules)
+    {
+        if (_messages.Count == 0 || _messages[0].Role != ChatRoles.System) return;
+        _messages[0] = _messages[0] with { Content = _messages[0].Content + "\n\n" + rules };
+    }
+
     public void AddUser(string content)
     {
         _messages.Add(new ChatMessage(ChatRoles.User, content));

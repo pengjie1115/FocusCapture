@@ -256,6 +256,7 @@ public partial class SettingsWindow : Window
         AiModelInput.Text = _settings.AiModel;
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
+        AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
@@ -510,6 +511,13 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _settings.AgentEnabled = AgentEnabledCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void AgentWriteConfirm_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AgentWriteConfirmPopup = AgentWriteConfirmCheck.IsChecked == true;
         _settings.Save();
     }
 

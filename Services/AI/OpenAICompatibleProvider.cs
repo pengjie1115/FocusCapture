@@ -178,9 +178,12 @@ public class OpenAICompatibleProvider : IChatProvider
         using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
+        {
+            AppLog.Error("AI", $"ChatWithTools 请求失败: HTTP {(int)response.StatusCode}，模型 {_model}，响应 {Truncate(body, 300)}");
             throw new LlmRequestException(
                 $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}",
                 (int)response.StatusCode);
+        }
 
         try
         {
@@ -209,6 +212,7 @@ public class OpenAICompatibleProvider : IChatProvider
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
         {
+            AppLog.Error("AI", $"ChatWithTools 响应格式异常: {Truncate(body, 300)}");
             throw new InvalidOperationException($"LLM 响应格式异常\n{Truncate(body)}", ex);
         }
     }

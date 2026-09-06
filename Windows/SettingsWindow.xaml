@@ -397,7 +397,13 @@
                     <CheckBox x:Name="AgentEnabledCheck"
                               Foreground="#E0E0E0" Margin="0,12,0,0"
                               Checked="AgentEnabled_Changed" Unchecked="AgentEnabled_Changed">
-                        <TextBlock Text="启用 Agent 工具（AI 问答可调用工具：查笔记/列待办/记灵感/推送云端等；写操作执行前会弹确认）"
+                        <TextBlock Text="启用 Agent 工具（AI 问答可调用工具：查笔记/列待办/记灵感/推送云端等）"
+                                   TextWrapping="Wrap"/>
+                    </CheckBox>
+                    <CheckBox x:Name="AgentWriteConfirmCheck"
+                              Foreground="#E0E0E0" Margin="0,8,0,0"
+                              Checked="AgentWriteConfirm_Changed" Unchecked="AgentWriteConfirm_Changed">
+                        <TextBlock Text="写操作弹窗确认（默认关：AI 会先在对话中征询你的同意再执行；删除走回收站可恢复）"
                                    TextWrapping="Wrap"/>
                     </CheckBox>
 
