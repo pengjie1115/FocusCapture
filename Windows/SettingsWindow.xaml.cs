@@ -1,5 +1,7 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Destinations;
+using FocusCapture.Services.Destinations.GetNote;
 using FocusCapture.Services.Sync;
 using Microsoft.Win32;
 using System.Windows.Media;
@@ -257,6 +259,9 @@ public partial class SettingsWindow : Window
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
+        GetNoteKeyInput.Password = _settings.GetNoteApiKey;
+        GetNoteClientIdInput.Text = _settings.GetNoteClientId;
+        GetNoteTestResult.Text = "";
         LogRetentionInput.Text = _settings.LogRetentionDays.ToString();
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
@@ -268,6 +273,7 @@ public partial class SettingsWindow : Window
         LoadTodoSettings();
         LoadInputSettings();
         _suppressEvents = false;
+        _ = LoadGetNoteTopicsQuietly();   // 凭证已配置时后台拉取知识库列表（不阻塞设置打开）
     }
 
     /// <summary>v3.6 输入框设置回填（自动隐藏模式/秒数 + 位置记忆）</summary>
@@ -520,6 +526,87 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         _settings.AgentWriteConfirmPopup = AgentWriteConfirmCheck.IsChecked == true;
         _settings.Save();
+    }
+
+    // ── 得到大脑凭证（按钮「存到得到大脑」与对话推送共用，改即保存） ──
+
+    private void GetNoteKey_PasswordChanged(object sender, RoutedEventArgs e)
+    { if (_suppressEvents) return; _settings.GetNoteApiKey = GetNoteKeyInput.Password; _settings.Save(); }
+
+    private void GetNoteClientId_TextChanged(object sender, TextChangedEventArgs e)
+    { if (_suppressEvents) return; _settings.GetNoteClientId = GetNoteClientIdInput.Text.Trim(); _settings.Save(); }
+
+    private async void BtnGetNoteTest_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.GetNoteApiKey = GetNoteKeyInput.Password;   // 兜底落盘（正常已由输入事件保存）
+        _settings.GetNoteClientId = GetNoteClientIdInput.Text.Trim();
+        _settings.Save();
+
+        BtnGetNoteTest.IsEnabled = false;
+        GetNoteTestResult.Text = "正在连接…";
+        try
+        {
+            var (ok, msg, topics) = await new GetNoteDestination(_settings).TestConnectionAsync();
+            GetNoteTestResult.Text = msg;
+            GetNoteTestResult.Foreground = new SolidColorBrush(
+                ok ? Color.FromRgb(0x4C, 0xAF, 0x50) : Color.FromRgb(0xEF, 0x53, 0x50));
+            if (ok) FillTopicCombo(topics);
+        }
+        catch (Exception ex)
+        {
+            GetNoteTestResult.Text = $"连接出错：{ex.Message}";
+            GetNoteTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xEF, 0x53, 0x50));
+        }
+        finally
+        {
+            BtnGetNoteTest.IsEnabled = true;
+        }
+    }
+
+    /// <summary>回填知识库下拉：首项=账号默认库，其余来自 knowledge/list；命中已存默认库则选中</summary>
+    private void FillTopicCombo(List<GetNoteDestination.GetNoteTopic> topics)
+    {
+        var prev = _suppressEvents;
+        _suppressEvents = true;
+        try
+        {
+            CmbGetNoteTopic.Items.Clear();
+            CmbGetNoteTopic.Items.Add(new ComboBoxItem { Content = "（账号默认库）", Tag = "" });
+            foreach (var t in topics)
+                CmbGetNoteTopic.Items.Add(new ComboBoxItem { Content = t.Name, Tag = t.Id });
+
+            var idx = 0;
+            for (var i = 1; i < CmbGetNoteTopic.Items.Count; i++)
+                if ((CmbGetNoteTopic.Items[i] as ComboBoxItem)?.Tag as string == _settings.GetNoteDefaultTopicId)
+                { idx = i; break; }
+            CmbGetNoteTopic.SelectedIndex = idx;
+        }
+        finally { _suppressEvents = prev; }
+    }
+
+    private void CmbGetNoteTopic_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var item = CmbGetNoteTopic.SelectedItem as ComboBoxItem;
+        _settings.GetNoteDefaultTopicId = item?.Tag as string ?? "";
+        _settings.GetNoteDefaultTopicName = item is { Tag: string id } && id.Length > 0
+            ? item.Content as string ?? ""
+            : "";
+        _settings.Save();
+    }
+
+    /// <summary>凭证已配置时打开设置后台拉取知识库列表（失败静默：下拉保持已存默认库，不打断设置使用）</summary>
+    private async Task LoadGetNoteTopicsQuietly()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_settings.GetNoteApiKey) ||
+                string.IsNullOrWhiteSpace(_settings.GetNoteClientId)) return;
+            var (ok, _, topics) = await new GetNoteDestination(_settings).TestConnectionAsync();
+            if (ok && topics.Count > 0)
+                await Dispatcher.InvokeAsync(() => FillTopicCombo(topics));
+        }
+        catch { /* 静默失败 */ }
     }
 
     // ── 运行日志（通用板块） ──

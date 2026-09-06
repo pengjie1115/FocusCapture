@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Destinations;
+using FocusCapture.Services.Destinations.GetNote;
 using FocusCapture.Services.Sync;
 
 namespace FocusCapture.Windows;
@@ -622,6 +624,41 @@ public partial class QuickViewWindow : Window
     }
 
     // ── 条目右键菜单 ──
+
+    /// <summary>标题栏「存」按钮：勾选条目优先推送，未勾选推送当前显示列表。去重/确认/重试在 GetNotePushService 内。</summary>
+    private async void BtnGetNote_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = GetSelectedEntries();
+        var fromSelection = selected.Count > 0;
+        var entries = fromSelection ? selected : _viewModels.Select(vm => vm.Entry).ToList();
+        if (entries.Count == 0)
+        {
+            System.Windows.MessageBox.Show(this, "当前没有可上传的笔记。", "存到得到大脑",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var pushService = new GetNotePushService(_settings, new GetNoteDestination(_settings), new GetNoteSyncState())
+        {
+            ConfirmHandler = desc => Task.FromResult(System.Windows.MessageBox.Show(
+                this, desc, "存到得到大脑",
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
+        };
+
+        try
+        {
+            var outcome = await pushService.PushAsync(entries, fromSelection);
+            AppLog.Info("GetNote", $"按钮推送结束：{outcome.Message}");
+            System.Windows.MessageBox.Show(this, outcome.Message, "存到得到大脑",
+                MessageBoxButton.OK, outcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("GetNote", "按钮推送异常", ex);
+            System.Windows.MessageBox.Show(this, $"推送出错：{ex.Message}", "存到得到大脑",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private void NoteContextMenu_Opened(object sender, RoutedEventArgs e)
     {

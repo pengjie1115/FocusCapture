@@ -104,7 +104,7 @@ public class GetNoteDestination : IOutboundDestination
         var noteId = data.ValueKind == JsonValueKind.Object
             ? (data.TryGetProperty("id", out var id) ? id.ToString() : "")
             : "";
-        return new OutboundResult(true, $"已保存到得到大脑（note_id={noteId}，标题《{title}》）。");
+        return new OutboundResult(true, $"已保存到得到大脑（note_id={noteId}，标题《{title}》）。", noteId);
     }
 
     private async Task<OutboundResult> SearchAsync(string argumentsJson, CancellationToken ct)
@@ -148,18 +148,58 @@ public class GetNoteDestination : IOutboundDestination
         if (json.TryGetProperty("data", out var data) && data.TryGetProperty("topics", out var topics) &&
             topics.ValueKind == JsonValueKind.Array)
         {
-            var lines = new List<string>();
-            foreach (var t in topics.EnumerateArray())
+            var topicList = ParseTopics(data);
+            var lines = topicList.Select(t => $"- {t.Name} (topic_id={t.Id})");
+            return new OutboundResult(true, "知识库列表：\n" + string.Join("\n", lines));        }
+        return new OutboundResult(true, "知识库列表（JSON 原样）：\n" + Truncate(json.GetProperty("data").GetRawText(), 1000));
+    }
+
+    /// <summary>知识库条目（名称 + topic_id），按钮路径默认知识库与设置面板测试连接共用</summary>
+    public sealed record GetNoteTopic(string Name, string Id);
+
+    /// <summary>
+    /// 设置面板「测试连接」：验证凭证 + 拉取知识库列表（兼测读权限）。
+    /// 与对话工具 list_notebooks 走同一接口；不写测试笔记，避免脏数据。
+    /// </summary>
+    public async Task<(bool Ok, string Message, List<GetNoteTopic> Topics)> TestConnectionAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.GetNoteApiKey) || string.IsNullOrWhiteSpace(_settings.GetNoteClientId))
+            return (false, "请先填写 API Key 和 Client ID。", new List<GetNoteTopic>());
+        try
+        {
+            var json = await SendAsync(HttpMethod.Get, "/resource/knowledge/list?page=1", null, ct);
+            if (!json.TryGetProperty("success", out var ok) || ok.ValueKind != JsonValueKind.True)
+                return (false, DescribeApiError(json), new List<GetNoteTopic>());
+            var topics = json.TryGetProperty("data", out var data) ? ParseTopics(data) : new List<GetNoteTopic>();
+            return (true, $"连接成功，已加载 {topics.Count} 个知识库。", topics);
+        }
+        catch (HttpRequestException ex)
+        {
+            return (false, $"网络请求失败：{ex.Message}", new List<GetNoteTopic>());
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, "请求超时（30 秒），请稍后重试。", new List<GetNoteTopic>());
+        }
+    }
+
+    /// <summary>解析 knowledge/list 的 topics 数组；topic_id/id 兼容数字与字符串</summary>
+    private static List<GetNoteTopic> ParseTopics(JsonElement data)
+    {
+        var topics = new List<GetNoteTopic>();
+        if (data.TryGetProperty("topics", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var t in arr.EnumerateArray())
             {
                 var name = t.TryGetProperty("name", out var n) ? n.GetString() : "";
-                var tid = t.TryGetProperty("topic_id", out var tidEl) ? tidEl.GetString() : null;
-                if (string.IsNullOrEmpty(tid) && t.TryGetProperty("id", out var idEl))
-                    tid = idEl.GetString();
-                lines.Add($"- {name} (topic_id={tid})");
+                string? tid = null;
+                if (t.TryGetProperty("topic_id", out var tidEl)) tid = tidEl.ToString();
+                else if (t.TryGetProperty("id", out var idEl)) tid = idEl.ToString();
+                if (!string.IsNullOrWhiteSpace(tid))
+                    topics.Add(new GetNoteTopic(name ?? "(未命名)", tid));
             }
-            return new OutboundResult(true, "知识库列表：\n" + string.Join("\n", lines));
         }
-        return new OutboundResult(true, "知识库列表（JSON 原样）：\n" + Truncate(json.GetProperty("data").GetRawText(), 1000));
+        return topics;
     }
 
     // ── HTTP 与解析 ──

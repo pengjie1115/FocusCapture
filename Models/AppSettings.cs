@@ -65,8 +65,10 @@ public class AppSettings
 
     // ── 运行日志 ──
     public int LogRetentionDays { get; set; } = 30;   // 日志保留天数（1-365，超期自动清理）
-    public string GetNoteApiKey { get; set; } = "";   // 得到大脑开放平台凭证（本期无 UI，下期加设置界面）
+    public string GetNoteApiKey { get; set; } = "";   // 得到大脑开放平台凭证（设置面板得到大脑区配置）
     public string GetNoteClientId { get; set; } = "";
+    public string GetNoteDefaultTopicId { get; set; } = "";   // 默认上传知识库 id（知识库下拉选择后落盘；空 = 账号默认库）
+    public string GetNoteDefaultTopicName { get; set; } = ""; // 默认知识库名称（仅下拉回显用，不参与请求）
 
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）

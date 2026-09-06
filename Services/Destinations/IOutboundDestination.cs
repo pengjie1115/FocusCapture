@@ -10,8 +10,8 @@ public sealed record OutboundCapability(
     string ParametersJson,
     bool IsReadOnly);
 
-/// <summary>执行结果（给模型读的文本）</summary>
-public sealed record OutboundResult(bool Success, string Message);
+/// <summary>执行结果（给模型读的文本）；NoteId 仅保存类能力回填，供按钮路径去重映射使用</summary>
+public sealed record OutboundResult(bool Success, string Message, string? NoteId = null);
 
 /// <summary>
 /// 外发目的地接口：能力目录声明 + 通用执行入口。

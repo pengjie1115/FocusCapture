@@ -261,6 +261,18 @@
                                     Cursor="Hand"
                                     Margin="0,0,6,0"
                                     Click="BtnExport_Click"/>
+                            <Button x:Name="BtnGetNote"
+                                    Content="存"
+                                    FontSize="12"
+                                    Width="28" Height="24"
+                                    Background="Transparent"
+                                    Foreground="#2196F3"
+                                    BorderBrush="#2196F3"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    Margin="0,0,6,0"
+                                    ToolTip="存到得到大脑（勾选条目优先；未勾选推送当前列表）"
+                                    Click="BtnGetNote_Click"/>
                             <Button x:Name="BtnClose"
                                     Content="×"
                                     FontSize="18"
