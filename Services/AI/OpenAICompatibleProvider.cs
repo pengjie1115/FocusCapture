@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 
 namespace FocusCapture.Services.AI;
@@ -137,6 +138,105 @@ public class OpenAICompatibleProvider : IChatProvider
             throw new InvalidOperationException(
                 $"连接测试失败: 响应格式异常\n{Truncate(body)}", ex);
         }
+    }
+
+    /// <summary>
+    /// 带工具的补全（Agent 循环用，非流式）。
+    /// assistant 消息可携带 ToolCallsJson（tool_calls 原样回传），role=tool 消息带 tool_call_id。
+    /// HTTP 非 2xx 抛 LlmRequestException（含 StatusCode，供调用方识别 4xx 降级）。
+    /// </summary>
+    public async Task<ChatWithToolsResult> ChatWithToolsAsync(
+        IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<ToolDefinition> tools,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_model))
+            throw new InvalidOperationException("未配置模型名称，请在设置 → AI 模型中填写模型名称。");
+
+        var payload = new JsonObject
+        {
+            ["model"] = _model,
+            ["stream"] = false,
+            ["messages"] = BuildMessagesArray(messages),
+            ["tools"] = new JsonArray(tools.Select(t => new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = t.Name,
+                    ["description"] = t.Description,
+                    ["parameters"] = JsonNode.Parse(string.IsNullOrWhiteSpace(t.ParametersJson) ? "{}" : t.ParametersJson)
+                }
+            }).ToArray<JsonNode?>())
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");
+        if (!string.IsNullOrEmpty(_apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+
+        using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new LlmRequestException(
+                $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}",
+                (int)response.StatusCode);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
+
+            string? content = null;
+            if (message.TryGetProperty("content", out var contentProp) &&
+                contentProp.ValueKind == JsonValueKind.String)
+                content = contentProp.GetString();
+
+            var toolCalls = new List<ToolCallItem>();
+            if (message.TryGetProperty("tool_calls", out var callsProp) && callsProp.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var call in callsProp.EnumerateArray())
+                {
+                    var function = call.GetProperty("function");
+                    toolCalls.Add(new ToolCallItem(
+                        call.GetProperty("id").GetString() ?? "",
+                        function.GetProperty("name").GetString() ?? "",
+                        function.TryGetProperty("arguments", out var args) ? args.GetString() ?? "{}" : "{}"));
+                }
+            }
+
+            return new ChatWithToolsResult(content, toolCalls);
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            throw new InvalidOperationException($"LLM 响应格式异常\n{Truncate(body)}", ex);
+        }
+    }
+
+    /// <summary>Agent 消息序列化：普通消息 {role,content}；assistant 带 tool_calls；tool 消息带 tool_call_id</summary>
+    private static JsonArray BuildMessagesArray(IReadOnlyList<ChatMessage> messages)
+    {
+        var array = new JsonArray();
+        foreach (var m in messages)
+        {
+            var node = new JsonObject { ["role"] = m.Role };
+            if (m.Role == ChatRoles.Assistant && !string.IsNullOrEmpty(m.ToolCallsJson))
+            {
+                node["content"] = m.Content ?? "";
+                node["tool_calls"] = JsonNode.Parse(m.ToolCallsJson) ?? new JsonArray();
+            }
+            else if (m.Role == ChatRoles.Tool)
+            {
+                node["content"] = m.Content ?? "";
+                node["tool_call_id"] = m.ToolCallId ?? "";
+            }
+            else
+            {
+                node["content"] = m.Content ?? "";
+            }
+            array.Add(node);
+        }
+        return array;
     }
 
     private HttpRequestMessage BuildRequest(IReadOnlyList<ChatMessage> messages, bool stream, int? maxTokens = null)

@@ -255,6 +255,7 @@ public partial class SettingsWindow : Window
         AiApiKeyInput.Password = _settings.AiApiKey;
         AiModelInput.Text = _settings.AiModel;
         AiAssistantNameInput.Text = _settings.AiAssistantName;
+        AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
@@ -504,6 +505,13 @@ public partial class SettingsWindow : Window
 
     private void AiModel_TextChanged(object sender, TextChangedEventArgs e)
     { if (_suppressEvents) return; _settings.AiModel = AiModelInput.Text.Trim(); _settings.Save(); }
+
+    private void AgentEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AgentEnabled = AgentEnabledCheck.IsChecked == true;
+        _settings.Save();
+    }
 
     // ── 供应商联动 / 密钥显隐 / 申请跳转 ──
 

@@ -41,23 +41,58 @@ public class ChatSessionService
         Trim();
     }
 
-    /// <summary>裁剪：只保留最近 MaxMessages 条非 system 消息；system 永远保留在第一位</summary>
+    /// <summary>Agent 循环：assistant 消息携带 tool_calls（原始 JSON 原样保存，回传模型必需）</summary>
+    public void AddAssistantToolCall(string? content, string toolCallsJson)
+    {
+        _messages.Add(new ChatMessage(ChatRoles.Assistant, content ?? "", ToolCallsJson: toolCallsJson));
+        Trim();
+    }
+
+    /// <summary>Agent 循环：工具执行结果（超长截断，防止单条工具结果撑爆上下文）</summary>
+    public void AddToolResult(string toolCallId, string content)
+    {
+        if (content.Length > 2000) content = content[..2000] + "…（已截断）";
+        _messages.Add(new ChatMessage(ChatRoles.Tool, content, ToolCallId: toolCallId));
+        Trim();
+    }
+
+    /// <summary>裁剪：只保留最近 MaxMessages 条非 system 消息；system 永远保留在第一位。
+    /// assistant(tool_calls) 与其后紧邻的 tool 结果消息整组同进退，绝不拆散配对。</summary>
     private void Trim()
     {
-        var system = _messages.TakeWhile(m => m.Role == ChatRoles.System).ToList();
+        var systemCount = 0;
+        while (systemCount < _messages.Count && _messages[systemCount].Role == ChatRoles.System)
+            systemCount++;
 
-        var nonSystem = _messages.Skip(system.Count).ToList();
-        if (nonSystem.Count <= MaxMessages) return;
+        var nonSystemCount = _messages.Count - systemCount;
+        if (nonSystemCount <= MaxMessages) return;
 
-        // 丢弃最老的（首条优先截断，避免单条超长笔记撑爆上下文）
-        var dropped = nonSystem.Count - MaxMessages;
-        var kept = nonSystem.Skip(dropped).ToList();
+        var removeCount = nonSystemCount - MaxMessages;
+
+        // 截断点若落在配对组内部（或起点是孤儿 tool 消息），整组一并移除
+        var cut = systemCount + removeCount;
+        while (cut < _messages.Count)
+        {
+            var m = _messages[cut];
+            if (m.Role == ChatRoles.Tool) { cut++; continue; }
+            if (m.ToolCallsJson != null)
+            {
+                var end = cut + 1;
+                while (end < _messages.Count && _messages[end].Role == ChatRoles.Tool) end++;
+                if (end > systemCount + removeCount) { cut = end; break; } // 组跨越截断点 → 整组丢弃
+            }
+            break;
+        }
+        removeCount = cut - systemCount;
+
+        var kept = _messages.Skip(systemCount + removeCount).ToList();
         for (var i = 0; i < kept.Count; i++)
         {
             if (kept[i].Role == ChatRoles.User && kept[i].Content.Length > 2000)
-                kept[i] = new ChatMessage(ChatRoles.User, kept[i].Content[..2000]);
+                kept[i] = kept[i] with { Content = kept[i].Content[..2000] };
         }
 
+        var system = _messages.Take(systemCount).ToList();
         _messages.Clear();
         _messages.AddRange(system);
         _messages.AddRange(kept);

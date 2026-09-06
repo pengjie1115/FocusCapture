@@ -59,6 +59,11 @@ public class AppSettings
     public string AiModel { get; set; } = "";   // 不再预置：模型更新快，交给用户自填
     public string AiAssistantName { get; set; } = "AI 问答";
 
+    // ── Agent 工具（AI 动手能力）──
+    public bool AgentEnabled { get; set; } = false;   // 默认关：关闭时 AI 对话行为与旧版完全一致
+    public string GetNoteApiKey { get; set; } = "";   // 得到大脑开放平台凭证（本期无 UI，下期加设置界面）
+    public string GetNoteClientId { get; set; } = "";
+
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 

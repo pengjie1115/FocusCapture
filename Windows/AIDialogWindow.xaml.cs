@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Agent;
+using FocusCapture.Services.Destinations;
 
 namespace FocusCapture.Windows;
 
@@ -58,6 +60,7 @@ public partial class AIDialogWindow : Window
     private bool _isStreaming;
     private bool _closed;
     private int _sessionGeneration; // 新会话时递增，旧流据此自我中止
+    private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
 
     public AIDialogWindow(NoteService noteService, AppSettings settings)
     {
@@ -171,32 +174,40 @@ public partial class AIDialogWindow : Window
 
         try
         {
-            // 用户消息入会话 + 入 UI（修复：此前仅第一轮 selectedText 路径添加，输入框路径完全缺失，
-            // 导致请求体 messages 无 user —— Agnes 400 "No user query" / DeepSeek 自说自话）
-            _session.AddUser(text);
             AddBubble(true, text);
-
             AddBubble(false, "", _targetNote != null && _mode != ExplainMode.Ask);
             var current = _bubbles[^1];
 
-            var sb = new StringBuilder();
-            await foreach (var chunk in _provider.StreamAsync(_session.Messages))
+            if (_settings.AgentEnabled && _mode == ExplainMode.Ask)
             {
-                if (generation != _sessionGeneration) return; // 会话已切换，丢弃旧流
-                sb.Append(chunk);
-                current.Content = sb.ToString();
-            }
-
-            var full = sb.ToString();
-            if (generation != _sessionGeneration) return;
-            if (string.IsNullOrWhiteSpace(full))
-            {
-                current.Content = "（模型未返回内容）";
+                // Agent 路径：function calling 循环（RunAsync 内部负责把用户消息写入会话）
+                await SendViaAgentAsync(text, current, generation);
             }
             else
             {
-                _session.AddAssistant(full);
-                _session.Save();
+                // 普通问答路径（与旧版完全一致）：用户消息入会话 + 流式接收
+                // （AddUser 不可省：请求体 messages 无 user 会导致 Agnes 400 "No user query" / DeepSeek 自说自话）
+                _session.AddUser(text);
+
+                var sb = new StringBuilder();
+                await foreach (var chunk in _provider.StreamAsync(_session.Messages))
+                {
+                    if (generation != _sessionGeneration) return; // 会话已切换，丢弃旧流
+                    sb.Append(chunk);
+                    current.Content = sb.ToString();
+                }
+
+                var full = sb.ToString();
+                if (generation != _sessionGeneration) return;
+                if (string.IsNullOrWhiteSpace(full))
+                {
+                    current.Content = "（模型未返回内容）";
+                }
+                else
+                {
+                    _session.AddAssistant(full);
+                    _session.Save();
+                }
             }
         }
         catch (Exception ex)
@@ -225,6 +236,48 @@ public partial class AIDialogWindow : Window
                 _session?.Save();
             }
         }
+    }
+
+    /// <summary>
+    /// Agent 路径：function calling 循环（非流式）。工具调用过程实时显示在气泡上；
+    /// 写操作（非只读工具）执行前经 ConfirmHandler 弹窗确认。
+    /// </summary>
+    private async Task SendViaAgentAsync(string text, ChatBubbleViewModel current, int generation)
+    {
+        EnsureAgentRegistry();
+        var agent = new AgentRunService(_provider, _registry!, _session!)
+        {
+            ConfirmHandler = desc => Task.FromResult(System.Windows.MessageBox.Show(
+                this,
+                $"AI 请求执行以下操作：\n\n{desc}\n\n确认执行？",
+                "AI 操作确认",
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
+            StatusCallback = msg =>
+            {
+                if (generation == _sessionGeneration && !current.IsUser)
+                    current.Content = msg + "…";
+            },
+        };
+
+        var reply = await agent.RunAsync(text);
+        if (generation != _sessionGeneration) return;
+        current.Content = string.IsNullOrWhiteSpace(reply) ? "（模型未返回内容）" : reply;
+    }
+
+    /// <summary>装配工具注册表：本地工具 + 各外发目的地能力（新增目的地在此注册一行）</summary>
+    private void EnsureAgentRegistry()
+    {
+        if (_registry != null) return;
+        var registry = new AgentToolRegistry();
+        registry.Register(new SearchNotesTool(_noteService));
+        registry.Register(new ListTodosTool(_noteService));
+        registry.Register(new SaveQuickNoteTool(_noteService));
+
+        var getNote = new GetNoteDestination(_settings);
+        foreach (var capability in getNote.Capabilities)
+            registry.Register(new OutboundTool(getNote, capability));
+
+        _registry = registry;
     }
 
     /// <summary>回填-追加到原笔记（受沉浸式锁定约束）</summary>

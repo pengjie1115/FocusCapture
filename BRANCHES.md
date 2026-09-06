@@ -35,6 +35,7 @@
 |------|---------|------|---------|
 | main | 主线（当前最新版 v0.2.x） | 活跃 | 713a1d1 |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
+| feature/agent-tool-framework | AI 动手能力：通用 Agent 工具框架（function calling 主循环+确认闸）+ 本地 3 工具 + 得到大脑数据驱动适配器（解耦架构，方案文档 AGENT_IMPLEMENTATION.md v2.0，按钮直传/凭证 UI 下期） | **开发中，未合入** | 见 git log |
 
 ## 四、已删除分支归档（2026-09-01 清理，功能均已确认在 main）
 
