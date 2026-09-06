@@ -62,6 +62,9 @@ public class AppSettings
     // ── Agent 工具（AI 动手能力）──
     public bool AgentEnabled { get; set; } = false;   // 默认关：关闭时 AI 对话行为与旧版完全一致
     public bool AgentWriteConfirmPopup { get; set; } = false; // 默认不弹窗：写操作靠系统提示词对话内确认 + 回收站 + 运行日志兜底
+
+    // ── 运行日志 ──
+    public int LogRetentionDays { get; set; } = 30;   // 日志保留天数（1-365，超期自动清理）
     public string GetNoteApiKey { get; set; } = "";   // 得到大脑开放平台凭证（本期无 UI，下期加设置界面）
     public string GetNoteClientId { get; set; } = "";
 

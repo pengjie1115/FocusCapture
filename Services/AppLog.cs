@@ -4,21 +4,56 @@ namespace FocusCapture.Services;
 
 /// <summary>
 /// 运行日志：AppData\Roaming\FocusCapture\logs\app_yyyy-MM-dd.log，按天一个文件。
-/// 保留 30 天（启动时自动清理更早的）；单日文件超 10MB 停写（防错误风暴刷爆磁盘）。
-/// 线程安全。Error 级别同步输出到 Debug（调试器可见）。
+/// 保留天数可配置（AppSettings.LogRetentionDays，默认 30，启动时自动清理更早的）；
+/// 单日文件超 10MB 停写（防错误风暴刷爆磁盘）。线程安全。Error 级别同步输出到 Debug（调试器可见）。
 /// </summary>
 public static class AppLog
 {
-    private const int RetainDays = 30;
+    public const int DefaultRetentionDays = 30;
     private const long MaxFileBytes = 10 * 1024 * 1024;
 
     private static readonly object _lock = new();
     private static bool _cleaned;
+    private static int _retentionDays = DefaultRetentionDays;
+
+    /// <summary>日志保留天数（设置面板可改；启动时从 AppSettings 惰性读取，改设置即时生效）</summary>
+    public static int RetentionDays
+    {
+        get
+        {
+            if (_retentionDays == DefaultRetentionDays && !_retentionLoaded)
+            {
+                try { _retentionDays = Math.Clamp(FocusCapture.Models.AppSettings.Load().LogRetentionDays, 1, 365); }
+                catch { /* 读不到就用默认 30 */ }
+                _retentionLoaded = true;
+            }
+            return _retentionDays;
+        }
+    }
+    private static bool _retentionLoaded;
+
+    /// <summary>设置面板修改保留天数后调用：立即生效并重新执行一次过期清理</summary>
+    public static void ApplyRetention(int days)
+    {
+        _retentionDays = Math.Clamp(days, 1, 365);
+        _retentionLoaded = true;
+        lock (_lock)
+        {
+            try { CleanOldLogs(Dir); _cleaned = true; } catch { /* 清理失败不影响主流程 */ }
+        }
+    }
 
     private static string Dir =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "FocusCapture", "logs");
+
+    /// <summary>日志目录（设置面板跳转用，确保目录存在）</summary>
+    public static string EnsureLogDir()
+    {
+        Directory.CreateDirectory(Dir);
+        return Dir;
+    }
 
     public static void Info(string tag, string message) => Write("INFO", tag, message);
     public static void Warn(string tag, string message) => Write("WARN", tag, message);
@@ -63,12 +98,12 @@ public static class AppLog
         }
     }
 
-    /// <summary>删除超过保留期的 app_*.log（首次写日志时执行一次）</summary>
+    /// <summary>删除超过保留期的 app_*.log（首次写日志时执行一次，改保留天数时重跑）</summary>
     private static void CleanOldLogs(string dir)
     {
         try
         {
-            var cutoff = DateTime.Now.Date.AddDays(-RetainDays);
+            var cutoff = DateTime.Now.Date.AddDays(-RetentionDays);
             foreach (var file in Directory.GetFiles(dir, "app_*.log"))
             {
                 var name = Path.GetFileNameWithoutExtension(file); // app_yyyy-MM-dd

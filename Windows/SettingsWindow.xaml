@@ -675,6 +675,23 @@
                     </DockPanel>
                     <TextBlock Text="找回被删除的笔记/待办（云同步时提供兜底）"
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <TextBlock Text="运行日志" Margin="0,16,0,4"/>
+                    <DockPanel>
+                        <Button Content="打开日志文件夹"
+                                Width="120" HorizontalAlignment="Left"
+                                Click="BtnOpenLogs_Click"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                    Margin="12,0,0,0">
+                            <TextBlock Text="保留" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox x:Name="LogRetentionInput"
+                                     Style="{StaticResource DarkTextBox}"
+                                     Width="50" TextChanged="LogRetention_TextChanged"/>
+                            <TextBlock Text="天（1-365，默认 30）" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBlock Text="程序运行记录（AI 工具调用/报错等），出问题时把对应时间点的日志文件发给开发者即可定位"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                 </StackPanel>
                 </Grid>
             </ScrollViewer>

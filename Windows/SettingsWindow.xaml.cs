@@ -257,6 +257,7 @@ public partial class SettingsWindow : Window
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
+        LogRetentionInput.Text = _settings.LogRetentionDays.ToString();
         AiTestResult.Text = "";
         AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
@@ -519,6 +520,42 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         _settings.AgentWriteConfirmPopup = AgentWriteConfirmCheck.IsChecked == true;
         _settings.Save();
+    }
+
+    // ── 运行日志（通用板块） ──
+
+    private void BtnOpenLogs_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = AppLog.EnsureLogDir(),
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Settings", "打开日志文件夹失败", ex);
+            MessageBox.Show(this, $"打开日志文件夹失败：{ex.Message}\n\n可手动打开：{AppLog.EnsureLogDir()}",
+                "FocusCapture 提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void LogRetention_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (!int.TryParse(LogRetentionInput.Text.Trim(), out var days)) return; // 输入中途的空/非数字不处理，失焦或下次输入生效
+        var clamped = Math.Clamp(days, 1, 365);
+        if (clamped != days)
+        {
+            _suppressEvents = true;
+            LogRetentionInput.Text = clamped.ToString();
+            _suppressEvents = false;
+        }
+        _settings.LogRetentionDays = clamped;
+        _settings.Save();
+        AppLog.ApplyRetention(clamped); // 立即生效并清理过期日志
     }
 
     // ── 供应商联动 / 密钥显隐 / 申请跳转 ──
