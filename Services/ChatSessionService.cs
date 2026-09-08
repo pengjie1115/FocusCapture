@@ -12,11 +12,13 @@ public class ChatSessionService
     private string _sessionFile;     // Load 历史会话时重指向原文件（非 readonly）
     private string _systemPrompt;    // Load 时取文件中保存的值
     private readonly ExplainMode _mode;
+    private readonly int _toolResultLimit;  // 工具结果单条截断阈值（AppSettings.AiToolResultLimit，默认 8000）
 
-    public ChatSessionService(ExplainMode mode, string? noteContext = null, string? noteContent = null)
+    public ChatSessionService(ExplainMode mode, string? noteContext = null, string? noteContent = null, int toolResultLimit = 8000)
     {
         _mode = mode;
         _systemPrompt = BuildSystemPrompt(mode, noteContext, noteContent);
+        _toolResultLimit = toolResultLimit > 0 ? toolResultLimit : 8000;
         _messages = new List<ChatMessage> { new(ChatRoles.System, _systemPrompt) };
 
         var dir = Path.Combine(
@@ -61,7 +63,7 @@ public class ChatSessionService
     /// <summary>Agent 循环：工具执行结果（超长截断，防止单条工具结果撑爆上下文）</summary>
     public void AddToolResult(string toolCallId, string content)
     {
-        if (content.Length > 2000) content = content[..2000] + "…（已截断）";
+        if (content.Length > _toolResultLimit) content = content[.._toolResultLimit] + "…（已截断）";
         _messages.Add(new ChatMessage(ChatRoles.Tool, content, ToolCallId: toolCallId));
         Trim();
     }

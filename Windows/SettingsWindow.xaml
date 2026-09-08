@@ -394,6 +394,14 @@
                                  TextChanged="AiModel_TextChanged"/>
                     </DockPanel>
 
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="长度上限" Width="130" VerticalAlignment="Center"/>
+                        <TextBox x:Name="AiMaxTokensInput" Style="{StaticResource DarkTextBox}"
+                                 TextChanged="AiMaxTokens_TextChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="回答长度上限（token 数，默认 4096；此前不传由供应商默认值决定，常致长回答被截断。不同模型输出上限不同，过大可能被供应商拒绝）"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+
                     <CheckBox x:Name="AgentEnabledCheck"
                               Foreground="#E0E0E0" Margin="0,12,0,0"
                               Checked="AgentEnabled_Changed" Unchecked="AgentEnabled_Changed">
@@ -406,6 +414,21 @@
                         <TextBlock Text="写操作弹窗确认（默认关：AI 会先在对话中征询你的同意再执行；删除走回收站可恢复）"
                                    TextWrapping="Wrap"/>
                     </CheckBox>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="工具轮数上限" Width="130" VerticalAlignment="Center"/>
+                        <TextBox x:Name="AgentMaxToolRoundsInput" Style="{StaticResource DarkTextBox}"
+                                 TextChanged="AgentMaxToolRounds_TextChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="Agent 工具调用往返轮数上限（默认 15；原硬编码 5 偏低，多步工具易触顶）"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="工具结果截断" Width="130" VerticalAlignment="Center"/>
+                        <TextBox x:Name="AiToolResultLimitInput" Style="{StaticResource DarkTextBox}"
+                                 TextChanged="AiToolResultLimit_TextChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="工具结果喂回模型前的单条截断阈值（字符数，默认 8000；过低长笔记信息不全）"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
 
                     <DockPanel Margin="0,12,0,0">
                         <Button x:Name="BtnTestAi" Content="测试连接"
