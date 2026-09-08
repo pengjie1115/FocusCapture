@@ -9,8 +9,8 @@ public class ChatSessionService
     private const int MaxMessages = 20; // 保留最近 20 条（约 10 轮）
 
     private readonly List<ChatMessage> _messages;
-    private readonly string _sessionFile;
-    private readonly string _systemPrompt;
+    private string _sessionFile;     // Load 历史会话时重指向原文件（非 readonly）
+    private string _systemPrompt;    // Load 时取文件中保存的值
     private readonly ExplainMode _mode;
 
     public ChatSessionService(ExplainMode mode, string? noteContext = null, string? noteContent = null)
@@ -28,6 +28,9 @@ public class ChatSessionService
     }
 
     public IReadOnlyList<ChatMessage> Messages => _messages;
+
+    /// <summary>会话所属模式（历史会话回看时 UI 用它还原标题）</summary>
+    public ExplainMode Mode => _mode;
 
     /// <summary>向首条 system 消息追加规则文本（Agent 模式防幻觉红线用）</summary>
     public void AppendSystemRules(string rules)
@@ -126,7 +129,10 @@ public class ChatSessionService
         }
     }
 
-    /// <summary>读取历史会话（Phase 2 新建即可，读历史留接口）</summary>
+    /// <summary>
+    /// 读取历史会话。加载后 _sessionFile 保持指向原文件（继续对话 Save 回写原文件，不产生副本），
+    /// _systemPrompt 取文件中保存的值（构造函数按 mode 生成的默认值仅是占位）。
+    /// </summary>
     public static ChatSessionService? Load(string filePath)
     {
         try
@@ -138,6 +144,8 @@ public class ChatSessionService
 
             if (!Enum.TryParse<ExplainMode>(payload.Mode, out var mode)) return null;
             var svc = new ChatSessionService(mode);
+            svc._sessionFile = filePath;
+            svc._systemPrompt = payload.SystemPrompt ?? "";
             svc._messages.Clear();
             svc._messages.AddRange(payload.Messages ?? new List<ChatMessage>());
             return svc;
@@ -147,6 +155,47 @@ public class ChatSessionService
             Debug.WriteLine($"[FocusCapture] 对话历史读取失败: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>扫描 chat_history 目录生成会话摘要列表（最新在前）。损坏/无法解析的文件跳过。</summary>
+    public static IReadOnlyList<SessionSummary> ListSessions()
+    {
+        var result = new List<SessionSummary>();
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "FocusCapture", "chat_history");
+            if (!Directory.Exists(dir)) return result;
+
+            // 文件名即 yyyyMMdd_HHmmss，按名称倒序 = 时间倒序
+            foreach (var file in Directory.EnumerateFiles(dir, "*.json").OrderByDescending(f => f, StringComparer.Ordinal))
+            {
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(file, Encoding.UTF8));
+                    if (payload == null || !Enum.TryParse<ExplainMode>(payload.Mode, out _)) continue;
+
+                    var firstUser = payload.Messages?.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    result.Add(new SessionSummary(
+                        file,
+                        payload.SavedAt,
+                        payload.Mode,
+                        firstUser.Length > 40 ? firstUser[..40] + "…" : firstUser,
+                        payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
+                }
+                catch (Exception ex) when (ex is JsonException or IOException)
+                {
+                    // 单个文件损坏不影响整体列表
+                    Debug.WriteLine($"[FocusCapture] 会话文件解析跳过: {file}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 会话目录扫描失败: {ex.Message}");
+        }
+        return result;
     }
 
     private static string BuildSystemPrompt(ExplainMode mode, string? noteContext, string? noteContent)
@@ -167,6 +216,14 @@ public class ChatSessionService
         return basePrompt;
     }
 }
+
+/// <summary>历史会话列表条目摘要（抽屉列表用，FilePath 用于 Load 还原完整会话）</summary>
+public sealed record SessionSummary(
+    string FilePath,
+    DateTime SavedAt,
+    string Mode,
+    string Preview,
+    int MessageCount);
 
 /// <summary>对话历史 JSON 文件结构</summary>
 public class SessionFile

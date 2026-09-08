@@ -25,6 +25,12 @@ public class AgentRunService
     /// <summary>状态回调（如"正在调用工具: xxx"），UI 用于更新气泡提示</summary>
     public Action<string>? StatusCallback { get; set; }
 
+    /// <summary>正文流式增量（打字机效果）。事件在后台线程触发，UI 端自行调度到 Dispatcher。</summary>
+    public event Action<string>? ContentDelta;
+
+    /// <summary>思考内容流式增量（仅思考型模型产生；工具循环各轮都可能触发）</summary>
+    public event Action<string>? ReasoningDelta;
+
     public AgentRunService(OpenAICompatibleProvider provider, AgentToolRegistry registry, ChatSessionService session)
     {
         _provider = provider;
@@ -32,7 +38,7 @@ public class AgentRunService
         _session = session;
     }
 
-    /// <summary>处理一条用户消息，返回最终答复文本（同时写入会话历史）</summary>
+    /// <summary>处理一条用户消息，返回最终答复文本（同时写入会话历史）。流式产出经 ContentDelta/ReasoningDelta 事件推送。</summary>
     public async Task<string> RunAsync(string userMessage, CancellationToken ct = default)
     {
         AppLog.Info("Agent", $"用户消息：{Trunc(userMessage, 200)}");
@@ -40,43 +46,54 @@ public class AgentRunService
 
         for (var round = 0; round < MaxToolRounds; round++)
         {
-            ChatWithToolsResult result;
+            var sb = new StringBuilder();
+            IReadOnlyList<ToolCallItem>? toolCalls = null;
             try
             {
-                result = await _provider.ChatWithToolsAsync(_session.Messages, _registry.GetDefinitions(), ct);
+                await foreach (var ev in _provider.StreamChatWithToolsAsync(_session.Messages, _registry.GetDefinitions(), ct).ConfigureAwait(false))
+                {
+                    switch (ev)
+                    {
+                        case StreamChatEvent.ContentDelta delta:
+                            sb.Append(delta.Text);
+                            ContentDelta?.Invoke(delta.Text);
+                            break;
+                        case StreamChatEvent.ReasoningDelta reasoning:
+                            ReasoningDelta?.Invoke(reasoning.Text);
+                            break;
+                        case StreamChatEvent.ToolCalls calls:
+                            toolCalls = calls.Calls;
+                            break;
+                    }
+                }
             }
             catch (LlmRequestException ex) when (ex.StatusCode >= 400 && ex.StatusCode < 500)
             {
-                AppLog.Warn("Agent", $"带 tools 请求 4xx（{ex.StatusCode}），降级普通问答：{Trunc(ex.Message, 200)}");
+                AppLog.Warn("Agent", $"带 tools 流式请求 4xx（{ex.StatusCode}），降级普通问答：{Trunc(ex.Message, 200)}");
                 return await FallbackPlainChatAsync("当前模型不支持工具调用，已切换普通问答模式。", ct);
             }
-            catch (Exception ex)
-            {
-                AppLog.Error("Agent", $"模型请求异常", ex);
-                throw;
-            }
 
-            if (result.ToolCalls.Count == 0)
+            if (toolCalls == null || toolCalls.Count == 0)
             {
-                var final = result.Content ?? "";
+                var final = sb.ToString();
                 AppLog.Info("Agent", $"第 {round + 1} 轮无工具调用，最终答复 {final.Length} 字");
                 _session.AddAssistant(final);
                 return final;
             }
 
-            AppLog.Info("Agent", $"第 {round + 1} 轮模型请求 {result.ToolCalls.Count} 个工具：" +
-                string.Join("; ", result.ToolCalls.Select(tc => $"{tc.Name}({Trunc(tc.ArgumentsJson, 150)})")));
+            AppLog.Info("Agent", $"第 {round + 1} 轮模型请求 {toolCalls.Count} 个工具：" +
+                string.Join("; ", toolCalls.Select(tc => $"{tc.Name}({Trunc(tc.ArgumentsJson, 150)})")));
 
             // assistant 消息（含 tool_calls 原始 JSON，回传模型必需）
-            var toolCallsJson = JsonSerializer.Serialize(result.ToolCalls.Select(tc => new
+            var toolCallsJson = JsonSerializer.Serialize(toolCalls.Select(tc => new
             {
                 id = tc.Id,
                 type = "function",
                 function = new { name = tc.Name, arguments = tc.ArgumentsJson },
             }));
-            _session.AddAssistantToolCall(result.Content, toolCallsJson);
+            _session.AddAssistantToolCall(sb.Length > 0 ? sb.ToString() : null, toolCallsJson);
 
-            foreach (var call in result.ToolCalls)
+            foreach (var call in toolCalls)
             {
                 StatusCallback?.Invoke($"正在调用工具: {call.Name}");
                 var toolResult = await ExecuteToolWithGateAsync(call, ct);

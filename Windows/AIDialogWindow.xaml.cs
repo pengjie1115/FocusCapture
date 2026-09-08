@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.Threading;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Agent;
 using FocusCapture.Services.Destinations;
+using FocusCapture.Windows.Controls;
 
 namespace FocusCapture.Windows;
 
@@ -20,7 +22,7 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         {
             if (_content == value) return;
             _content = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Content)));
+            FirePropertyChanged(nameof(Content));
         }
     }
 
@@ -34,9 +36,54 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         {
             if (_isFilled == value) return;
             _isFilled = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsFilled)));
+            FirePropertyChanged(nameof(IsFilled));
         }
     }
+
+    private string _reasoningText = "";
+    /// <summary>思考过程文本（仅思考型模型产生；流式追加）</summary>
+    public string ReasoningText
+    {
+        get => _reasoningText;
+        set
+        {
+            if (_reasoningText == value) return;
+            _reasoningText = value;
+            FirePropertyChanged(nameof(ReasoningText));
+            FirePropertyChanged(nameof(HasReasoning));
+        }
+    }
+
+    public bool HasReasoning => _reasoningText.Length > 0;
+
+    private bool _isReasoningOpen;
+    /// <summary>思考过程区展开状态：流式期间自动展开，回答结束收起</summary>
+    public bool IsReasoningOpen
+    {
+        get => _isReasoningOpen;
+        set
+        {
+            if (_isReasoningOpen == value) return;
+            _isReasoningOpen = value;
+            FirePropertyChanged(nameof(IsReasoningOpen));
+        }
+    }
+
+    private string _toolSteps = "";
+    /// <summary>Agent 工具调用步骤（每步一行，回答完成后保留为过程记录）</summary>
+    public string ToolSteps
+    {
+        get => _toolSteps;
+        set
+        {
+            if (_toolSteps == value) return;
+            _toolSteps = value;
+            FirePropertyChanged(nameof(ToolSteps));
+            FirePropertyChanged(nameof(HasToolSteps));
+        }
+    }
+
+    public bool HasToolSteps => _toolSteps.Length > 0;
 
     public ChatBubbleViewModel(bool isUser, string content, bool isFillable = false)
     {
@@ -46,9 +93,12 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void FirePropertyChanged(string name) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-/// <summary>三板块 AI 对话框：翻译 / 搜索 / 问答，连续对话 + 流式输出 + 回填</summary>
+/// <summary>三板块 AI 对话框：翻译 / 搜索 / 问答。连续对话 + 真流式（含思考过程）+ 发送/停止 + 历史会话抽屉 + 回填</summary>
 public partial class AIDialogWindow : Window
 {
     private readonly NoteService _noteService;
@@ -60,6 +110,8 @@ public partial class AIDialogWindow : Window
     private bool _isStreaming;
     private bool _closed;
     private int _sessionGeneration; // 新会话时递增，旧流据此自我中止
+    private CancellationTokenSource? _cts;   // 当前回答的取消源（发送按钮停止 / 新会话切换时取消）
+    private bool _drawerOpen;               // 历史抽屉展开状态
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
     private bool _agentRulesAdded;        // Agent 系统规则每会话只注入一次
 
@@ -70,6 +122,7 @@ public partial class AIDialogWindow : Window
         _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel);
         InitializeComponent();
         MessagesList.ItemsSource = _bubbles;
+        HistoryPanel.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
         Closed += OnWindowClosed;
     }
 
@@ -84,37 +137,18 @@ public partial class AIDialogWindow : Window
                                 && string.IsNullOrEmpty(selectedText)
                                 && _session != null
                                 && _mode == ExplainMode.Ask;
-        string? firstMessage = null;
 
         if (!isGlobalAskReopen)
         {
-            _sessionGeneration++;
-            _isStreaming = false; // 新会话强制复位：防止上次异常对话把 _isStreaming 卡在 true 导致新会话 SendAsync 直接 return（空白/无反应）
-            _targetNote = targetNote;
-            _mode = mode;
-
-            string? noteContext = null;
-            string? noteContent = null;
-            if (targetNote != null)
-            {
-                noteContext = targetNote.Timestamp.ToString("yyyy-MM-dd HH:mm");
-                noteContent = targetNote.Content;
-            }
-
-            _session = new ChatSessionService(mode, noteContext, noteContent);
-            _bubbles.Clear();
+            StartNewSession(mode, targetNote);
 
             if (!string.IsNullOrWhiteSpace(selectedText))
             {
-                firstMessage = mode == ExplainMode.Translate
+                var firstMessage = mode == ExplainMode.Translate
                     ? PromptBuilder.BuildTranslatePrompt(selectedText.Trim())
                     : selectedText.Trim();
                 // 用户消息统一由 SendAsync 加入会话与 UI，避免两条路径重复添加
-            }
-
-            if (!string.IsNullOrWhiteSpace(selectedText))
-            {
-                Dispatcher.BeginInvoke(new Action(() => SendAsync(firstMessage!)));
+                Dispatcher.BeginInvoke(new Action(() => SendAsync(firstMessage)));
             }
         }
 
@@ -125,16 +159,37 @@ public partial class AIDialogWindow : Window
 
     private ExplainMode _mode;
 
-    private static string GetModeTitle(ExplainMode mode) => mode switch
+    /// <summary>新建会话核心操作：清空对话上下文（目标笔记上下文保留），复位于 UI 入口与标题栏按钮。</summary>
+    private void StartNewSession(ExplainMode mode, NoteEntry? targetNote)
     {
-        ExplainMode.Translate => "AI 翻译",
-        ExplainMode.Search => "AI 搜索",
-        _ => "AI 问答",
-    };
+        StopStreaming();         // 中断进行中的回答
+        _sessionGeneration++;
+        _isStreaming = false;
+        _targetNote = targetNote;
+        _mode = mode;
+
+        string? noteContext = null;
+        string? noteContent = null;
+        if (targetNote != null)
+        {
+            noteContext = targetNote.Timestamp.ToString("yyyy-MM-dd HH:mm");
+            noteContent = targetNote.Content;
+        }
+
+        _session = new ChatSessionService(mode, noteContext, noteContent);
+        _bubbles.Clear();
+    }
+
+    private static string GetModeTitle(ExplainMode mode) => "AI " + AiModeText.Get(mode);
 
     private void AddBubble(bool isUser, string content, bool isFillable = false)
     {
         _bubbles.Add(new ChatBubbleViewModel(isUser, content, isFillable));
+        ScrollAfterDelay();
+    }
+
+    private void ScrollAfterDelay()
+    {
         Dispatcher.BeginInvoke(new Action(ScrollToBottom), DispatcherPriority.Background);
     }
 
@@ -152,63 +207,61 @@ public partial class AIDialogWindow : Window
         }
     }
 
-    private void BtnSend_Click(object sender, RoutedEventArgs e) => SendCurrentInput();
+    /// <summary>发送/停止一体按钮：回答中点击 = 停止生成，空闲时点击 = 发送</summary>
+    private void BtnSend_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isStreaming)
+        {
+            StopStreaming();
+            return;
+        }
+        SendCurrentInput();
+    }
 
     private void SendCurrentInput()
     {
+        if (_isStreaming) return; // 回答中 Enter 不发送也不清空输入框，防误触丢字
         var text = InputBox.Text.Trim();
         if (string.IsNullOrEmpty(text)) return;
         InputBox.Text = "";
         SendAsync(text);
     }
 
-    /// <summary>发送一条消息并流式接收回复（真流式，逐块追加）</summary>
+    private void StopStreaming()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { /* 已释放即已结束 */ }
+    }
+
+    /// <summary>发送一条消息并流式接收回复（普通/Agent 两路径统一：真流式 + 思考过程 + 可停止）</summary>
     private async void SendAsync(string text)
     {
         if (_session == null || _isStreaming) return;
         if (string.IsNullOrWhiteSpace(text)) return;
 
         var generation = _sessionGeneration;
+        var cts = new CancellationTokenSource();
+        _cts = cts;
         _isStreaming = true;
-        BtnSend.IsEnabled = false;
-        InputBox.IsEnabled = false;
+        SetBusyUi(true);
 
         try
         {
             AddBubble(true, text);
             AddBubble(false, "", _targetNote != null && _mode != ExplainMode.Ask);
             var current = _bubbles[^1];
+            current.Content = "思考中…"; // 首包到达前的等待占位
 
             if (_settings.AgentEnabled && _mode == ExplainMode.Ask)
             {
-                // Agent 路径：function calling 循环（RunAsync 内部负责把用户消息写入会话）
-                await SendViaAgentAsync(text, current, generation);
+                // Agent 路径：function calling 流式循环（RunAsync 内部负责把用户消息写入会话）
+                await SendViaAgentAsync(text, current, generation, cts);
             }
             else
             {
-                // 普通问答路径（与旧版完全一致）：用户消息入会话 + 流式接收
+                // 普通问答路径：用户消息入会话 + 事件流式接收（正文/思考）
                 // （AddUser 不可省：请求体 messages 无 user 会导致 Agnes 400 "No user query" / DeepSeek 自说自话）
                 _session.AddUser(text);
-
-                var sb = new StringBuilder();
-                await foreach (var chunk in _provider.StreamAsync(_session.Messages))
-                {
-                    if (generation != _sessionGeneration) return; // 会话已切换，丢弃旧流
-                    sb.Append(chunk);
-                    current.Content = sb.ToString();
-                }
-
-                var full = sb.ToString();
-                if (generation != _sessionGeneration) return;
-                if (string.IsNullOrWhiteSpace(full))
-                {
-                    current.Content = "（模型未返回内容）";
-                }
-                else
-                {
-                    _session.AddAssistant(full);
-                    _session.Save();
-                }
+                await StreamPlainReplyAsync(current, generation, cts);
             }
         }
         catch (Exception ex)
@@ -229,21 +282,67 @@ public partial class AIDialogWindow : Window
         finally
         {
             _isStreaming = false; // 即使会话已切换也必须复位，否则新会话永远发不出消息
+            if (ReferenceEquals(_cts, cts)) _cts = null;
+            cts.Dispose();
             if (generation == _sessionGeneration)
             {
-                BtnSend.IsEnabled = true;
-                InputBox.IsEnabled = true;
-                InputBox.Focus();
+                SetBusyUi(false);
                 _session?.Save();
             }
         }
     }
 
+    /// <summary>普通问答路径：消费 StreamChatWithToolsAsync 事件流（无 tools），正文打字机 + 思考过程展示。
+    /// 用户停止时已生成的部分内容照常写入会话历史。</summary>
+    private async Task StreamPlainReplyAsync(ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
+    {
+        var sb = new StringBuilder();
+        try
+        {
+            await foreach (var ev in _provider.StreamChatWithToolsAsync(_session!.Messages, tools: null, cts.Token))
+            {
+                if (generation != _sessionGeneration) return; // 会话已切换，丢弃旧流
+                switch (ev)
+                {
+                    case StreamChatEvent.ReasoningDelta reasoning:
+                        AppendReasoning(current, reasoning.Text);
+                        break;
+                    case StreamChatEvent.ContentDelta delta:
+                        sb.Append(delta.Text);
+                        current.Content = sb.ToString();
+                        ScrollAfterDelay();
+                        break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (generation != _sessionGeneration) return;
+            MarkStopped(current, sb.ToString());
+            if (!string.IsNullOrWhiteSpace(sb.ToString()))
+                _session!.AddAssistant(sb.ToString());
+            return;
+        }
+
+        if (generation != _sessionGeneration) return;
+        CollapseReasoning(current);
+        var full = sb.ToString();
+        if (string.IsNullOrWhiteSpace(full))
+        {
+            current.Content = "（模型未返回内容）";
+        }
+        else
+        {
+            _session.AddAssistant(full);
+        }
+    }
+
     /// <summary>
-    /// Agent 路径：function calling 循环（非流式）。工具调用过程实时显示在气泡上；
-    /// 写操作（非只读工具）执行前经 ConfirmHandler 弹窗确认。
+    /// Agent 路径：function calling 流式循环。工具调用步骤实时追加到气泡；正文/思考增量打字机展示；
+    /// 写操作（非只读工具）执行前经 ConfirmHandler 弹窗确认。用户停止时不把部分内容写入会话
+    /// （中断可能落在 assistant(tool_calls) 与 tool 结果配对之间，写入不完整配对会让后续请求 400）。
     /// </summary>
-    private async Task SendViaAgentAsync(string text, ChatBubbleViewModel current, int generation)
+    private async Task SendViaAgentAsync(string text, ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
     {
         EnsureAgentRegistry();
         AppendAgentRulesOnce();
@@ -255,16 +354,163 @@ public partial class AIDialogWindow : Window
                 "AI 操作确认",
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
             WriteConfirmEnabled = _settings.AgentWriteConfirmPopup,
-            StatusCallback = msg =>
-            {
-                if (generation == _sessionGeneration && !current.IsUser)
-                    current.Content = msg + "…";
-            },
         };
 
-        var reply = await agent.RunAsync(text);
-        if (generation != _sessionGeneration) return;
-        current.Content = string.IsNullOrWhiteSpace(reply) ? "（模型未返回内容）" : reply;
+        var gate = new object(); // agentSb / finished 由事件线程与 UI 线程共同访问
+        var agentSb = new StringBuilder();
+        var finished = false;
+
+        agent.StatusCallback = msg =>
+        {
+            if (generation != _sessionGeneration) return;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (generation != _sessionGeneration) return;
+                current.ToolSteps = string.IsNullOrEmpty(current.ToolSteps) ? "· " + msg : current.ToolSteps + "\n· " + msg;
+            }));
+        };
+        agent.ContentDelta += t =>
+        {
+            lock (gate)
+            {
+                if (finished) return;
+                agentSb.Append(t);
+            }
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (generation != _sessionGeneration) return;
+                lock (gate)
+                {
+                    if (finished) return;
+                    current.Content = agentSb.ToString();
+                }
+                ScrollAfterDelay();
+            }));
+        };
+        agent.ReasoningDelta += t =>
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (generation != _sessionGeneration || Volatile.Read(ref finished)) return;
+                AppendReasoning(current, t);
+            }));
+        };
+
+        try
+        {
+            var reply = await agent.RunAsync(text, cts.Token);
+            if (generation != _sessionGeneration) return;
+            lock (gate) finished = true;
+            CollapseReasoning(current);
+            current.Content = string.IsNullOrWhiteSpace(reply) ? "（模型未返回内容）" : reply;
+        }
+        catch (OperationCanceledException)
+        {
+            if (generation != _sessionGeneration) return;
+            lock (gate) finished = true;
+            CollapseReasoning(current);
+            string partial;
+            lock (gate) partial = agentSb.ToString();
+            MarkStopped(current, partial);
+        }
+    }
+
+    /// <summary>思考过程追加：首次出现时自动展开折叠区</summary>
+    private static void AppendReasoning(ChatBubbleViewModel bubble, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        if (string.IsNullOrEmpty(bubble.ReasoningText)) bubble.IsReasoningOpen = true;
+        bubble.ReasoningText += text;
+    }
+
+    /// <summary>回答结束收起思考过程区（内容保留可再展开）</summary>
+    private static void CollapseReasoning(ChatBubbleViewModel bubble)
+    {
+        if (bubble.HasReasoning) bubble.IsReasoningOpen = false;
+    }
+
+    /// <summary>回答被用户停止：已生成部分保留，气泡标注（已停止）</summary>
+    private static void MarkStopped(ChatBubbleViewModel bubble, string partial)
+    {
+        bubble.Content = string.IsNullOrWhiteSpace(partial) || bubble.Content == "思考中…"
+            ? "（已停止）"
+            : partial + "\n\n（已停止）";
+    }
+
+    /// <summary>发送/停止按钮状态机：回答中变红色停止图标，空闲恢复发送</summary>
+    private void SetBusyUi(bool busy)
+    {
+        if (busy)
+        {
+            BtnSend.Content = "■ 停止";
+            BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
+            BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
+            BtnSend.ToolTip = "停止生成";
+        }
+        else
+        {
+            BtnSend.Content = "发送";
+            BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+            BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+            BtnSend.ToolTip = null;
+            InputBox.Focus();
+        }
+        // 输入框回答期间保持可用（可预输入下一条），发送动作由 _isStreaming 守卫拦截
+    }
+
+    /// <summary>历史抽屉开关：展开时刷新会话列表；宽度动画滑出/收起</summary>
+    private void BtnHistory_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_drawerOpen)
+            HistoryPanel.Load(ChatSessionService.ListSessions());
+
+        _drawerOpen = !_drawerOpen;
+        var anim = new DoubleAnimation(_drawerOpen ? 240 : 0, TimeSpan.FromMilliseconds(180))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        HistoryPanel.BeginAnimation(WidthProperty, anim);
+    }
+
+    /// <summary>加载历史会话回看（可继续对话）。历史 JSON 未存原笔记引用：「追加到原笔记」不可用，「存为新笔记」正常。</summary>
+    private void LoadHistorySession(string filePath)
+    {
+        var loaded = ChatSessionService.Load(filePath);
+        if (loaded == null)
+        {
+            System.Windows.MessageBox.Show(this, "会话文件损坏或无法读取", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_isStreaming) StopStreaming();
+        _sessionGeneration++;
+        _isStreaming = false;
+        _session = loaded;
+        _mode = loaded.Mode;
+        _targetNote = null;
+
+        // Agent 会话的 system 消息里已含规则文本，避免继续对话时重复注入
+        _agentRulesAdded = _session.Messages.Count > 0
+            && _session.Messages[0].Role == ChatRoles.System
+            && _session.Messages[0].Content.Contains("[Agent 工具规则]");
+
+        _bubbles.Clear();
+        foreach (var m in _session.Messages)
+        {
+            if (m.Role == ChatRoles.User) AddBubble(true, m.Content);
+            else if (m.Role == ChatRoles.Assistant) AddBubble(false, m.Content);
+            // tool / assistant(tool_calls) 中间消息不渲染为气泡
+        }
+
+        TitleText.Text = GetModeTitle(_mode);
+        Title = GetModeTitle(_mode);
+    }
+
+    private void BtnNewSession_Click(object sender, RoutedEventArgs e)
+    {
+        StartNewSession(_mode, _targetNote); // 清空对话上下文，保留当前目标笔记
+        _session?.Save();
     }
 
     /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
@@ -384,6 +630,7 @@ public partial class AIDialogWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _closed = true;
+        StopStreaming();
         try { _session?.Save(); } catch { /* best effort */ }
         AIDialogHelper.NotifyClosed();
     }
