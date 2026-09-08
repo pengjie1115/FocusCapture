@@ -31,6 +31,20 @@ public sealed record ToolCallItem(string Id, string Name, string ArgumentsJson);
 /// <summary>ChatWithToolsAsync 的响应：content 与 tool_calls 至少一个非空。</summary>
 public sealed record ChatWithToolsResult(string? Content, IReadOnlyList<ToolCallItem> ToolCalls);
 
+/// <summary>
+/// 流式响应事件（普通问答与带工具问答共用）。
+/// ContentDelta / ReasoningDelta 为增量文本；ToolCalls 在流结束时产出一次（检测到模型请求工具时）。
+/// </summary>
+public abstract record StreamChatEvent
+{
+    /// <summary>正文增量</summary>
+    public sealed record ContentDelta(string Text) : StreamChatEvent;
+    /// <summary>思考内容增量（仅思考型模型返回，如 reasoning_content）</summary>
+    public sealed record ReasoningDelta(string Text) : StreamChatEvent;
+    /// <summary>流结束：模型请求的工具调用全集（arguments 已拼接完整）</summary>
+    public sealed record ToolCalls(IReadOnlyList<ToolCallItem> Calls) : StreamChatEvent;
+}
+
 /// <summary>带 StatusCode 的 LLM 请求异常，供 Agent 循环识别 4xx 降级。</summary>
 public class LlmRequestException : InvalidOperationException
 {

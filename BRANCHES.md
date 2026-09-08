@@ -34,6 +34,7 @@
 | 分支 | 功能板块 | 状态 | 最后提交 |
 |------|---------|------|---------|
 | main | 主线（当前最新版 v0.2.x） | 活跃 | 713a1d1 |
+| feature/ai-chat-history-streaming | AI 对话体验升级：历史会话抽屉（回看/续聊）+ Agent 真流式（含 tool_calls 增量拼接）+ 思考过程折叠区 + 发送/停止按钮 + 新会话按钮（REGRESSION.md B-9） | 开发中 | 见 git log |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
 | feature/agent-tool-framework | AI 动手能力：通用 Agent 工具框架（function calling 主循环）+ 7 个本地工具（含待办增删改）+ 得到大脑数据驱动适配器（解耦架构）+ 运行日志 AppLog（方案文档 AGENT_IMPLEMENTATION.md v2.1，按钮直传/凭证 UI 下期） | **已合入 main（2026-09-06，3 个 commit 5f46f30/92c4d46/2554c7e）** | 见 git log |
 | feature/getnote-button-upload | 得到大脑按钮直传：包装台① GetNotePayloadBuilder（制式标题排版+5000 字分篇）+ 去重 GetNoteSyncState（指纹按条目时间戳，每条一生只推一次）+ 推送编排 GetNotePushService（确认弹窗+限流重试）+ QuickViewWindow 标题栏「存」按钮 + 设置面板得到大脑凭证区/测试连接/默认知识库下拉 | 开发中（2026-09-06） | 见 git log |
