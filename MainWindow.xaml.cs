@@ -65,7 +65,7 @@ public partial class MainWindow : Window
             _inputWindow = new InputWindow(_noteService, _settings);
             _inputWindow.NoteSaved += () => _floatBall?.FlashGreen();
             // v3.5：共享 AI provider（与 AI 对话框同源配置；面板编辑待办时间识别 LLM 兜底用，设置变更后由 OpenSettings 回调重建）
-            _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+            _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
             _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine, _aiProvider);
             _voiceWindow = new VoiceInputWindow(_settings);
 
@@ -235,7 +235,7 @@ public partial class MainWindow : Window
             {
                 _hotkeyService?.RegisterAll();
                 // v3.5：AI 配置可能变更 → 重建共享 provider 并同步给面板（编辑待办时间识别 LLM 兜底用当前配置）
-                _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+                _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
                 _quickViewWindow?.UpdateAiProvider(_aiProvider);
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);

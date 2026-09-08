@@ -256,9 +256,12 @@ public partial class SettingsWindow : Window
         AiBaseUrlInput.Text = _settings.AiBaseUrl;
         AiApiKeyInput.Password = _settings.AiApiKey;
         AiModelInput.Text = _settings.AiModel;
+        AiMaxTokensInput.Text = _settings.AiMaxTokens.ToString();
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
+        AgentMaxToolRoundsInput.Text = _settings.AgentMaxToolRounds.ToString();
+        AiToolResultLimitInput.Text = _settings.AiToolResultLimit.ToString();
         GetNoteKeyInput.Password = _settings.GetNoteApiKey;
         GetNoteClientIdInput.Text = _settings.GetNoteClientId;
         GetNoteTestResult.Text = "";
@@ -737,6 +740,30 @@ public partial class SettingsWindow : Window
         _onChanged?.Invoke();
     }
 
+    /// <summary>回答长度上限（token）：256~32768 合法才落盘，否则保留旧值（用户输入中途不落盘）</summary>
+    private void AiMaxTokens_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (int.TryParse(AiMaxTokensInput.Text.Trim(), out var v) && v is >= 256 and <= 32768)
+        { _settings.AiMaxTokens = v; _settings.Save(); }
+    }
+
+    /// <summary>Agent 工具轮数上限：1~50 合法才落盘</summary>
+    private void AgentMaxToolRounds_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (int.TryParse(AgentMaxToolRoundsInput.Text.Trim(), out var v) && v is >= 1 and <= 50)
+        { _settings.AgentMaxToolRounds = v; _settings.Save(); }
+    }
+
+    /// <summary>工具结果截断阈值（字符数）：500~65536 合法才落盘</summary>
+    private void AiToolResultLimit_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (int.TryParse(AiToolResultLimitInput.Text.Trim(), out var v) && v is >= 500 and <= 65536)
+        { _settings.AiToolResultLimit = v; _settings.Save(); }
+    }
+
     private async void BtnTestAi_Click(object sender, RoutedEventArgs e)
     {
         if (_testingAi) return;
@@ -761,7 +788,7 @@ public partial class SettingsWindow : Window
             AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
             var provider = new OpenAICompatibleProvider(
-                _settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel);
+                _settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
             var ok = await provider.TestConnectionAsync();
 
             AiTestResult.Text = ok ? "连接成功" : "连接失败";

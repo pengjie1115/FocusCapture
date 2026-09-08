@@ -19,16 +19,18 @@ public class OpenAICompatibleProvider : IChatProvider
     private readonly string _baseUrl;
     private readonly string _apiKey;
     private readonly string _model;
+    private readonly int _maxTokens;
 
     public string Model => _model;
     public string BaseUrl => _baseUrl;
     public string ApiKey => _apiKey;
 
-    public OpenAICompatibleProvider(string baseUrl, string apiKey, string model)
+    public OpenAICompatibleProvider(string baseUrl, string apiKey, string model, int maxTokens = 4096)
     {
         _baseUrl = (baseUrl ?? "").Trim().TrimEnd('/');
         _apiKey = apiKey ?? "";
         _model = model ?? "";   // 不再 fallback 到固定模型；请求时由 BuildRequest 校验空值
+        _maxTokens = maxTokens > 0 ? maxTokens : 4096;  // ≤0 视为未配置，回退默认，避免传 0/负数致供应商报错
     }
 
     /// <summary>非流式补全：解析 choices[0].message.content</summary>
@@ -90,6 +92,7 @@ public class OpenAICompatibleProvider : IChatProvider
             ["model"] = _model,
             ["stream"] = true,
             ["messages"] = BuildMessagesArray(messages),
+            ["max_tokens"] = _maxTokens,
         };
         if (tools != null && tools.Count > 0)
             payload["tools"] = BuildToolsArray(tools);
@@ -247,7 +250,8 @@ public class OpenAICompatibleProvider : IChatProvider
             ["model"] = _model,
             ["stream"] = false,
             ["messages"] = BuildMessagesArray(messages),
-            ["tools"] = BuildToolsArray(tools)
+            ["tools"] = BuildToolsArray(tools),
+            ["max_tokens"] = _maxTokens
         };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");
@@ -347,7 +351,8 @@ public class OpenAICompatibleProvider : IChatProvider
             model = _model,
             messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
             stream,
-            max_tokens = maxTokens
+            // CompleteAsync 不传 → 用配置的 _maxTokens；TestConnectionAsync 显式传 1 → 用 1（最小请求测连通）
+            max_tokens = maxTokens ?? _maxTokens
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");

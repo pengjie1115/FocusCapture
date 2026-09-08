@@ -10,7 +10,7 @@ namespace FocusCapture.Services.Agent;
 /// </summary>
 public class AgentRunService
 {
-    private const int MaxToolRounds = 5;
+    private readonly int _maxToolRounds;   // 由构造传入（AppSettings.Agent_maxToolRounds，默认 15）
 
     private readonly OpenAICompatibleProvider _provider;
     private readonly AgentToolRegistry _registry;
@@ -31,11 +31,12 @@ public class AgentRunService
     /// <summary>思考内容流式增量（仅思考型模型产生；工具循环各轮都可能触发）</summary>
     public event Action<string>? ReasoningDelta;
 
-    public AgentRunService(OpenAICompatibleProvider provider, AgentToolRegistry registry, ChatSessionService session)
+    public AgentRunService(OpenAICompatibleProvider provider, AgentToolRegistry registry, ChatSessionService session, int maxToolRounds = 15)
     {
         _provider = provider;
         _registry = registry;
         _session = session;
+        _maxToolRounds = maxToolRounds > 0 ? maxToolRounds : 15;
     }
 
     /// <summary>处理一条用户消息，返回最终答复文本（同时写入会话历史）。流式产出经 ContentDelta/ReasoningDelta 事件推送。</summary>
@@ -44,7 +45,7 @@ public class AgentRunService
         AppLog.Info("Agent", $"用户消息：{Trunc(userMessage, 200)}");
         _session.AddUser(userMessage);
 
-        for (var round = 0; round < MaxToolRounds; round++)
+        for (var round = 0; round < _maxToolRounds; round++)
         {
             var sb = new StringBuilder();
             IReadOnlyList<ToolCallItem>? toolCalls = null;
@@ -102,7 +103,7 @@ public class AgentRunService
             }
         }
 
-        AppLog.Warn("Agent", $"工具调用达 {MaxToolRounds} 轮上限，强制收尾");
+        AppLog.Warn("Agent", $"工具调用达 {_maxToolRounds} 轮上限，强制收尾");
         return await FallbackPlainChatAsync("（本轮工具调用已达上限）请基于以上工具结果直接给出最终回答。", ct);
     }
 

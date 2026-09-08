@@ -58,10 +58,13 @@ public class AppSettings
     public string AiApiKey { get; set; } = "";
     public string AiModel { get; set; } = "";   // 不再预置：模型更新快，交给用户自填
     public string AiAssistantName { get; set; } = "AI 问答";
+    public int AiMaxTokens { get; set; } = 4096;  // 回答长度上限（token）：此前不传由供应商默认值决定，常致长回答被 finish_reason=length 截断
+    public int AiToolResultLimit { get; set; } = 8000;  // 工具结果喂回模型前的单条截断阈值（防超长结果撑爆上下文）
 
     // ── Agent 工具（AI 动手能力）──
     public bool AgentEnabled { get; set; } = false;   // 默认关：关闭时 AI 对话行为与旧版完全一致
     public bool AgentWriteConfirmPopup { get; set; } = false; // 默认不弹窗：写操作靠系统提示词对话内确认 + 回收站 + 运行日志兜底
+    public int AgentMaxToolRounds { get; set; } = 15;  // 工具调用往返轮数上限：原硬编码 5 偏低（多步工具易触顶），默认 15
 
     // ── 运行日志 ──
     public int LogRetentionDays { get; set; } = 30;   // 日志保留天数（1-365，超期自动清理）

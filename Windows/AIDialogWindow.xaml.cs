@@ -119,7 +119,7 @@ public partial class AIDialogWindow : Window
     {
         _noteService = noteService;
         _settings = settings;
-        _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel);
+        _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel, settings.AiMaxTokens);
         InitializeComponent();
         MessagesList.ItemsSource = _bubbles;
         HistoryPanel.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
@@ -176,7 +176,7 @@ public partial class AIDialogWindow : Window
             noteContent = targetNote.Content;
         }
 
-        _session = new ChatSessionService(mode, noteContext, noteContent);
+        _session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit);
         _bubbles.Clear();
     }
 
@@ -346,7 +346,7 @@ public partial class AIDialogWindow : Window
     {
         EnsureAgentRegistry();
         AppendAgentRulesOnce();
-        var agent = new AgentRunService(_provider, _registry!, _session!)
+        var agent = new AgentRunService(_provider, _registry!, _session!, _settings.AgentMaxToolRounds)
         {
             ConfirmHandler = desc => Task.FromResult(System.Windows.MessageBox.Show(
                 this,
