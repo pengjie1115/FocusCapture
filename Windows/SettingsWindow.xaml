@@ -635,7 +635,22 @@
                     <CheckBox x:Name="AutoSyncCheck"
                               Foreground="#E0E0E0" Margin="0,10,0,0"
                               Checked="AutoSync_Changed" Unchecked="AutoSync_Changed">
-                        <TextBlock Text="自动同步（变更后 30 秒合并推送，每 30 分钟轮询拉取）" TextWrapping="Wrap"/>
+                        <TextBlock Text="自动同步（变更后合并推送，每 30 分钟轮询拉取）" TextWrapping="Wrap"/>
+                    </CheckBox>
+
+                    <DockPanel Margin="0,8,0,0">
+                        <TextBlock Text="上传合并间隔（秒）" Width="130" VerticalAlignment="Center"/>
+                        <TextBox x:Name="MergeWindowInput" Width="100" HorizontalAlignment="Left"
+                                 Style="{StaticResource DarkTextBox}"
+                                 LostFocus="MergeWindow_LostFocus"/>
+                    </DockPanel>
+                    <TextBlock Text="笔记与 AI 问答共用的上传打包间隔，最低 30 秒（低于按 30 兜底）；拉取仍每 30 分钟一次，不随此值调节"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <CheckBox x:Name="ChatSyncCheck"
+                              Foreground="#E0E0E0" Margin="0,10,0,0"
+                              Checked="ChatSync_Changed" Unchecked="ChatSync_Changed">
+                        <TextBlock Text="同步 AI 问答记录（随云同步一起上传/下载，端到端加密）" TextWrapping="Wrap"/>
                     </CheckBox>
 
                     <TextBlock x:Name="SyncStatusText"

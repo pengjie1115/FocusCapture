@@ -34,6 +34,7 @@
 | 分支 | 功能板块 | 状态 | 最后提交 |
 |------|---------|------|---------|
 | main | 主线（当前最新版 v0.2.x） | 活跃 | 713a1d1 |
+| feature/ai-chat-sync | AI 会话记录坚果云同步 + 历史会话管理（两阶段，方案文档《AI问答板块迭代-需求与方案文档.md》v1.1）。阶段一：数据层（SessionFile 5 字段/GUID/ChatGroupStore）+ WebDAVProvider 通用文件方法（IFileStorageProvider）+ ChatSyncEngine（整文件 LWW+Rev 冲突/E2EE 自持 DEK/删除清单闭环①）+ SyncEngine 搭车 hook/合并窗口配置化 + 退出 flush/SessionEnding/启动首拉 + 云同步页 2 设置项（REGRESSION.md B-10；阶段二：三个点菜单/批量/导出/回收站 UI/分组管理/收起按钮/抽屉拖宽） | 开发中（2026-09-09） | 见 git log |
 | feature/ai-chat-history-streaming | AI 对话体验升级：历史会话抽屉（回看/续聊）+ Agent 真流式（含 tool_calls 增量拼接）+ 思考过程折叠区 + 发送/停止按钮 + 新会话按钮（REGRESSION.md B-9） | 开发中 | 见 git log |
 | feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
 | feature/agent-tool-framework | AI 动手能力：通用 Agent 工具框架（function calling 主循环）+ 7 个本地工具（含待办增删改）+ 得到大脑数据驱动适配器（解耦架构）+ 运行日志 AppLog（方案文档 AGENT_IMPLEMENTATION.md v2.1，按钮直传/凭证 UI 下期） | **已合入 main（2026-09-06，3 个 commit 5f46f30/92c4d46/2554c7e）** | 见 git log |

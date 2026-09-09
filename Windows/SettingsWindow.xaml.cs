@@ -340,6 +340,8 @@ public partial class SettingsWindow : Window
         SyncUrlInput.Text = _settings.Sync.WebDavUrl;
         SyncUserInput.Text = _settings.Sync.WebDavUser;
         AutoSyncCheck.IsChecked = _settings.Sync.AutoSyncEnabled;
+        MergeWindowInput.Text = _settings.Sync.MergeWindowSeconds.ToString();
+        ChatSyncCheck.IsChecked = _settings.Sync.ChatSyncEnabled;
         var engine = _syncEngineProvider?.Invoke();
         var unlocked = engine?.IsMasterPasswordSet == true;
         SyncStatusText.Text = unlocked
@@ -349,6 +351,9 @@ public partial class SettingsWindow : Window
                 : string.IsNullOrEmpty(_settings.Sync.E2eeSalt)
                     ? "未配置云同步（首次点击『保存并连接』即完成配置）"
                     : "授权码已保存，应用启动后自动解锁（重新填写授权码可更换）";
+        // 会话同步失败留痕持续可见（不允许无声丢失；成功/等待首配等状态也在此展示）
+        if (!string.IsNullOrEmpty(_settings.Sync.ChatSyncResult))
+            SyncStatusText.Text += $"\nAI 问答记录：{_settings.Sync.ChatSyncResult}";
     }
 
     private void StartCapture(Button btn, Action<Models.HotkeyBinding> done)
@@ -998,6 +1003,27 @@ public partial class SettingsWindow : Window
         var engine = _syncEngineProvider?.Invoke();
         if (_settings.Sync.AutoSyncEnabled) engine?.StartAutoSync();
         else engine?.StopAutoSync();
+    }
+
+    /// <summary>上传合并间隔（笔记+会话共用）：失焦保存，非数字/低于 30 按 30 兜底（坚果云红线）；重排合并窗口立即生效。</summary>
+    private void MergeWindow_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var ok = int.TryParse(MergeWindowInput.Text.Trim(), out var seconds);
+        var value = ok ? Math.Max(30, seconds) : 30;
+        if (_settings.Sync.MergeWindowSeconds == value) { MergeWindowInput.Text = value.ToString(); return; }
+        _settings.Sync.MergeWindowSeconds = value;
+        _settings.Save();
+        MergeWindowInput.Text = value.ToString();
+        _syncEngineProvider?.Invoke()?.RefreshMergeWindow();
+    }
+
+    /// <summary>同步 AI 问答记录开关：关 = ChatSyncEngine 完全不跑（笔记同步不受影响）。</summary>
+    private void ChatSync_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.Sync.ChatSyncEnabled = ChatSyncCheck.IsChecked == true;
+        _settings.Save();
     }
 
     private async void BtnResetSync_Click(object sender, RoutedEventArgs e)
