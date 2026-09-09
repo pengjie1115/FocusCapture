@@ -227,11 +227,13 @@ public class SyncEngine
     /// 搭车 hook：笔记部分成功、闸释放后触发（2026-09-09 死锁修复：此处【不预拿闸】，
     /// 串行由 handler 内部自行拿闸保证——预拿 + handler 二次拿闸 = SemaphoreSlim 自我死锁）；
     /// hook 抛异常/失败绝不影响本方法返回的笔记 SyncResult（零回归红线）。
+    /// includeChat=false（2026-09-09 退出 flush 专用）：跳过搭车 hook——会话文件对账要 GET 全部云端会话
+    /// （增量模式下也可能有下载），4 秒退出预算等不起，必然超时弹窗；会话未推送内容留本机，下次启动自动补传。
     /// </summary>
-    public async Task<SyncResult> SyncNowAsync(bool auto = false)
+    public async Task<SyncResult> SyncNowAsync(bool auto = false, bool includeChat = true)
     {
         var result = await SyncNotesCoreAsync(auto).ConfigureAwait(false);
-        if (result.Success)
+        if (result.Success && includeChat)
         {
             try
             {
@@ -392,6 +394,7 @@ public class SyncEngine
         // 回收站清理 / 恢复传播的批量收集（单次扫描目录，避免逐条重复 IO）
         var binRemovals = new List<(string RelativePath, string Line)>();
         var decryptFailed = 0;
+        var landedCount = 0;
 
         foreach (var cloud in pull.Notes)
         {
@@ -451,6 +454,7 @@ public class SyncEngine
                     var relativePath = ResolveRelativePath(cloud);
                     _noteService.AppendLine(relativePath, content);
                     binRemovals.Add((relativePath, content));   // 他端恢复传播：清掉本机回收站的对应删除记录
+                    landedCount++;
                 }
                 // 本地已有同 ID 行：同 ID = 同内容，无需操作（本地事实源 wins）
             }
@@ -464,6 +468,8 @@ public class SyncEngine
         if (decryptFailed == 0 && !string.IsNullOrEmpty(pull.NewSince))
             _settings.Sync.LastCursor = pull.NewSince;
         _settings.Save();
+        if (landedCount > 0)
+            _noteService.RaiseCloudDataLanded();   // 通知 UI 刷新（灵感速览/角标）；绝不可接 NotifyLocalChange（会反向推回云端）
         return (false, decryptFailed);
     }
 
@@ -749,6 +755,11 @@ public class SyncEngine
         {
             _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(_settings.Sync.E2eeSalt));
             _dekSaltBase64 = _settings.Sync.E2eeSalt;
+            // 密钥刚切换 → 旧游标是"旧密钥时代"推的（含解密失败被静默跳过期间推进的脏值），
+            // 全部作废：清空后下轮拉取全量投递（落地靠确定性 ID 幂等去重，本地已有的不重复）
+            // ——否则密钥对齐前被跳过的行会被游标永久过滤（2026-09-09 B 端"一条都拉不到"的残留伤害形态）
+            _settings.Sync.LastCursor = "";
+            _settings.Save();
             StatusChanged?.Invoke("云端密钥已变更，已自动刷新解锁");
             return true;
         }
@@ -756,6 +767,51 @@ public class SyncEngine
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 从云端重新拉取（2026-09-09 新增，设置页「从云端重新拉取」按钮专用）：
+    /// 清空增量游标后只拉取——云端全部笔记重新投递一遍，本地已有的行按确定性 ID 幂等跳过，
+    /// 缺失的补上；本机数据一律不动、不上传。适用：他端/旧版本曾把游标推坏（解密失败被静默跳过的时代）
+    /// 导致"状态显示成功但一条拉不到"，或怀疑本地漏了云端数据时的自助修复入口。
+    /// </summary>
+    public async Task<SyncResult> RepullFromCloudAsync(CancellationToken ct = default)
+    {
+        if (_dek == null) return SyncResult.NotConfigured;
+        if (!LicenseGate.IsAllowed(LicenseGate.FeatureSync))
+            return SyncResult.Failed("同步是 FocusCapture 专业版功能，购买后即可使用");
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _settings.Sync.LastCursor = "";
+            _settings.Save();
+            var (saltChanged, decryptFailed) = await PullFlowAsync().ConfigureAwait(false);
+            if (saltChanged)
+            {
+                if (!TryRefreshSessionFromCloudSalt())
+                {
+                    _settings.Sync.LastSyncResult = "重新拉取失败：云端密钥已重置，请重新配置授权码";
+                    _settings.Save();
+                    return SyncResult.Failed(_settings.Sync.LastSyncResult);
+                }
+                // 刷新成功（TryRefresh 已清游标）→ 再拉一轮，这次解密必成
+                decryptFailed = (await PullFlowAsync().ConfigureAwait(false)).DecryptFailed;
+            }
+            _settings.Sync.LastSyncResult = decryptFailed > 0
+                ? $"重新拉取完成，但 {decryptFailed} 条解密失败（两端密钥可能不一致）"
+                : "重新拉取完成";
+            _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            _settings.Save();
+            StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
+            return SyncResult.SuccessResult;
+        }
+        catch (SyncProviderException ex)
+        {
+            return SyncResult.Failed(ex.IsAuth
+                ? "坚果云授权码无效，请重新生成"
+                : ex.Message);
+        }
+        finally { _gate.Release(); }
     }
 
     /// <summary>云端行写回本地时的相对路径：有 Tag → {Tag}.md；灵感行 → 灵感_{CreatedAt 本地日期}.md。</summary>

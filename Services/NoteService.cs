@@ -43,6 +43,15 @@ public class NoteService
     /// <summary>外部路径（回收站恢复/清空等，非 SaveNote/AppendEdit/DeleteNote 内部）完成本机变更后调用，触发 NotesChanged。</summary>
     public void RaiseNotesChanged() => NotesChanged?.Invoke();
 
+    /// <summary>
+    /// 云同步拉取落地后触发（2026-09-09 新增，独立于 NotesChanged）：
+    /// 仅供 UI 刷新（灵感速览/角标），绝不可接到 NotifyLocalChange——那会把拉下来的行当成"本地新变更"反向推回云端。
+    /// </summary>
+    public event Action? CloudDataLanded;
+
+    /// <summary>云同步拉取落地后由 SyncEngine 调用。</summary>
+    public void RaiseCloudDataLanded() => CloudDataLanded?.Invoke();
+
     public NoteService(AppSettings settings)
     {
         _settings = settings;

@@ -17,6 +17,13 @@ public class ChatSyncState
 
     /// <summary>已删除会话清单（闭环①：Id + 删除时间 + 设备 ID），随同步与云端清单合并。</summary>
     public List<ChatDeletionRecord> Deletions { get; set; } = new();
+
+    /// <summary>
+    /// 云端文件修改标记（2026-09-09 增量对账）：云端文件名 → 上次见到的 LastModified。
+    /// 一致 ⇒ 该文件自上轮以来未变化 ⇒ 跳过下载（坚果云 600 请求/30min 红线下的稳态省流核心，
+    /// 修复「每轮全量 GET 85+ 文件必然触发 503 限流」）。本机 PUT 成功的文件会从字典移除（下轮强制 GET 一次校准真实标记）。
+    /// </summary>
+    public Dictionary<string, string> KnownStamps { get; set; } = new(StringComparer.Ordinal);
 }
 
 public class ChatConfirmedEntry
@@ -120,6 +127,7 @@ public class ChatSyncEngine
     /// <summary>
     /// 跑一轮会话同步（对账：分组 → 删除清单 → 会话文件）。搭车 hook / 防抖到期 / 退出 flush 共用。
     /// 开关关闭时不跑；失败只写 ChatSyncResult 留痕，本地文件是事实源，下次对账天然补传（脏标记语义由对账保证）。
+    /// 2026-09-09：限流不再让整轮报废——会话文件拉取/推送失败时已处理的部分照常落地，状态显示「部分成功」。
     /// </summary>
     public async Task RunOnceAsync()
     {
@@ -131,8 +139,11 @@ public class ChatSyncEngine
             await _storage.EnsureDirectoryAsync(CancellationToken.None).ConfigureAwait(false);
             await SyncGroupsAsync().ConfigureAwait(false);
             await SyncDeletionsAsync().ConfigureAwait(false);
-            await SyncSessionsAsync().ConfigureAwait(false);
-            SetChatStatus("成功（会话）");
+            var sessionsError = await SyncSessionsAsync().ConfigureAwait(false);
+            if (sessionsError != null)
+                SetChatStatus($"部分成功：{sessionsError}，下轮自动继续");
+            else
+                SetChatStatus("成功（会话）");
         }
         catch (Exception ex)
         {
@@ -171,9 +182,15 @@ public class ChatSyncEngine
         }
     }
 
-    // ── 会话文件对账（全量列目录对比，第一版策略，方案文档 §九-10） ──
+    // ── 会话文件对账（2026-09-09 增量化：LastModified 未变的文件跳过下载；拉取/推送失败部分落地） ──
 
-    private async Task SyncSessionsAsync()
+    /// <summary>相邻云端请求间隔（毫秒）：坚果云限流红线下的保险节流（增量模式稳态请求已极少，此间隔只影响首拉）。</summary>
+    private const int RequestGapMs = 150;
+
+    /// <summary>
+    /// 返回 null = 成功；非 null = 部分失败原因（已处理部分照常落地）。抛异常 = 整轮失败（分组/删除清单阶段）。
+    /// </summary>
+    private async Task<string?> SyncSessionsAsync()
     {
         Directory.CreateDirectory(ChatHistoryDir);
 
@@ -198,29 +215,56 @@ public class ChatSyncEngine
             }
         }
 
-        // 2) 云端集合：列目录 → 逐个 GET 包络（chat- 前缀，与 notes-* 笔记桶天然隔离）
-        var cloudFiles = (await _storage.ListFilesAsync(CancellationToken.None).ConfigureAwait(false))
-            .Where(f => f.StartsWith(ChatFilePrefix, StringComparison.Ordinal) && f.EndsWith(".json", StringComparison.Ordinal))
+        // 2) 云端集合：列目录（带修改标记）→ 增量 GET。
+        //    stamp 与本地记录一致且本地已有该会话（confirmed 基线在）⇒ 云端未变 ⇒ 跳过下载：
+        //    对账时该条按「云端无新修改」处理（本地未推送修改照常 push）。首拉/变化文件照常 GET。
+        var listings = (await _storage.ListFilesAsync(CancellationToken.None).ConfigureAwait(false))
+            .Where(f => f.Name.StartsWith(ChatFilePrefix, StringComparison.Ordinal) && f.Name.EndsWith(".json", StringComparison.Ordinal))
             .ToList();
-        var cloud = new Dictionary<string, (string File, ChatSyncEnvelope Envelope)>(StringComparer.Ordinal);
-        foreach (var f in cloudFiles)
+        var cloud = new Dictionary<string, (string File, ChatSyncEnvelope? Envelope)>(StringComparer.Ordinal);
+        string? partialError = null;
+        foreach (var cf in listings)
         {
-            var json = await _storage.DownloadFileAsync(f, CancellationToken.None).ConfigureAwait(false);
-            if (json == null) continue;
+            var fileId = cf.Name[ChatFilePrefix.Length..^".json".Length];
+            var unchanged = !string.IsNullOrEmpty(cf.LastModified)
+                && _state.KnownStamps.TryGetValue(cf.Name, out var known)
+                && known == cf.LastModified
+                && _state.Confirmed.ContainsKey(fileId)
+                && local.ContainsKey(fileId);
+            if (unchanged)
+            {
+                cloud[fileId] = (cf.Name, null);   // 未变化：占位（对账按云端无新修改走），不耗 GET 请求
+                continue;
+            }
+
             try
             {
+                await Task.Delay(RequestGapMs, CancellationToken.None).ConfigureAwait(false);
+                var json = await _storage.DownloadFileAsync(cf.Name, CancellationToken.None).ConfigureAwait(false);
+                if (json == null) continue;
                 var env = JsonSerializer.Deserialize<ChatSyncEnvelope>(json, StateJsonOptions);
-                if (!string.IsNullOrEmpty(env?.Id)) cloud[env.Id] = (f, env);
+                if (!string.IsNullOrEmpty(env?.Id))
+                {
+                    cloud[env.Id] = (cf.Name, env);
+                    if (cf.LastModified != null) _state.KnownStamps[cf.Name] = cf.LastModified;
+                }
+            }
+            catch (SyncProviderException ex)
+            {
+                // 限流/网络错误：中断下载，已下载部分照常对账落地（不再全有全无）
+                partialError = "云端拉取中断（" + ex.Message + "）";
+                break;
             }
             catch (JsonException) { /* 包络损坏：跳过，等修复或被本地新版覆盖 */ }
         }
 
-        // 3) 对账
+        // 3) 对账（Envelope=null = 云端未变化 ⇒ hasCloudNew 必为 false，仅判本地未推送修改）
         foreach (var (id, envPair) in cloud)
         {
             var env = envPair.Envelope;
             if (!local.TryGetValue(id, out var localPair))
             {
+                if (env == null) continue;   // 理论不可达（unchanged 条件要求本地存在）；防御
                 // 云端新会话 → 落地 {Id}.json（真同步：密文解密写入本地文件，非内存比对）
                 await LandSessionAsync(env).ConfigureAwait(false);
                 continue;
@@ -229,11 +273,11 @@ public class ChatSyncEngine
             var localSession = localPair.Session;
             var confirmed = _state.Confirmed.TryGetValue(id, out var c) ? c : null;
             var hasLocalNew = confirmed == null
-                ? localSession.Rev > env.Rev            // 无基线（首见）：按 LWW 判方向
+                ? localSession.Rev > (env?.Rev ?? 0)    // 无基线（首见）：按 LWW 判方向
                 : localSession.Rev > confirmed.Rev;     // 本地有未推送修改
-            var hasCloudNew = confirmed == null
+            var hasCloudNew = env != null && (confirmed == null
                 ? env.Rev > localSession.Rev
-                : env.Rev > confirmed.Rev;              // 云端有本机未见的更新
+                : env.Rev > confirmed.Rev);             // 云端有本机未见的更新
 
             if (hasLocalNew && hasCloudNew)
             {
@@ -246,12 +290,12 @@ public class ChatSyncEngine
             }
             else if (hasCloudNew)
             {
-                await LandSessionAsync(env).ConfigureAwait(false);
+                await LandSessionAsync(env!).ConfigureAwait(false);
             }
             else
             {
                 // 双端都无新修改。同 Rev 但本地文件内容 ≠ 上次确认指纹 → 本地被同 Rev 改写（异常/用户手改）→ 冲突路径
-                if (confirmed != null && !IsConfirmedHash(localPair.File, confirmed))
+                if (confirmed != null && env != null && !IsConfirmedHash(localPair.File, confirmed))
                     await HandleConflictAsync(id).ConfigureAwait(false);
                 // 真已同步：无操作
             }
@@ -261,11 +305,21 @@ public class ChatSyncEngine
         var cloudIds = new HashSet<string>(cloud.Keys, StringComparer.Ordinal);
         foreach (var (id, pair) in local)
         {
-            if (!cloudIds.Contains(id))
+            if (cloudIds.Contains(id)) continue;
+            try
+            {
+                await Task.Delay(RequestGapMs, CancellationToken.None).ConfigureAwait(false);
                 await PushSessionAsync(pair.File, pair.Session).ConfigureAwait(false);
+            }
+            catch (SyncProviderException ex)
+            {
+                partialError ??= "本机会话上传中断（" + ex.Message + "）";
+                break;   // 剩余会话下轮继续（本地是事实源）
+            }
         }
 
         SaveState();
+        return partialError;
     }
 
     /// <summary>push 本地会话：包络（Rev 明文 + 内容密文）PUT chat-{Id}.json；成功后更新确认指纹。</summary>
@@ -281,6 +335,7 @@ public class ChatSyncEngine
         };
         await _storage.UploadFileAsync(ChatFilePrefix + session.Id + ".json",
             JsonSerializer.Serialize(env, StateJsonOptions), CancellationToken.None).ConfigureAwait(false);
+        _state.KnownStamps.Remove(ChatFilePrefix + session.Id + ".json");   // 本机刚 PUT：服务器真实标记未知，下轮 GET 一次校准
         _state.Confirmed[session.Id] = new ChatConfirmedEntry
         {
             Rev = session.Rev,

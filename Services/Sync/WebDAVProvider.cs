@@ -188,26 +188,33 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
     }
 
     private async Task<List<string>> ListFilesAsync(CancellationToken ct)
+        => (await ListFilesDetailedAsync(ct).ConfigureAwait(false)).Select(f => f.Name).ToList();
+
+    /// <summary>PROPFIND Depth=1 带修改标记版（增量对账用）：解析 getlastmodified（HTTP 日期），拿不到则 null。</summary>
+    private async Task<List<CloudFileInfo>> ListFilesDetailedAsync(CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(new HttpMethod("PROPFIND"), _baseUrl);
-        req.Headers.Add("Depth", "1");
         try
         {
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-                throw new SyncProviderException((int)resp.StatusCode, $"列目录失败 (HTTP {(int)resp.StatusCode})");
-            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var body = await SendAsync(() =>
+            {
+                var r = new HttpRequestMessage(new HttpMethod("PROPFIND"), _baseUrl);
+                r.Headers.Add("Depth", "1");
+                return r;
+            }, "列目录", _baseUrl, ct).ConfigureAwait(false);
             var doc = XDocument.Parse(body);
-            var names = new List<string>();
+            var names = new Dictionary<string, string?>(StringComparer.Ordinal);
             foreach (var respEl in doc.Descendants(DavNs + "response"))
             {
                 var href = respEl.Element(DavNs + "href")?.Value;
                 if (string.IsNullOrEmpty(href)) continue;
                 var name = href.TrimEnd('/').Split('/').LastOrDefault();
-                if (!string.IsNullOrEmpty(name) && name != _baseUrl.TrimEnd('/').Split('/').LastOrDefault())
-                    names.Add(name);
+                if (string.IsNullOrEmpty(name) || name == _baseUrl.TrimEnd('/').Split('/').LastOrDefault()) continue;
+                // getlastmodified 在 propstat/prop 下，命名空间各异（DAV: 或坚果云扩展）→ 按本地名兜底匹配
+                string? lastModified = respEl.Descendants()
+                    .FirstOrDefault(e => e.Name.LocalName == "getlastmodified")?.Value;
+                names[name] = lastModified;
             }
-            return names.Distinct().ToList();
+            return names.Select(kv => new CloudFileInfo(kv.Key, kv.Value)).ToList();
         }
         catch (SyncProviderException) { throw; }
         catch (Exception ex) when (IsNetworkError(ex))
@@ -220,11 +227,11 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
         }
     }
 
-    // IFileStorageProvider.ListFilesAsync 显式实现：转发既有 PROPFIND Depth=1 方言方法
-    Task<List<string>> IFileStorageProvider.ListFilesAsync(CancellationToken ct) => ListFilesAsync(ct);
+    // IFileStorageProvider.ListFilesAsync 显式实现：转发带修改标记版
+    Task<List<CloudFileInfo>> IFileStorageProvider.ListFilesAsync(CancellationToken ct) => ListFilesDetailedAsync(ct);
 
     private Task<string> GetFileAsync(string fileName, CancellationToken ct)
-        => SendAsync(new HttpRequestMessage(HttpMethod.Get, _baseUrl + fileName), "读取", fileName, ct);
+        => SendAsync(() => new HttpRequestMessage(HttpMethod.Get, _baseUrl + fileName), "读取", fileName, ct);
 
     /// <summary>下载文件，404 返回 null（IFileStorageProvider.DownloadFileAsync 实现；笔记桶路径不用它）</summary>
     private async Task<string?> DownloadFileOrNullAsync(string fileName, CancellationToken ct)
@@ -240,39 +247,55 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
     }
 
     private Task PutFileAsync(string fileName, string content, CancellationToken ct)
-        => SendAsync(new HttpRequestMessage(HttpMethod.Put, _baseUrl + fileName) { Content = new StringContent(content, Encoding.UTF8, "application/json") }, "上传", fileName, ct);
+        => SendAsync(() => new HttpRequestMessage(HttpMethod.Put, _baseUrl + fileName)
+        {
+            Content = new StringContent(content, Encoding.UTF8, "application/json")
+        }, "上传", fileName, ct);
 
     /// <summary>DELETE 文件（公开以实现 IFileStorageProvider.DeleteFileAsync；笔记桶孤儿清理同用此方法）</summary>
     public Task DeleteFileAsync(string fileName, CancellationToken ct)
-        => SendAsync(new HttpRequestMessage(HttpMethod.Delete, _baseUrl + fileName), "删除", fileName, ct);
+        => SendAsync(() => new HttpRequestMessage(HttpMethod.Delete, _baseUrl + fileName), "删除", fileName, ct);
 
     private Task MkColAsync(CancellationToken ct)
-        => SendAsync(new HttpRequestMessage(new HttpMethod("MKCOL"), _baseUrl), "创建目录", _baseUrl, ct);
+        => SendAsync(() => new HttpRequestMessage(new HttpMethod("MKCOL"), _baseUrl), "创建目录", _baseUrl, ct);
 
-    /// <summary>统一发送并做 401/503/网络错误分类（QUEST-5 §7 第七步 5）。</summary>
-    private async Task<string> SendAsync(HttpRequestMessage req, string action, string target, CancellationToken ct)
+    /// <summary>
+    /// 统一发送：401/503/网络错误分类（QUEST-5 §7 第七步 5）+ 限流自动重试（2026-09-09）。
+    /// 503/429 自动退避重试 2 次（5s/15s）——坚果云限流惩罚多为短时突发，单发必失败会让整轮同步报废；
+    /// 重试经请求工厂重建（HttpRequestMessage 不可复用）。仍失败才抛给引擎（引擎按 auto/manual 各自处理）。
+    /// </summary>
+    private async Task<string> SendAsync(Func<HttpRequestMessage> reqFactory, string action, string target, CancellationToken ct)
     {
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
-            if (resp.IsSuccessStatusCode)
+            try
             {
-                var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                return body;
+                using var req = reqFactory();
+                using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                    return body;
+                }
+                var code = (int)resp.StatusCode;
+                if (code is 503 or 429 && attempt < 2)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(attempt == 0 ? 5 : 15), ct).ConfigureAwait(false);
+                    continue;
+                }
+                var msg = code switch
+                {
+                    401 => "坚果云授权码无效，请在坚果云客户端（或手机 APP）『设置 → 第三方应用管理』重新生成",
+                    503 or 429 => $"坚果云限流 (HTTP {code})",
+                    _ => $"{action}失败 (HTTP {code})：{target}"
+                };
+                throw new SyncProviderException(code, msg);
             }
-            var code = (int)resp.StatusCode;
-            var msg = code switch
+            catch (SyncProviderException) { throw; }
+            catch (Exception ex) when (IsNetworkError(ex))
             {
-                401 => "坚果云授权码无效，请在坚果云客户端（或手机 APP）『设置 → 第三方应用管理』重新生成",
-                503 or 429 => $"坚果云限流 (HTTP {code})",
-                _ => $"{action}失败 (HTTP {code})：{target}"
-            };
-            throw new SyncProviderException(code, msg);
-        }
-        catch (SyncProviderException) { throw; }
-        catch (Exception ex) when (IsNetworkError(ex))
-        {
-            throw new SyncProviderException(0, $"网络错误：{ex.Message}");
+                throw new SyncProviderException(0, $"网络错误：{ex.Message}");
+            }
         }
     }
 

@@ -627,10 +627,15 @@
                         <Button x:Name="BtnSyncNow" Content="立即同步"
                                 Width="90" Height="30" Margin="8,0,0,0"
                                 Click="BtnSyncNow_Click"/>
+                        <Button x:Name="BtnRepull" Content="从云端重新拉取"
+                                Width="120" Height="30" Margin="8,0,0,0"
+                                Click="BtnRepull_Click"/>
                         <Button x:Name="BtnResetSync" Content="重置同步状态"
                                 Width="110" Height="30" Margin="8,0,0,0"
                                 Click="BtnResetSync_Click"/>
                     </DockPanel>
+                    <TextBlock Text="「从云端重新拉取」：清空同步进度，把云端全部笔记重新对一遍（本地已有的不重复、不丢失）。适用于状态显示成功但本地没收到数据的情况。"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
 
                     <CheckBox x:Name="AutoSyncCheck"
                               Foreground="#E0E0E0" Margin="0,10,0,0"

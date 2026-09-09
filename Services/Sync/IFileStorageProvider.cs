@@ -4,6 +4,10 @@ using System.Threading.Tasks;
 
 namespace FocusCapture.Services.Sync;
 
+/// <summary>目录条目：文件名 + 渠道提供的最后修改标记（HTTP Last-Modified / ETag 语义）。
+/// Stamp 为 null 表示渠道拿不到（调用方应退化为全量下载）。</summary>
+public record CloudFileInfo(string Name, string? LastModified);
+
 /// <summary>
 /// 通用文件级存储契约（AI 会话同步专用）：列目录 / 下载 / 上传 / 删除 / 建目录。
 /// 由 WebDAVProvider 实现，ChatSyncEngine 依赖本接口。
@@ -12,8 +16,9 @@ namespace FocusCapture.Services.Sync;
 /// </summary>
 public interface IFileStorageProvider
 {
-    /// <summary>列目录下的文件名列表（不含子目录路径，纯文件名）</summary>
-    Task<List<string>> ListFilesAsync(CancellationToken ct);
+    /// <summary>列目录（含修改标记）。调用方（ChatSyncEngine）用 LastModified 做增量对账：
+    /// 与本地记录一致 → 跳过下载（坚果云 600 请求/30min 红线下的稳态省流核心）。</summary>
+    Task<List<CloudFileInfo>> ListFilesAsync(CancellationToken ct);
 
     /// <summary>下载文件内容；文件不存在（404）返回 null（调用方免 try）</summary>
     Task<string?> DownloadFileAsync(string fileName, CancellationToken ct);

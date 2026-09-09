@@ -16,6 +16,7 @@ public partial class SettingsWindow : Window
     private readonly Action? _onChanged;
     private readonly NoteService? _noteService;
     private readonly Func<SyncEngine?>? _syncEngineProvider;   // 实时取 MainWindow 当前引擎（配置保存后由 MainWindow 重建）
+    private readonly Func<ChatSyncEngine?>? _chatSyncEngineProvider; // 实时取当前会话同步引擎（状态实时刷新 + 重新拉取入口）
     private readonly Action? _onSyncConfigChanged;              // 保存 WebDAV 配置后通知 MainWindow 重建引擎
     private bool _capturing;
     private Action<Models.HotkeyBinding>? _onCaptureDone;
@@ -23,15 +24,31 @@ public partial class SettingsWindow : Window
     private bool _testingAi;
 
     public SettingsWindow(Models.AppSettings s, HotkeyService? hk = null, Action? onChanged = null,
-        NoteService? noteService = null, Func<SyncEngine?>? syncEngineProvider = null, Action? onSyncConfigChanged = null)
+        NoteService? noteService = null, Func<SyncEngine?>? syncEngineProvider = null, Action? onSyncConfigChanged = null,
+        Func<ChatSyncEngine?>? chatSyncEngineProvider = null)
     {
         _settings = s; _hotkeyService = hk; _onChanged = onChanged; _noteService = noteService;
         _syncEngineProvider = syncEngineProvider; _onSyncConfigChanged = onSyncConfigChanged;
+        _chatSyncEngineProvider = chatSyncEngineProvider;
         InitializeComponent();
         _suppressEvents = false; // 初始化完成，允许事件处理
         BuildSearchIndex();
         ShowSection(0);
         LoadSettings(); KeyDown += OnKeyDown;
+        SubscribeChatSyncStatus();
+    }
+
+    /// <summary>订阅会话同步状态变化：设置页打开期间「AI 问答记录」状态实时刷新（2026-09-09 修复：
+    /// 原先只在打开瞬间读一次留痕，会话同步跑的几分钟里界面一直停在旧文案，看起来像卡死）。</summary>
+    private void SubscribeChatSyncStatus()
+    {
+        var chat = _chatSyncEngineProvider?.Invoke();
+        if (chat == null) return;
+        chat.StatusChanged += msg => Dispatcher.Invoke(() =>
+        {
+            if (!IsLoaded) return;
+            SyncStatusText.Text = SyncStatusText.Text.Split('\n')[0] + $"\nAI 问答记录：{msg}";
+        });
     }
 
     // ═══════ 板块导航 + 搜索（v3.7 设置大改版） ═══════
@@ -993,6 +1010,33 @@ public partial class SettingsWindow : Window
         SyncStatusText.Text = result.Success
             ? $"同步完成（{_settings.Sync.LastSyncAt}）"
             : "同步失败：" + result.Error;
+    }
+
+    /// <summary>从云端重新拉取（2026-09-09）：清空同步进度 → 只拉取。修「状态成功但本地一条没收到」的自助入口；
+    /// 本地数据不动、不上传，已有行幂等跳过，缺的补上。</summary>
+    private async void BtnRepull_Click(object sender, RoutedEventArgs e)
+    {
+        var engine = _syncEngineProvider?.Invoke();
+        if (engine == null || !engine.IsMasterPasswordSet)
+        {
+            SyncStatusText.Text = "请先『保存并连接』（未解锁或未配置）";
+            return;
+        }
+        var choice = System.Windows.MessageBox.Show(
+            "将清空同步进度，把云端全部笔记重新对一遍：\n\n· 本地已有的内容不会重复、不会改动\n· 缺失的内容会补回来\n· 本机任何数据都不会被上传或覆盖\n\n继续吗？",
+            "从云端重新拉取", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (choice != MessageBoxResult.Yes) return;
+        BtnRepull.IsEnabled = false;
+        SyncStatusText.Text = "正在从云端重新拉取…";
+        try
+        {
+            var result = await engine.RepullFromCloudAsync();
+            SyncStatusText.Text = result.Success
+                ? $"重新拉取完成（{_settings.Sync.LastSyncAt}）"
+                : "重新拉取失败：" + result.Error;
+        }
+        catch (Exception ex) { SyncStatusText.Text = "重新拉取失败：" + ex.Message; }
+        finally { BtnRepull.IsEnabled = true; }
     }
 
     private void AutoSync_Changed(object sender, RoutedEventArgs e)

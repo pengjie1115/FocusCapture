@@ -117,6 +117,12 @@ public partial class MainWindow : Window
                     }
                 });
             _noteService.NotesChanged += () => _reminderService?.Refresh();
+            // 2026-09-09：云同步拉取落地 → 刷新灵感速览（若开着）+ 待办角标。独立事件，不走 NotesChanged（防反向推回云端）
+            _noteService.CloudDataLanded += () => Dispatcher.Invoke(() =>
+            {
+                try { _quickViewWindow?.Refresh(); _reminderService?.Refresh(); }
+                catch { /* 刷新失败不影响同步 */ }
+            });
             _reminderService.Start();
 
             // 剪贴板自动捕获
@@ -251,7 +257,7 @@ public partial class MainWindow : Window
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 ApplyAssistantNameToAllEntries();
-            }, _noteService, () => _syncEngine, RebuildSyncEngine);
+            }, _noteService, () => _syncEngine, RebuildSyncEngine, () => _chatSyncEngine);
             sw.Owner = this; sw.ShowDialog();
         }
         finally { _settingsOpen = false; }
@@ -404,7 +410,7 @@ public partial class MainWindow : Window
         try
         {
             if (_syncEngine == null) return;
-            var work = Task.Run(() => _syncEngine.SyncNowAsync());
+            var work = Task.Run(() => _syncEngine.SyncNowAsync(auto: true, includeChat: false));   // 关机只抢救笔记（快）；会话下次启动补传
             work.Wait(TimeSpan.FromSeconds(4));   // 阻塞宽限：关机路径弹窗无意义，只争取 4s
         }
         catch { /* 尽力而为 */ }
@@ -429,13 +435,14 @@ public partial class MainWindow : Window
         WpfApp.Current.Shutdown();
     }
 
-    /// <summary>退出前 flush：带超时跑一轮同步；失败循环弹【重试/仍要退出】。关机路径（SessionEnding）不走此方法。</summary>
+    /// <summary>退出前 flush：带超时跑一轮【仅笔记】同步（2026-09-09：includeChat=false——会话对账要拉云端文件，
+    /// 4 秒预算等不起，必然超时弹窗；会话未推送内容本地是事实源，下次启动自动补传）。失败循环弹【重试/仍要退出】。关机路径（SessionEnding）不走此方法。</summary>
     private async Task FlushBeforeExitAsync()
     {
         if (_syncEngine == null || !_syncEngine.IsMasterPasswordSet) return;   // 未配置同步：无可 flush
         while (true)
         {
-            var work = Task.Run(() => _syncEngine!.SyncNowAsync());
+            var work = Task.Run(() => _syncEngine!.SyncNowAsync(auto: false, includeChat: false));
             var completed = await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(4))).ConfigureAwait(false);
             if (completed == work && (await work.ConfigureAwait(false)).Success) return;   // 收尾成功
 
