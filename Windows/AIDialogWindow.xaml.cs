@@ -128,6 +128,7 @@ public partial class AIDialogWindow : Window
         HistoryPanel.BatchAction += (action, items, context) => Dispatcher.BeginInvoke(new Action(() => HandleBatchAction(action, items, context)));
         HistoryPanel.GroupsManageRequested += () => Dispatcher.BeginInvoke(new Action(HandleGroupsManage));
         HistoryPanel.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
+        HistoryPanel.CollapseRequested += () => Dispatcher.BeginInvoke(new Action(() => OpenDrawer(false))); // 抽屉内收起按钮：复用同一动画逻辑
         Closed += OnWindowClosed;
     }
 
@@ -471,15 +472,54 @@ public partial class AIDialogWindow : Window
         OpenDrawer(!_drawerOpen);
     }
 
-    /// <summary>展开/收起抽屉（宿主动画唯一入口；收起按钮复用）。宽度参数化见「布局改造」提交。</summary>
+    // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
+
+    private const double DrawerMinWidth = 150;   // 防拖没了（方案文档 §6）
+    private const double DrawerMaxWidth = 480;
+
+    /// <summary>展开/收起抽屉（"历史"按钮与抽屉内收起按钮共用）。
+    /// 动画仍作用于 HistoryPanel.Width（铁律：不动 ColumnDefinition）；展开宽度 = 设置记忆宽度（240 参数化）。
+    /// 收起状态不记忆——下次展开仍用记忆宽度。</summary>
     private void OpenDrawer(bool open)
     {
         _drawerOpen = open;
-        var anim = new DoubleAnimation(open ? 240 : 0, TimeSpan.FromMilliseconds(180))
+        DrawerSplitter.IsEnabled = false; // 动画期间禁用拖拽，避免与动画打架（铁律 2）
+        if (open)
+        {
+            HistoryPanel.MinWidth = 0;   // 动画从 0 长到目标，MinWidth 边界动画结束后恢复
+            RefreshDrawer();
+        }
+        else
+        {
+            HistoryPanel.MinWidth = 0;   // 收到 0 需先解除 MinWidth 顶住
+        }
+
+        var target = open ? Math.Clamp(_settings.AiDrawerWidth, DrawerMinWidth, DrawerMaxWidth) : 0;
+        var anim = new DoubleAnimation(target, TimeSpan.FromMilliseconds(180))
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
         };
+        anim.Completed += (_, _) =>
+        {
+            if (_drawerOpen) HistoryPanel.MinWidth = DrawerMinWidth;
+            DrawerSplitter.IsEnabled = true;
+        };
         HistoryPanel.BeginAnimation(WidthProperty, anim);
+    }
+
+    /// <summary>抽屉宽度拖拽：直接改 HistoryPanel.Width（不改 ColumnDefinition，铁律 2），有边界。</summary>
+    private void DrawerSplitter_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    {
+        if (!_drawerOpen) return;
+        HistoryPanel.Width = Math.Clamp(HistoryPanel.ActualWidth + e.HorizontalChange, DrawerMinWidth, DrawerMaxWidth);
+    }
+
+    /// <summary>拖拽结束：宽度记忆（收起状态不记忆）</summary>
+    private void DrawerSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        if (!_drawerOpen || HistoryPanel.Width <= 0) return;
+        _settings.AiDrawerWidth = HistoryPanel.Width;
+        _settings.Save();
     }
 
     /// <summary>刷新抽屉列表（展开中才刷新；启动下拉/操作完成后宿主调用）</summary>
