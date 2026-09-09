@@ -2,6 +2,7 @@ using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
+using Microsoft.Win32;
 using System.Runtime.InteropServices;
 
 namespace FocusCapture;
@@ -13,6 +14,7 @@ public partial class MainWindow : Window
     private NoteService? _noteService;
     private IChatProvider? _aiProvider;              // v3.5：共享 AI provider（面板编辑时间识别 LLM 兜底 + AI 对话框同源配置），设置变更后重建
     private SyncEngine? _syncEngine;            // QUEST-5：云端同步引擎（可插拔 Provider，配置完整才创建）
+    private ChatSyncEngine? _chatSyncEngine;    // 2026-09：AI 会话同步引擎（搭 _syncEngine 周期，共享闸；随 CreateSyncEngine 一并创建/重建）
     private FloatBall? _floatBall;
     private InputWindow? _inputWindow;
     private QuickViewWindow? _quickViewWindow;
@@ -36,6 +38,9 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         _hwnd = new WindowInteropHelper(this).Handle;
 
+        // 硬规则：系统关机/注销时无法弹窗拦截 → 静默尽力一传（带超时），失败由下次启动对账补传
+        SystemEvents.SessionEnding += OnSessionEnding;
+
         // 关键：创建悬浮球放到最前面，托盘失败不影响核心 UI
         try
         {
@@ -54,11 +59,16 @@ public partial class MainWindow : Window
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
 
-            // QUEST-5：云端同步引擎（本机变更 → 30s 合并窗口；自动同步开 → 启动自动解锁 + 30min 轮询）
+            // QUEST-5：云端同步引擎（本机变更 → 合并窗口推送；自动同步开 → 启动自动解锁 + 30min 轮询）
             _noteService.NotesChanged += OnNotesChanged;
             _syncEngine = CreateSyncEngine();
-            if (_syncEngine != null && _settings.Sync.AutoSyncEnabled && _syncEngine.TryUnlockWithStoredToken())
-                _syncEngine.StartAutoSync();
+            if (_syncEngine != null && _syncEngine.TryUnlockWithStoredToken())
+            {
+                if (_settings.Sync.AutoSyncEnabled)
+                    _syncEngine.StartAutoSync();                      // 内部含首次同步
+                else
+                    _ = Task.Run(() => _syncEngine.SyncNowAsync());   // 硬规则：启动无条件后台首拉（先拉后推），不阻塞主窗口
+            }
 
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
 
@@ -249,10 +259,15 @@ public partial class MainWindow : Window
 
     // ── QUEST-5：同步引擎生命周期 ──
 
-    /// <summary>本机笔记变更 → 30s 合并窗口推送（订阅一次，_syncEngine 字段实时指向当前引擎）。</summary>
+    /// <summary>本机笔记变更 → 合并窗口推送（订阅一次，_syncEngine 字段实时指向当前引擎）。</summary>
     private void OnNotesChanged() => _syncEngine?.NotifyLocalChange();
 
-    /// <summary>按当前配置创建引擎；配置不完整（无 Provider/无授权码）返回 null（本地功能不受影响）。</summary>
+    /// <summary>会话本地保存（ChatSessionService.Save 静态事件）→ 会话同步防抖窗口。
+    /// 静态事件订阅以 -=/+= 防引擎重建后重复触发。</summary>
+    private void OnChatSessionChanged() => _chatSyncEngine?.NotifyLocalChange();
+
+    /// <summary>按当前配置创建引擎；配置不完整（无 Provider/无授权码）返回 null（本地功能不受影响）。
+    /// ChatSyncEngine 随之一并创建：共享笔记引擎并发闸、订阅 CycleCompleted 搭车 hook，互不影响笔记同步。</summary>
     private SyncEngine? CreateSyncEngine()
     {
         if (_noteService == null) return null;
@@ -261,7 +276,12 @@ public partial class MainWindow : Window
         var token = Models.SyncSettings.UnprotectToken(sync.WebDavToken);
         if (string.IsNullOrEmpty(sync.WebDavUser) || string.IsNullOrEmpty(token)) return null;
         var provider = new WebDAVProvider(sync.WebDavUrl, sync.WebDavUser, token);
-        return new SyncEngine(_settings, _noteService, provider);
+        var engine = new SyncEngine(_settings, _noteService, provider);
+        _chatSyncEngine = new ChatSyncEngine(_settings, provider, engine.Gate);
+        engine.CycleCompleted += () => _chatSyncEngine.RunOnceAsync();
+        ChatSessionService.SessionChanged -= OnChatSessionChanged;
+        ChatSessionService.SessionChanged += OnChatSessionChanged;
+        return engine;
     }
 
     /// <summary>设置页保存 WebDAV 配置后重建引擎（新配置立即生效，自动同步轮询延续）。</summary>
@@ -269,8 +289,14 @@ public partial class MainWindow : Window
     {
         _syncEngine?.StopAutoSync();
         _syncEngine = CreateSyncEngine();
-        if (_syncEngine != null && _settings.Sync.AutoSyncEnabled && _syncEngine.TryUnlockWithStoredToken())
-            _syncEngine.StartAutoSync();
+        if (_syncEngine != null && _syncEngine.TryUnlockWithStoredToken())
+        {
+            if (_settings.Sync.AutoSyncEnabled)
+                _syncEngine.StartAutoSync();
+            else
+                _ = Task.Run(() => _syncEngine.SyncNowAsync());
+        }
+        _syncEngine?.RefreshMergeWindow();   // 合并间隔若被调整，重排等待中的合并窗口立即生效
     }
 
     /// <summary>AI 助手名称同步到三处入口：面板标题栏按钮 / 悬浮球右键菜单 / 托盘菜单（含图标重建）</summary>
@@ -348,8 +374,28 @@ public partial class MainWindow : Window
         if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
     }
 
-    private void ExitApp()
+    /// <summary>系统关机/注销：无法弹窗拦截，静默尽力一传（带超时，会话同步搭车收尾），失败由下次启动对账补传。</summary>
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
     {
+        try
+        {
+            if (_syncEngine == null) return;
+            var work = Task.Run(() => _syncEngine.SyncNowAsync());
+            work.Wait(TimeSpan.FromSeconds(4));   // 阻塞宽限：关机路径弹窗无意义，只争取 4s
+        }
+        catch { /* 尽力而为 */ }
+    }
+
+    /// <summary>
+    /// 退出：彻底退出路径（托盘/悬浮球退出）先做同步 flush（硬规则，带 4s 超时）：
+    /// SyncNowAsync 笔记部分 + 会话同步搭车 hook 一起收尾；失败弹窗【重试/仍要退出】，
+    /// 选"仍要退出"不丢数据（本地文件是事实源，下次启动对账自动补传）。
+    /// </summary>
+    private async void ExitApp()
+    {
+        try { await FlushBeforeExitAsync(); }
+        catch { /* flush 流程自身异常不阻塞退出 */ }
+
         _reminderService?.Stop();   // v3.5（Phase 3）：退出前停掉提醒定时器与弹窗调度
         _clipboardHook?.Dispose();
         _hotkeyService?.Dispose();
@@ -357,6 +403,24 @@ public partial class MainWindow : Window
         AIDialogHelper.CloseAll();
         _floatBall?.Close(); _inputWindow?.Close(); _quickViewWindow?.Close(); _voiceWindow?.Close(); _notifyIcon?.Dispose();
         WpfApp.Current.Shutdown();
+    }
+
+    /// <summary>退出前 flush：带超时跑一轮同步；失败循环弹【重试/仍要退出】。关机路径（SessionEnding）不走此方法。</summary>
+    private async Task FlushBeforeExitAsync()
+    {
+        if (_syncEngine == null || !_syncEngine.IsMasterPasswordSet) return;   // 未配置同步：无可 flush
+        while (true)
+        {
+            var work = Task.Run(() => _syncEngine!.SyncNowAsync());
+            var completed = await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(4))).ConfigureAwait(false);
+            if (completed == work && (await work.ConfigureAwait(false)).Success) return;   // 收尾成功
+
+            var reason = completed != work ? "同步超时（4 秒）" : (await work.ConfigureAwait(false)).Error ?? "未知原因";
+            var choice = System.Windows.MessageBox.Show(
+                $"有记录未上传成功（原因：{reason}）。\n\n要重试上传吗？\n\n选「否」将直接退出；未上传的内容留在本机，下次启动同步时自动补传。",
+                "退出前同步失败", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (choice != MessageBoxResult.Yes) return;   // 仍要退出：对账补传兜底，无需额外脏标记
+        }
     }
 
     protected override void OnClosed(EventArgs e) { _hotkeyService?.Dispose(); _notifyIcon?.Dispose(); base.OnClosed(e); }
