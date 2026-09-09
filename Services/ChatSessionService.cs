@@ -14,6 +14,17 @@ public class ChatSessionService
     private readonly ExplainMode _mode;
     private readonly int _toolResultLimit;  // 工具结果单条截断阈值（AppSettings.AiToolResultLimit，默认 8000）
 
+    // ── 会话元数据（同步/管理用主键 = Id(GUID)，不再用文件名时间戳） ──
+    private string _sessionId;       // 会话唯一 ID（GUID）；旧文件无 Id 时 Load 兜底生成，首次 Save 回写
+    private int _rev;                // 会话版本号，每次 Save 自增（同步冲突检测依据）
+    private string _title = "";      // 重命名标题（阶段二 UI 写入；空 = 用首条用户消息预览）
+    private bool _pinned;            // 置顶
+    private string _groupId = "";    // 所属分组 ID（空 = 未分组）
+
+    /// <summary>任意会话本地保存成功后触发（ChatSyncEngine 借此接 NotifyLocalChange 触发上传合并窗口）。
+    /// 阶段二的重命名/置顶/分组本质是"改字段 → Save"，自动走这条管道，无需额外接线。</summary>
+    public static event Action? SessionChanged;
+
     public ChatSessionService(ExplainMode mode, string? noteContext = null, string? noteContent = null, int toolResultLimit = 8000)
     {
         _mode = mode;
@@ -25,14 +36,25 @@ public class ChatSessionService
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "FocusCapture", "chat_history");
         Directory.CreateDirectory(dir);
-        var sessionId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        _sessionFile = Path.Combine(dir, $"{sessionId}.json");
+        // 文件名策略：{GUID}.json（文件名不再承载时间语义，列表排序按 SavedAt；旧时间戳文件保持原名不迁移）
+        _sessionId = Guid.NewGuid().ToString();
+        _rev = 0;
+        _sessionFile = Path.Combine(dir, $"{_sessionId}.json");
     }
 
     public IReadOnlyList<ChatMessage> Messages => _messages;
 
     /// <summary>会话所属模式（历史会话回看时 UI 用它还原标题）</summary>
     public ExplainMode Mode => _mode;
+
+    /// <summary>会话唯一 ID（GUID）</summary>
+    public string SessionId => _sessionId;
+
+    /// <summary>会话标题（阶段二重命名 UI 写入；空 = 列表回退首条用户消息预览）</summary>
+    public string Title { get => _title; set => _title = value ?? ""; }
+    public bool Pinned { get => _pinned; set => _pinned = value; }
+    /// <summary>所属分组 ID（空 = 未分组）</summary>
+    public string GroupId { get => _groupId; set => _groupId = value ?? ""; }
 
     /// <summary>向首条 system 消息追加规则文本（Agent 模式防幻觉红线用）</summary>
     public void AppendSystemRules(string rules)
@@ -110,13 +132,19 @@ public class ChatSessionService
         _messages.AddRange(kept);
     }
 
-    /// <summary>持久化到 chat_history/{sessionId}.json</summary>
+    /// <summary>持久化到 chat_history/{GUID}.json。Rev 自增；成功后触发 SessionChanged（同步管道入口）。</summary>
     public void Save()
     {
         try
         {
+            _rev++;
             var payload = new SessionFile
             {
+                Id = _sessionId,
+                Rev = _rev,
+                Title = _title,
+                Pinned = _pinned,
+                GroupId = _groupId,
                 Mode = _mode.ToString(),
                 SystemPrompt = _systemPrompt,
                 Messages = _messages.ToList(),
@@ -124,6 +152,7 @@ public class ChatSessionService
             };
             var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_sessionFile, json, Encoding.UTF8);
+            SessionChanged?.Invoke();
         }
         catch (Exception ex)
         {
@@ -148,6 +177,12 @@ public class ChatSessionService
             var svc = new ChatSessionService(mode);
             svc._sessionFile = filePath;
             svc._systemPrompt = payload.SystemPrompt ?? "";
+            // 旧文件无 Id：兜底生成新 GUID（旧文件仅本地存在，无跨端撞名问题），首次 Save 回写
+            svc._sessionId = string.IsNullOrEmpty(payload.Id) ? Guid.NewGuid().ToString() : payload.Id;
+            svc._rev = payload.Rev;
+            svc._title = payload.Title ?? "";
+            svc._pinned = payload.Pinned;
+            svc._groupId = payload.GroupId ?? "";
             svc._messages.Clear();
             svc._messages.AddRange(payload.Messages ?? new List<ChatMessage>());
             return svc;
@@ -159,7 +194,8 @@ public class ChatSessionService
         }
     }
 
-    /// <summary>扫描 chat_history 目录生成会话摘要列表（最新在前）。损坏/无法解析的文件跳过。</summary>
+    /// <summary>扫描 chat_history 目录生成会话摘要列表（按 SavedAt 倒序；置顶/标题的展示排序留阶段二）。
+    /// 损坏/无法解析的文件跳过。只扫顶层，trash 子目录（会话回收站）不会被列出。</summary>
     public static IReadOnlyList<SessionSummary> ListSessions()
     {
         var result = new List<SessionSummary>();
@@ -170,8 +206,8 @@ public class ChatSessionService
                 "FocusCapture", "chat_history");
             if (!Directory.Exists(dir)) return result;
 
-            // 文件名即 yyyyMMdd_HHmmss，按名称倒序 = 时间倒序
-            foreach (var file in Directory.EnumerateFiles(dir, "*.json").OrderByDescending(f => f, StringComparer.Ordinal))
+            // GUID 文件名不再含时间 → 排序按文件内 SavedAt 倒序（铁律：改 GUID 文件名必须同步改此处排序）
+            foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
             {
                 try
                 {
@@ -181,8 +217,12 @@ public class ChatSessionService
                     var firstUser = payload.Messages?.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
                     result.Add(new SessionSummary(
                         file,
+                        string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
                         payload.SavedAt,
                         payload.Mode,
+                        payload.Title ?? "",
+                        payload.Pinned,
+                        payload.GroupId ?? "",
                         firstUser.Length > 40 ? firstUser[..40] + "…" : firstUser,
                         payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
                 }
@@ -192,6 +232,7 @@ public class ChatSessionService
                     Debug.WriteLine($"[FocusCapture] 会话文件解析跳过: {file}: {ex.Message}");
                 }
             }
+            result.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
         }
         catch (Exception ex)
         {
@@ -219,17 +260,26 @@ public class ChatSessionService
     }
 }
 
-/// <summary>历史会话列表条目摘要（抽屉列表用，FilePath 用于 Load 还原完整会话）</summary>
+/// <summary>历史会话列表条目摘要（抽屉列表用，FilePath 用于 Load 还原完整会话；Id 为主键，文件名不再承担身份）</summary>
 public sealed record SessionSummary(
     string FilePath,
+    string Id,
     DateTime SavedAt,
     string Mode,
+    string Title,
+    bool Pinned,
+    string GroupId,
     string Preview,
     int MessageCount);
 
-/// <summary>对话历史 JSON 文件结构</summary>
+/// <summary>对话历史 JSON 文件结构。旧文件缺 Id/Rev/Title/Pinned/GroupId 时反序列化取默认值，向后兼容无需迁移。</summary>
 public class SessionFile
 {
+    public string Id { get; set; } = "";       // 会话唯一标识（GUID）；旧文件为空，首次加载兜底生成后回写
+    public int Rev { get; set; } = 1;          // 会话版本号，每次本地 Save 自增（冲突检测依据）
+    public string Title { get; set; } = "";    // 重命名标题（空 = 未重命名）
+    public bool Pinned { get; set; }           // 置顶
+    public string GroupId { get; set; } = "";  // 所属分组 ID（空 = 未分组）
     public string Mode { get; set; } = "";
     public string SystemPrompt { get; set; } = "";
     public List<ChatMessage> Messages { get; set; } = new();

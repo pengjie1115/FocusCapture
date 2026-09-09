@@ -4,19 +4,29 @@ using FocusCapture.Services.AI;
 
 namespace FocusCapture.Windows.Controls;
 
-/// <summary>历史会话列表项 ViewModel（抽屉展示用，FilePath 用于宿主还原完整会话）</summary>
+/// <summary>历史会话列表项 ViewModel（抽屉展示用，FilePath 用于宿主还原完整会话；Id 为主键）。
+/// Title/Pinned/GroupId 阶段一仅透传（预览仍用首条用户消息），置顶/标题/分组的展示逻辑阶段二实现。</summary>
 public class HistoryItemViewModel
 {
+    public string Id { get; }
     public string FilePath { get; }
     public string TimeText { get; }
     public string ModeText { get; }
+    public string Title { get; }
+    public bool Pinned { get; }
+    public string GroupId { get; }
     public string Preview { get; }
 
-    public HistoryItemViewModel(string filePath, DateTime savedAt, string modeText, string preview)
+    public HistoryItemViewModel(string id, string filePath, DateTime savedAt, string modeText,
+        string title, bool pinned, string groupId, string preview)
     {
+        Id = id;
         FilePath = filePath;
         TimeText = savedAt.ToString("MM-dd HH:mm");
         ModeText = modeText;
+        Title = title ?? "";
+        Pinned = pinned;
+        GroupId = groupId ?? "";
         Preview = string.IsNullOrEmpty(preview) ? "（空会话）" : preview;
     }
 }
@@ -43,7 +53,8 @@ public partial class HistoryDrawer : UserControl
     {
         Items.Clear();
         foreach (var s in summaries)
-            Items.Add(new HistoryItemViewModel(s.FilePath, s.SavedAt, AiModeText.Get(s.Mode), s.Preview));
+            Items.Add(new HistoryItemViewModel(s.Id, s.FilePath, s.SavedAt, AiModeText.Get(s.Mode),
+                s.Title, s.Pinned, s.GroupId, s.Preview));
         EmptyHint.Visibility = Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
