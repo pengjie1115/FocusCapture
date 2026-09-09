@@ -45,6 +45,21 @@ public class SyncSettings
     /// <summary>上次同步时间（本地时间字符串，仅展示）。</summary>
     public string LastSyncAt { get; set; } = "";
 
+    // ── AI 会话同步（搭 SyncEngine 周期，ChatSyncEngine 执行；2026-09 迭代） ──
+
+    /// <summary>同步 AI 问答记录开关（默认开）。关 = ChatSyncEngine 完全不跑（不上传不下载），笔记同步不受影响。</summary>
+    public bool ChatSyncEnabled { get; set; } = true;
+
+    /// <summary>上传合并间隔秒数：笔记+会话共用的上传打包防抖窗口。下限 30 秒（坚果云限频红线）；
+    /// 拉取仍固定每 30 分钟一次，不随此值调节（拉取侧请求量敏感）。</summary>
+    public int MergeWindowSeconds { get; set; } = 30;
+
+    /// <summary>会话同步上次结果（独立于笔记的 LastSyncResult，防互相覆盖；设置页云同步区展示）。</summary>
+    public string ChatSyncResult { get; set; } = "";
+
+    /// <summary>会话同步上次时间（本地时间字符串，仅展示）。</summary>
+    public string ChatSyncAt { get; set; } = "";
+
     /// <summary>确保 DeviceId 存在（无则生成 GUID；调用方负责 Save 持久化）。</summary>
     public void EnsureDeviceId()
     {

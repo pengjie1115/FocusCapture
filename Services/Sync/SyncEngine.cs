@@ -33,7 +33,7 @@ public class SyncEngine
     private readonly NoteService _noteService;
     private readonly ISyncProvider _provider;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Timer _mergeTimer;   // 30s 合并窗口
+    private readonly Timer _mergeTimer;   // 上传合并窗口（时长读配置 Sync.MergeWindowSeconds，下限 30s）
     private readonly Timer _pollTimer;    // 30min 轮询
     private volatile bool _dirty;
 
@@ -41,7 +41,7 @@ public class SyncEngine
     private string _dekSaltBase64 = "";   // 会话盐（Base64）
     private bool _saltNeedsUpload;        // 首配生成的新盐待上传
 
-    private static readonly TimeSpan MergeWindow = TimeSpan.FromSeconds(30);
+    private readonly TimeSpan _mergeWindow;   // 上传合并窗口（配置化：默认 30s，下限 30s 坚果云红线；拉取固定 30min 不受影响）
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(30);
     private static readonly int[] DefaultBackoffSeconds = { 30, 120, 600 };   // 指数退避 30s/2min/10min，3 档
     private readonly int[] _backoffSeconds;
@@ -52,6 +52,7 @@ public class SyncEngine
         _noteService = noteService;
         _provider = provider;
         _backoffSeconds = backoffSeconds ?? DefaultBackoffSeconds;
+        _mergeWindow = TimeSpan.FromSeconds(Math.Max(30, settings.Sync.MergeWindowSeconds));
         _settings.Sync.EnsureDeviceId();
         _noteService.LinesDeleted += OnLinesDeleted;   // 删除即同步：移入回收站时生成删除标记（不再等清空回收站）
         _mergeTimer = new Timer(_ => OnMergeWindowElapsed(), null, Timeout.Infinite, Timeout.Infinite);
@@ -60,6 +61,16 @@ public class SyncEngine
 
     /// <summary>同步状态变化（"成功"/"失败: 原因"/限流重试提示等）。订阅方负责 marshal 到 UI 线程。</summary>
     public event Action<string>? StatusChanged;
+
+    /// <summary>
+    /// 笔记同步周期成功完成后的对外"搭车"触发点（AI 会话同步 ChatSyncEngine 由此接入）。
+    /// 触发时机：SyncNowAsync 笔记部分成功、并发闸已释放之后；执行时以共享闸串行，不会与笔记同步并发。
+    /// 硬约束：handler 抛异常/失败不影响笔记同步的返回结果（调用方已全兜）。
+    /// </summary>
+    public event Func<Task>? CycleCompleted;
+
+    /// <summary>并发闸（共享给搭车引擎 ChatSyncEngine，保证会话同步与笔记同步全局串行）。</summary>
+    internal SemaphoreSlim Gate => _gate;
 
     public string ProviderName => _provider.Name;
     public string LastSyncResult => _settings.Sync.LastSyncResult;
@@ -179,13 +190,19 @@ public class SyncEngine
 
     // ── 本机变更 → 30s 合并窗口 ──
 
-    /// <summary>本机笔记变更后调用（NoteService.NotesChanged 订阅），启动/重置 30s 合并窗口。</summary>
+    /// <summary>本机笔记变更后调用（NoteService.NotesChanged 订阅），启动/重置上传合并窗口。</summary>
     public void NotifyLocalChange()
     {
         if (_dek == null) return;                      // 未配置主密码：不自动同步
         if (!_settings.Sync.AutoSyncEnabled) return;   // 自动同步关：等手动"立即同步"（SyncNowAsync 手动路径不受此开关限制）
         _dirty = true;
-        _mergeTimer.Change(MergeWindow, Timeout.InfiniteTimeSpan);
+        _mergeTimer.Change(_mergeWindow, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>上传合并间隔配置变更后调用：重排等待中的合并窗口，使新配置立即生效（方案文档 §3.3 配套要求，不可漏）。</summary>
+    public void RefreshMergeWindow()
+    {
+        if (_dirty) _mergeTimer.Change(_mergeWindow, Timeout.InfiniteTimeSpan);
     }
 
     private void OnMergeWindowElapsed()
@@ -198,11 +215,38 @@ public class SyncEngine
     // ── 同步主流程 ──
 
     /// <summary>
-    /// 立即同步：push 盐（首配）→ pull（对账合并）→ push（全量合并上传）。
+    /// 立即同步：push 盐（首配）→ pull（对账合并）→ push（全量合并上传）→ 笔记部分成功后触发搭车 hook。
     /// auto=true（合并窗口/轮询触发）时遇限流/网络错误指数退避 30s/2min/10min，连续 3 次失败停止自动重试；
     /// auto=false（手动"立即同步"）失败直接返回原因，等用户再点。
+    /// 搭车 hook：笔记部分成功、闸释放后，以共享闸串行触发 CycleCompleted（AI 会话同步）；
+    /// hook 抛异常/失败绝不影响本方法返回的笔记 SyncResult（零回归红线）。
     /// </summary>
     public async Task<SyncResult> SyncNowAsync(bool auto = false)
+    {
+        var result = await SyncNotesCoreAsync(auto).ConfigureAwait(false);
+        if (result.Success)
+        {
+            try
+            {
+                var handlers = CycleCompleted;
+                if (handlers != null)
+                {
+                    await _gate.WaitAsync().ConfigureAwait(false);
+                    try
+                    {
+                        foreach (Func<Task> handler in handlers.GetInvocationList())
+                            await handler().ConfigureAwait(false);
+                    }
+                    finally { _gate.Release(); }
+                }
+            }
+            catch { /* 会话同步失败由 ChatSyncEngine 自己留痕，不污染笔记同步结果 */ }
+        }
+        return result;
+    }
+
+    /// <summary>笔记同步主体（原 SyncNowAsync 流程，一行未动地搬入；PullFlowAsync/PushFlowAsync 内部零改动）。</summary>
+    private async Task<SyncResult> SyncNotesCoreAsync(bool auto = false)
     {
         if (_dek == null) return SyncResult.NotConfigured;
         if (!LicenseGate.IsAllowed(LicenseGate.FeatureSync))
