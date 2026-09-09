@@ -1,8 +1,8 @@
 # BRANCHES.md - FocusCapture 分支索引与管理规范
 
-> 创建：2026-09-01
+> 创建：2026-09-01 ｜ 最近整理：2026-09-09（修正 7 处失实登记、删除 6 个已合并本地分支、归档表压缩）
 > 用途：全项目分支的唯一登记表。每次建分支、合并、删除后必须同步更新本表。
-> 定位：这是"施工日志"——分支可以删，本表不能丢。
+> 定位：「施工日志」——分支可以删，本表不能丢。
 
 ---
 
@@ -29,50 +29,60 @@
 4. **开工前查重**：`git log --all --grep=功能关键词` 先查 main 是否已有类似功能，防重复开发
 5. **阶段拆在提交信息**：多阶段功能只用一个分支，commit message 标注阶段（如 `feat(todo): phase2 面板徽标`）
 
-## 三、当前分支索引（2026-09-01 整理后）
+## 三、当前分支索引（2026-09-09 清理后）
 
 | 分支 | 功能板块 | 状态 | 最后提交 |
 |------|---------|------|---------|
-| main | 主线（当前最新版 v0.2.x） | 活跃 | 713a1d1 |
-| feature/ai-chat-sync | AI 会话记录坚果云同步 + 历史会话管理（两阶段，方案文档《AI问答板块迭代-需求与方案文档.md》v1.1）。阶段一：数据层（SessionFile 5 字段/GUID/ChatGroupStore）+ WebDAVProvider 通用文件方法（IFileStorageProvider）+ ChatSyncEngine（整文件 LWW+Rev 冲突/E2EE 自持 DEK/删除清单闭环①）+ SyncEngine 搭车 hook/合并窗口配置化 + 退出 flush/SessionEnding/启动首拉 + 云同步页 2 设置项。阶段二（已完成）：HistoryDrawer 大改（三个点菜单/多选模式/分组分区/置顶📌/重命名）+ ChatExportService 导出四格式（复用 AgentRunService:153 过滤语义）+ 批量操作（删除/移动/导出，同名 _1/_2 不覆盖）+ ChatGroupsWindow 分组管理 + ChatTrashWindow 会话回收站（恢复/彻底删除/清空，本地行为）+ 抽屉三列布局拖宽（Thumb 改 HistoryPanel.Width 铁律）+ AiDrawerWidth 宽度记忆 + 收起按钮（Path 图标）+ Rev 冲突弹窗 + 同步后抽屉自动刷新 + 多端同名分组合并/GroupId 重映射（REGRESSION.md B-10）。+ 搭车 hook 自我死锁修复（2026-09-09，55763be） | **已合入 main（2026-09-09，随 feature/sync-cursor-fix 一并合入）** | 见 git log |
-| feature/sync-cursor-fix | 笔记增量拉取游标修复（2026-09-09，从 feature/ai-chat-sync 切出含死锁修复）：根因 = push 时 UpdatedAt 用笔记原始时间戳、pull 增量按 UpdatedAt >= 游标过滤 → A 端事后同步的旧笔记时间戳小于他端游标被永久过滤（「A 传 5 条 B 只到 4 条/一条不到」存量 Bug）。修复 = SyncNote 新增 UploadedAt（上传时刻）作增量游标键（存量行空值始终投递幂等补齐）+ 三处墓碑生成补 UploadedAt + 推送时云端已有行保留原 UploadedAt 防桶漂移 + 软删重放走 RecycleBinService.AddIfAbsent 幂等落站 + 盐分叉自愈三件套（SaltNeedsUpload 持久化/盐空补传/重置写盐）+ 会话清单引号 bug（上传裸 Base64+下载兼容）+ 解密失败计数与游标保护 + 会话增量对账（LastModified stamp 跳过未变文件，治坚果云 503 限流）+ 请求节流与 503 退避重试 + 会话部分落地（中断不再全有全无）+ 退出 flush 只等笔记（includeChat=false，治 4 秒必弹窗）+ 拉取落地 CloudDataLanded 事件刷灵感速览 + 设置页「从云端重新拉取」按钮 + 密钥对齐自动清游标（REGRESSION.md B-3 累计 +11 条） | **已合入 main（2026-09-09，用户真机验收通过）** | 见 git log |
-| feature/ai-chat-history-streaming | AI 对话体验升级：历史会话抽屉（回看/续聊）+ Agent 真流式（含 tool_calls 增量拼接）+ 思考过程折叠区 + 发送/停止按钮 + 新会话按钮（REGRESSION.md B-9） | 开发中 | 见 git log |
-| feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | **未合入 main，待决策** | 27b1c02 |
-| feature/agent-tool-framework | AI 动手能力：通用 Agent 工具框架（function calling 主循环）+ 7 个本地工具（含待办增删改）+ 得到大脑数据驱动适配器（解耦架构）+ 运行日志 AppLog（方案文档 AGENT_IMPLEMENTATION.md v2.1，按钮直传/凭证 UI 下期） | **已合入 main（2026-09-06，3 个 commit 5f46f30/92c4d46/2554c7e）** | 见 git log |
-| feature/getnote-button-upload | 得到大脑按钮直传：包装台① GetNotePayloadBuilder（制式标题排版+5000 字分篇）+ 去重 GetNoteSyncState（指纹按条目时间戳，每条一生只推一次）+ 推送编排 GetNotePushService（确认弹窗+限流重试）+ QuickViewWindow 标题栏「存」按钮 + 设置面板得到大脑凭证区/测试连接/默认知识库下拉 | 开发中（2026-09-06） | 见 git log |
-| fix/ai-response-limits | AI 问答截断修复：max_tokens 可配置（默认 4096，统一传入流式/非流式/降级三路径，解决长回答被供应商默认值截断）+ 工具轮数上限可配置（默认 15，原硬编码 5，多步工具易触顶）+ 工具结果截断阈值可配置（默认 8000，原 2000）+ 设置面板新增 3 个输入框 | 开发中 | 见 git log |
+| main | 主线（含 2026-09-09 会话同步全链路修复） | 活跃 | 0240c3b |
 
-## 四、已删除分支归档（2026-09-01 清理，功能均已确认在 main）
+> 当前无未合并的开发分支。**登记规则：只登记「未合并的活跃分支」；合并即删，删完挪进第四节归档，别让已合入的分支躺在第三节。**
 
-> 如需找回：`git branch <name> <hash>` 即可恢复（reflog 90 天内兜底）。
+## 四、已删除分支归档
 
-| 原分支 | 功能板块 | 删除方式 | 最后提交 |
-|--------|---------|---------|---------|
-| feature/sync-auto-mkdir | 云同步自动建目录：拉取路径补 EnsureDirectory 保护 + 探测白名单补 400（坚果云实测）；含授权码 4 处文案修复 | 已合入 main（2026-09-05，ff 至 ea5be50） | ea5be50 |
-| feature/sync-hint-text-fix | 授权码提示文案改客户端申请路径（xaml 1 处 + cs 4 处） | 已合入 main（2026-09-05，经 sync-auto-mkdir 叠加合入） | c204f3b |
-| feature/build-trim-iconfix | 构建裁剪图标修复 | 本地残留清理（远程已删，功能已在 main） | 27b1c02 |
-| feature/date-numeric-recognition | 待办日期识别新增数字式 10/8、10-8、2026/10/8（月在前，合法性校验，已过不识别） | 已合入 main（2026-09-05，merge 713a1d1） | c8a7e8d |
-| feature/reminder-sound | 提醒音效 MVP（4 款内置+wav/mp3 自定义上传+音量/试听） | **未合入直接删除**（2026-09-05，确认放弃该功能） | d620f79 |
-| feature/annotation-quote | 批注功能（选中文字一键批注，UIA 三层取文） | **未合入直接删除**（2026-09-05，搁置功能确认放弃） | f33d0d0 |
-| feature/ai-provider-presets | AI 模型板块：供应商预设下拉（6 家+自定义）/BaseURL 自动填充/密钥遮罩+小眼睛/API Key 申请页跳转 | 已合入 main（2026-09-05，merge 1cac7ca） | 384883d |
-| fix/todo-reminder-optimizations | 待办提醒优化：严格到点弹窗/超时默认稍后提醒/每日汇总空态关闭+开关/时间精确到秒/旧格式待办兼容+一键清理 | 已合入 main（2026-09-02，merge 395efdb） | 784a855 |
-| codex/new-feature | 灵感速览最近3天切换 | 已合入 main | bb90fb4 |
-| codex/quest-v3-sync | 云同步 v3（主体已合入） | 主体合入，独有 docs 类提交 | 00306cb |
-| codex/quest1-ai-provider | AI provider 接入/日历弹窗修复 | 已合入 main | 7bff665 |
-| feature/asr-pure-csharp | ASR 纯 C# 迁移（早期尝试） | 已合入 main（后续语音功能被移除） | 371b491 |
-| feature/license-gate | v0.2.0 发版：LicenseGate+设置面板大改版+输入框v3.6 | 功能已 cherry-pick 进 main，独有 docs 类提交（远程已删 2026-09-02） | 2f752f0 |
-| feature/restore-0831 | 8-31 版本恢复分支 | 已合入 main | 78588e2 |
-| feature/todo-reminder | 待办提醒 phase1-2 | 已合入 main | 48cf98d |
-| feature/todo-reminder-phase3 | 待办提醒 phase3 | 已合入 main | 1c36957 |
-| feature/todo-reminder-phase4 | 待办提醒 phase4 | 已合入 main | 16bbc27 |
-| feature/website-v2 | 官网落地页 v2（绿调，实际上线版） | 已合入 main | e2e9e88 |
-| feature/website-landing | 官网落地页 v1（被 v2 替代） | 功能已在 main | 349f767 |
-| feature/inspiration-sync-buttons | 灵感速览云同步入口/回收站多选（早期并行版） | 功能已在 main（最终版 ef37b64 等） | e2df13b |
-| feature/import-range-search | 区间筛选迷你日历 Popup | 已合入 main | 90a135c |
+> 如需找回：`git branch <name> <hash>`（reflog 90 天内兜底，超期则 hash 也救不回）。
+> **4.1 是本表的核心价值**——放弃/未完全并入的分支，功能 main 里没有，丢了就真丢了；4.2 只是索引，功能都在 main 里活着。
 
-## 五、远程分支状态（2026-09-02 更新）
+### 4.1 放弃 / 未完全并入（有独有提交，只此一份）
+
+| 原分支 | 功能板块 | 备注 | 最后提交 |
+|--------|---------|------|---------|
+| feature/reminder-sound | 提醒音效 MVP（4 款内置 + wav/mp3 自定义 + 音量/试听） | 确认放弃（2026-09-05） | d620f79 |
+| feature/annotation-quote | 批注功能（选中文字一键批注，UIA 三层取文） | **永久搁置**，未来扫描自动跳过 | f33d0d0 |
+| feature/build-trim-iconfix | 构建瘦身（锁 RID win-x64）+ 图标嵌入修复 | 末位提交未并入 main（2026-09-09 实测） | 27b1c02 |
+| codex/quest-v3-sync | 云同步 v3 | 主体已合入，独有 docs 提交 | 00306cb |
+| feature/license-gate | v0.2.0 发版：LicenseGate + 设置面板大改版 + 输入框 v3.6 | 功能已 cherry-pick 进 main，独有 docs 提交 | 2f752f0 |
+| feature/website-landing | 官网落地页 v1（被 v2 替代） | 有独有提交未并入（2026-09-09 实测） | 349f767 |
+| feature/inspiration-sync-buttons | 灵感速览云同步入口 / 回收站多选（早期并行版） | 有独有提交未并入（2026-09-09 实测） | e2df13b |
+
+### 4.2 已完全并入 main（一句话 + hash，细节看 git log / CHANGELOG / REGRESSION.md 对应板块）
+
+| 原分支 | 一句话 | 最后提交 |
+|--------|-------|---------|
+| feature/sync-cursor-fix | 笔记增量游标改 UploadedAt 修复他端漏拉 + 盐自愈/引号/对账/限流等 09-09 七连修（B-3） | 0240c3b |
+| feature/ai-chat-sync | AI 会话云同步两阶段：ChatSyncEngine + 历史会话管理 UI（B-10） | 55763be |
+| feature/ai-chat-history-streaming | 历史会话抽屉 + 真流式 + 停止 + 新会话（B-9） | 34be7a1 |
+| feature/getnote-button-upload | 得到大脑按钮直传：包装台① + 指纹去重 + 推送编排（B-8） | 78ba9cc |
+| feature/agent-tool-framework | Agent 工具框架 v2.0 + 7 本地工具 + 得到大脑适配器（B-7） | 2ca5754 |
+| feature/website-refresh | 网站隐私表述对齐 + 上手板块重写 + Gitee 下载渠道 | e1461fb |
+| fix/ai-response-limits | max_tokens / 工具轮数 / 截断阈值可配置 | a10cba8（merge） |
+| feature/sync-auto-mkdir | 云同步自动建目录 + 授权码 4 处文案修复 | ea5be50 |
+| feature/sync-hint-text-fix | 授权码提示文案改客户端申请路径 | c204f3b |
+| feature/date-numeric-recognition | 待办日期识别新增数字式 10/8 等 | c8a7e8d |
+| feature/ai-provider-presets | AI 供应商预设下拉 / 密钥遮罩 / 申请页跳转 | 384883d |
+| fix/todo-reminder-optimizations | 待办提醒优化八项（严格弹窗/稍后/每日汇总等） | 784a855 |
+| codex/new-feature | 灵感速览最近 3 天切换 | bb90fb4 |
+| codex/quest1-ai-provider | AI provider 接入 / 日历弹窗修复 | 7bff665 |
+| feature/asr-pure-csharp | ASR 纯 C# 迁移（后续语音功能被移除） | 371b491 |
+| feature/restore-0831 | 8-31 版本恢复 | 78588e2 |
+| feature/todo-reminder | 待办提醒 phase1-2 | 48cf98d |
+| feature/todo-reminder-phase3 | 待办提醒 phase3 | 1c36957 |
+| feature/todo-reminder-phase4 | 待办提醒 phase4 | 16bbc27 |
+| feature/website-v2 | 官网落地页 v2（绿调，实际上线版） | e2e9e88 |
+| feature/import-range-search | 区间筛选迷你日历 Popup | 90a135c |
+
+## 五、远程分支状态（2026-09-09 更新）
 
 | 远程 | 分支 | 备注 |
 |------|------|------|
 | Gitee（origin） | main | 旧分支已删（2026-09-01） |
-| GitHub | main | 4 个残留分支已全部删除（2026-09-02：codex/quest-v3-sync、codex/quest1-ai-provider、feature/todo-reminder-phase4、feature/license-gate），GitHub 远程仅剩 main |
+| GitHub | main | 2026-09-02 删 4 个残留；**feature/license-gate 漏删仍在（2026-09-09 实测确认），当晚补删因 SSL 连续断连未成，待网络窗口补删** |
