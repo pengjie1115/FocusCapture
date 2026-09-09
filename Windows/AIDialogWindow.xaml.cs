@@ -529,6 +529,9 @@ public partial class AIDialogWindow : Window
         HistoryPanel.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
     }
 
+    /// <summary>同步周期完成后的外部刷新入口（MainWindow 经 AIDialogHelper 调用，拉到新会话立即上列表）</summary>
+    internal void RefreshDrawerIfOpen() => RefreshDrawer();
+
     // ── 历史会话管理（阶段二）：条目操作 / 批量操作 / 分组管理 / 回收站 ──
 
     /// <summary>条目操作（三个点菜单）。改字段统一走"内存会话优先"：改的就是当前打开的会话时
@@ -920,6 +923,17 @@ public static class AIDialogHelper
             try { _dialog.Close(); } catch { /* best effort */ }
         }
         _dialog = null;
+    }
+
+    /// <summary>同步周期完成后刷新展开中的历史抽屉（后台线程调用安全，内部 marshal 回 UI）</summary>
+    public static void RefreshOpenDrawer()
+    {
+        var dialog = _dialog;
+        if (dialog == null) return;
+        dialog.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!dialog.IsClosed) dialog.RefreshDrawerIfOpen();
+        }));
     }
 
     /// <summary>打开 AI 对话框；Key 为空时提示并返回</summary>

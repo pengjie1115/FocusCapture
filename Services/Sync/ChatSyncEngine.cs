@@ -359,6 +359,26 @@ public class ChatSyncEngine
         }
         foreach (var (id, g) in localById) merged[id] = g;   // 本地 wins 同 Id 冲突（无版本号，简单并集）
 
+        // 多端同名分组合并（方案文档 4.4，阶段二）：按名称去重，胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序），
+        // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）
+        foreach (var g in merged.Values)
+            if (string.IsNullOrEmpty(g.DeviceId)) g.DeviceId = _settings.Sync.DeviceId;
+
+        var remap = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var sameName in merged.Values.GroupBy(g => g.Name, StringComparer.Ordinal).Where(gr => gr.Count() > 1))
+        {
+            var winner = sameName.OrderBy(g => g.CreatedAt)
+                .ThenBy(g => g.DeviceId, StringComparer.Ordinal)
+                .ThenBy(g => g.Id, StringComparer.Ordinal)
+                .First();
+            foreach (var loser in sameName.Where(g => !string.Equals(g.Id, winner.Id, StringComparison.Ordinal)))
+            {
+                merged.Remove(loser.Id);
+                remap[loser.Id] = winner.Id;
+            }
+        }
+        if (remap.Count > 0) RemapLocalGroupIds(remap);
+
         if (merged.Count > 0)
         {
             var cipher = CryptoService.Encrypt(_dek!, JsonSerializer.Serialize(merged.Values.ToList(), StateJsonOptions));
@@ -366,13 +386,37 @@ public class ChatSyncEngine
                 JsonSerializer.Serialize(cipher, StateJsonOptions), CancellationToken.None).ConfigureAwait(false);
         }
 
-        // 云端有、本地缺的分组回填本地清单（他端新建分组落地）
-        var localIds = new HashSet<string>(localById.Keys, StringComparer.Ordinal);
-        var missing = merged.Values.Where(g => !localIds.Contains(g.Id)).ToList();
-        if (missing.Count > 0)
+        // 本地清单对齐合并结果：云端有本地缺的分组落地（他端新建）；同名合并删掉的败者从清单移除
+        if (merged.Values.Any(g => !localById.ContainsKey(g.Id)) || remap.Count > 0)
+            ChatGroupStore.Save(merged.Values.ToList());
+    }
+
+    /// <summary>同名分组合并后重映射：把本地会话文件中引用败者 GroupId 的改为胜者（Load → 改 → Save，
+    /// Rev 自增 + SessionChanged 防抖窗口，重映射结果随下轮推送他端）。</summary>
+    private void RemapLocalGroupIds(Dictionary<string, string> remap)
+    {
+        try
         {
-            localGroups.AddRange(missing);
-            ChatGroupStore.Save(localGroups);
+            Directory.CreateDirectory(ChatHistoryDir);
+            foreach (var file in Directory.EnumerateFiles(ChatHistoryDir, "*.json"))
+            {
+                try
+                {
+                    var svc = ChatSessionService.Load(file);
+                    if (svc == null || string.IsNullOrEmpty(svc.GroupId)) continue;
+                    if (!remap.TryGetValue(svc.GroupId, out var target)) continue;
+                    svc.GroupId = target;
+                    svc.Save();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[FocusCapture] 分组重映射跳过文件: {file}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 分组重映射失败: {ex.Message}");
         }
     }
 

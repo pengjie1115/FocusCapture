@@ -8,6 +8,8 @@ public class ChatGroup
     public string Id { get; set; } = "";     // 分组唯一 ID（GUID）
     public string Name { get; set; } = "";   // 分组名（跨端同名分组合并按名称裁决，规则见方案文档 4.4）
     public DateTime CreatedAt { get; set; }  // 创建时间（同名合并：胜出者 = 创建时间最早）
+    public string DeviceId { get; set; } = ""; // 创建端设备 ID（同名合并平局 tie-break：DeviceId 字典序小者胜；
+                                               // 旧清单缺该字段由 ChatSyncEngine.SyncGroupsAsync 兜底填充）
 }
 
 /// <summary>

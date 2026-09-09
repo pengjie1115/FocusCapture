@@ -278,11 +278,34 @@ public partial class MainWindow : Window
         var provider = new WebDAVProvider(sync.WebDavUrl, sync.WebDavUser, token);
         var engine = new SyncEngine(_settings, _noteService, provider);
         _chatSyncEngine = new ChatSyncEngine(_settings, provider, engine.Gate);
-        engine.CycleCompleted += () => _chatSyncEngine.RunOnceAsync();
+        engine.CycleCompleted += () => _chatSyncEngine.RunOnceAsync().ContinueWith(_ =>
+            Dispatcher.BeginInvoke(new Action(() => AIDialogHelper.RefreshOpenDrawer())));  // 会话同步完成后刷新展开中的抽屉（启动首拉/轮询/flush 全覆盖）
         AIDialogHelper.SessionDeleted = id => _chatSyncEngine?.MarkDeleted(id);  // AI 对话删除 UI → MarkDeleted 闭环①（lambda 读字段，引擎重建后自动指向新实例）
+        _chatSyncEngine.ConflictResolutionRequested += OnChatConflictResolution;  // 阶段二：Rev 冲突弹窗裁决（true=本地覆盖上传）
         ChatSessionService.SessionChanged -= OnChatSessionChanged;
         ChatSessionService.SessionChanged += OnChatSessionChanged;
         return engine;
+    }
+
+    /// <summary>会话保存冲突裁决（ChatSyncEngine 后台线程回调）：弹窗问用户——
+    /// 「是」= 覆盖：用本机这版覆盖云端；「否」= 保留他端：本机这版暂不上传，留痕待下次保存再提示。</summary>
+    private Task<bool> OnChatConflictResolution(string sessionId)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                var answer = System.Windows.MessageBox.Show(this,
+                    $"会话在另一设备有更新（{sessionId[..Math.Min(8, sessionId.Length)]}…）。\n\n" +
+                    "【是】覆盖：用本机这版覆盖云端（他端更新会被覆盖）\n" +
+                    "【否】保留他端：本机这版暂不上传（下次保存会再次提示）",
+                    "会话同步冲突", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                tcs.TrySetResult(answer == MessageBoxResult.Yes);
+            }
+            catch { tcs.TrySetResult(false); }  // 弹窗失败按"保留他端"处理，绝不静默覆盖
+        }));
+        return tcs.Task;
     }
 
     /// <summary>设置页保存 WebDAV 配置后重建引擎（新配置立即生效，自动同步轮询延续）。</summary>
