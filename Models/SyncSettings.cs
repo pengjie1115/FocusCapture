@@ -30,6 +30,12 @@ public class SyncSettings
     /// <summary>E2EE 盐（Base64）。首配设备生成、明文存云端 sync_meta.json；本地缓存供离线派生（跨设备一致）。</summary>
     public string E2eeSalt { get; set; } = "";
 
+    /// <summary>盐待上传标记（持久化，2026-09-09 盐分叉修复）。
+    /// 背景：原实现用引擎实例字段记"生成了新盐待上传"，引擎重建/应用重启即丢——盐可能永远没上云，
+    /// 云端盐为空时其他设备首配各自生成新盐 → 两端密钥分叉（实测事故：A/B 互解不开对方数据）。
+    /// 置位点：SetTokenKeyAsync 生成新盐 / MigrateFromLegacyAsync；清除点：SaveSaltAsync 上传成功后。</summary>
+    public bool SaltNeedsUpload { get; set; } = false;
+
     public string RecoveryCodeHash { get; set; } = "";   // 恢复码加盐哈希（Base64）
     public string RecoveryCodeSalt { get; set; } = "";   // 恢复码哈希盐（Base64，同存防暴力枚举）
 

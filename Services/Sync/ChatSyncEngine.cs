@@ -351,7 +351,7 @@ public class ChatSyncEngine
         {
             try
             {
-                var cloudPlain = CryptoService.Decrypt(_dek!, cloudJson);
+                var cloudPlain = CryptoService.Decrypt(_dek!, UnwrapCipherJson(cloudJson));
                 var cloudGroups = JsonSerializer.Deserialize<List<ChatGroup>>(cloudPlain, StateJsonOptions) ?? new();
                 foreach (var g in cloudGroups) merged[g.Id] = g;
             }
@@ -382,8 +382,10 @@ public class ChatSyncEngine
         if (merged.Count > 0)
         {
             var cipher = CryptoService.Encrypt(_dek!, JsonSerializer.Serialize(merged.Values.ToList(), StateJsonOptions));
-            await _storage.UploadFileAsync(CloudGroupsFile,
-                JsonSerializer.Serialize(cipher, StateJsonOptions), CancellationToken.None).ConfigureAwait(false);
+            // 2026-09-09 引号 bug 修复：直接上传裸 Base64 密文。原实现 JsonSerializer.Serialize(cipher) 把
+            // 密文又包了一层 JSON 引号，下载侧 Decrypt 直接 FromBase64String 带引号字符串必抛
+            // "not a valid Base-64 string"（A 首轮上传成功只是因为云端无文件不触发解密；第二轮起即炸）
+            await _storage.UploadFileAsync(CloudGroupsFile, cipher, CancellationToken.None).ConfigureAwait(false);
         }
 
         // 本地清单对齐合并结果：云端有本地缺的分组落地（他端新建）；同名合并删掉的败者从清单移除
@@ -432,7 +434,7 @@ public class ChatSyncEngine
         {
             try
             {
-                var cloudPlain = CryptoService.Decrypt(_dek!, cloudJson);
+                var cloudPlain = CryptoService.Decrypt(_dek!, UnwrapCipherJson(cloudJson));
                 var cloudList = JsonSerializer.Deserialize<List<ChatDeletionRecord>>(cloudPlain, StateJsonOptions) ?? new();
                 foreach (var d in cloudList)
                 {
@@ -467,11 +469,27 @@ public class ChatSyncEngine
         // 合并清单回写本地 + 加密上传（清单保留，供新设备/后续拉取；v2 Purged 机制再瘦身）
         _state.Deletions = merged.Values.OrderBy(d => d.DeletedAt).ToList();
         var cipher = CryptoService.Encrypt(_dek!, JsonSerializer.Serialize(_state.Deletions, StateJsonOptions));
-        await _storage.UploadFileAsync(CloudDeletionsFile,
-            JsonSerializer.Serialize(cipher, StateJsonOptions), CancellationToken.None).ConfigureAwait(false);
+        // 2026-09-09 引号 bug 修复：直接上传裸 Base64 密文（原 Serialize 多包一层 JSON 引号，见 SyncGroupsAsync 注释）
+        await _storage.UploadFileAsync(CloudDeletionsFile, cipher, CancellationToken.None).ConfigureAwait(false);
     }
 
     // ── 内部帮助 ──
+
+    /// <summary>
+    /// 兼容解包密文文件（2026-09-09 引号 bug 修复）：旧版上传把 Base64 密文 Serialize 成 JSON 字符串
+    /// （内容 = "base64…"，带引号），新版直接上传裸 Base64。此 helper 两种都认——先按 JSON 字符串解，
+    /// 失败（非引号格式）原样返回。云端存量 chat_deletions.json 为带引号格式，必须兼容读取。
+    /// </summary>
+    private static string UnwrapCipherJson(string raw)
+    {
+        try
+        {
+            var s = JsonSerializer.Deserialize<string>(raw, StateJsonOptions);
+            if (!string.IsNullOrEmpty(s)) return s;
+        }
+        catch (JsonException) { /* 裸 Base64：原样返回 */ }
+        return raw;
+    }
 
     /// <summary>确保 DEK 就绪且与当前盐一致（笔记端密钥重置换盐后自动重派生）。盐未就绪返回 false 并留痕。</summary>
     private bool EnsureDekCurrent()

@@ -119,8 +119,11 @@ public class SyncEngine
                     saltBase64 = cloudSalt;
                 else
                 {
-                    saltBase64 = Convert.ToBase64String(CryptoService.GenerateSalt());   // 真首配：云端无 meta
+                    // 云端无 meta 或 meta 有但盐为空（2026-09-09 盐分叉修复：后者曾导致各设备各自生盐且
+                    // 上传标记是实例字段易丢 → 两端密钥分叉互解不开）。生盐 + 持久化待上传标记，直到确认上云才清。
+                    saltBase64 = Convert.ToBase64String(CryptoService.GenerateSalt());
                     _saltNeedsUpload = true;
+                    _settings.Sync.SaltNeedsUpload = true;
                 }
             }
             else
@@ -165,6 +168,7 @@ public class SyncEngine
         _dekSaltBase64 = newSalt;
         _saltNeedsUpload = true;
         _settings.Sync.E2eeSalt = newSalt;
+        _settings.Sync.SaltNeedsUpload = true;   // 持久化待上传标记（2026-09-09 盐分叉修复）
         _settings.Sync.RecoveryCodeHash = "";
         _settings.Sync.RecoveryCodeSalt = "";
         _settings.Save();
@@ -259,7 +263,8 @@ public class SyncEngine
                 try
                 {
                     await PushSaltIfNeededAsync(CancellationToken.None).ConfigureAwait(false);
-                    if (await PullFlowAsync().ConfigureAwait(false))
+                    var (saltChanged, decryptFailed) = await PullFlowAsync().ConfigureAwait(false);
+                    if (saltChanged)
                     {
                         // 云端盐已变更（他端升级/重置密钥）→ 新版：用本地授权码 + 新盐自动刷新会话，继续 push；
                         // 无授权码（未配置）→ 中止并提示重配
@@ -267,10 +272,13 @@ public class SyncEngine
                             return SyncResult.Failed("云端密钥已重置，请重新配置授权码");
                     }
                     await PushFlowAsync().ConfigureAwait(false);
-                    _settings.Sync.LastSyncResult = "成功";
+                    // 2026-09-09：解密失败不再静默——写进同步结果，设置页可见（不再显示单纯"成功"误导用户）
+                    _settings.Sync.LastSyncResult = decryptFailed > 0
+                        ? $"成功（{decryptFailed} 条云端数据解密失败，两端密钥可能不一致，游标已回退待密钥对齐后重拉）"
+                        : "成功";
                     _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
                     _settings.Save();
-                    StatusChanged?.Invoke("成功");
+                    StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
                     return SyncResult.SuccessResult;
                 }
                 catch (SyncProviderException ex) when (auto && (ex.IsRateLimit || ex.IsNetwork) && attempts <= _backoffSeconds.Length)
@@ -311,16 +319,20 @@ public class SyncEngine
         try
         {
             await PushSaltIfNeededAsync(ct).ConfigureAwait(false);
-            if (await PullFlowAsync().ConfigureAwait(false))
+            var (saltChanged, decryptFailed) = await PullFlowAsync().ConfigureAwait(false);
+            if (saltChanged)
             {
                 // 云端盐已变更（他端升级/重置密钥）→ 用本地授权码 + 新盐自动刷新会话
                 if (!TryRefreshSessionFromCloudSalt())
                     return SyncResult.Failed("云端密钥已重置，请重新配置授权码");
             }
-            _settings.Sync.LastSyncResult = "成功（仅拉取）";
+            // 2026-09-09：解密失败不再静默（同 SyncNotesCoreAsync）
+            _settings.Sync.LastSyncResult = decryptFailed > 0
+                ? $"成功（仅拉取，{decryptFailed} 条云端数据解密失败，两端密钥可能不一致）"
+                : "成功（仅拉取）";
             _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
             _settings.Save();
-            StatusChanged?.Invoke("成功（仅拉取）");
+            StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
             return SyncResult.SuccessResult;
         }
         catch (SyncProviderException ex)
@@ -342,8 +354,12 @@ public class SyncEngine
 
     // ── 拉取侧：对账合并（回声识别 / 软删落地 / 密钥重置盐比对） ──
 
-    /// <summary>返回 true = 云端盐已变更（他端密钥重置），调用方必须中止 push 并提示重输主密码。</summary>
-    private async Task<bool> PullFlowAsync()
+    /// <summary>
+    /// 拉取对账。返回 (SaltChanged, DecryptFailed)：
+    /// SaltChanged=true = 云端盐已变更（他端密钥重置），调用方必须中止 push 并刷新会话；
+    /// DecryptFailed = 本轮解密失败条数（>0 说明两端密钥可能不一致，调用方写进同步状态，不再静默）。
+    /// </summary>
+    private async Task<(bool SaltChanged, int DecryptFailed)> PullFlowAsync()
     {
         // 密钥重置检测：云端盐 ≠ 本地会话盐 → 刷新本地缓存盐（云端为权威，盐由最新重置者写入），
         // 返回 true 由调用方刷新会话（自动解锁模式下用授权码+新盐自动刷新，无需用户干预）
@@ -352,7 +368,18 @@ public class SyncEngine
         {
             _settings.Sync.E2eeSalt = cloudSalt;
             _settings.Save();
-            return true;
+            return (true, 0);
+        }
+
+        // 2026-09-09 盐分叉自愈：云端盐为空而本地有盐 → 本机盐上云（后续拉取方可对齐密钥）。
+        // 背景：云端盐曾长期为空 + 旧版上传标记易丢 → 两端各自生盐互解不开。此分支保证只要任一
+        // 配置过的设备跑一轮同步，云端盐就会补齐，他端下次拉取自动刷新会话。
+        if (string.IsNullOrEmpty(cloudSalt) && !string.IsNullOrEmpty(_dekSaltBase64))
+        {
+            _saltNeedsUpload = true;
+            _settings.Sync.SaltNeedsUpload = true;
+            _settings.Save();
+            await PushSaltIfNeededAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
         var since = string.IsNullOrEmpty(_settings.Sync.LastCursor) ? null : _settings.Sync.LastCursor;
@@ -364,6 +391,7 @@ public class SyncEngine
 
         // 回收站清理 / 恢复传播的批量收集（单次扫描目录，避免逐条重复 IO）
         var binRemovals = new List<(string RelativePath, string Line)>();
+        var decryptFailed = 0;
 
         foreach (var cloud in pull.Notes)
         {
@@ -376,8 +404,10 @@ public class SyncEngine
             }
             catch (CryptographicException)
             {
-                // 密钥不对/数据损坏：跳过该条，不崩溃、不改动本地（§6 未知处理 4）
-                StatusChanged?.Invoke("云端数据解密失败，可能授权码不正确或云端密钥已重置");
+                // 密钥不对/数据损坏：跳过该条，不崩溃、不改动本地（§6 未知处理 4）。
+                // 2026-09-09 修复"静默失败"：计数并回传调用方写进同步状态（原实现只 StatusChanged 一闪而过，
+                // 状态仍显示"成功"→ 用户以为同步正常实际一条没拉到）
+                decryptFailed++;
                 continue;
             }
 
@@ -429,11 +459,12 @@ public class SyncEngine
         if (binRemovals.Count > 0)
             _noteService.RecycleBin.RemoveMatchingBatch(binRemovals);
 
-        // 游标推进（只进不退）
-        if (!string.IsNullOrEmpty(pull.NewSince))
+        // 游标推进（只进不退）。例外：本轮存在解密失败 → 不推进游标，保证密钥对齐后
+        // 下轮还能重新拉到这批行（否则游标越过它们会被增量过滤永久漏掉——老 Bug 的变体，2026-09-09）
+        if (decryptFailed == 0 && !string.IsNullOrEmpty(pull.NewSince))
             _settings.Sync.LastCursor = pull.NewSince;
         _settings.Save();
-        return false;
+        return (false, decryptFailed);
     }
 
     // ── 推送侧：全量合并 + 整桶覆盖（Quest-5 审查修正：合并基础 = 云端全量，防覆盖抹掉他端数据） ──
@@ -637,6 +668,14 @@ public class SyncEngine
         try
         {
             await _provider.PushAsync(Array.Empty<SyncNote>(), null, ct).ConfigureAwait(false);   // 清空云端桶
+            // 2026-09-09 盐分叉修复：重置即重建云端状态，盐必须随之写入——否则云端盐为空，
+            // 他端无从对齐密钥（实测事故：A 重置后云端盐仍空，B 拉取仍解不开）
+            if (!string.IsNullOrEmpty(_dekSaltBase64))
+            {
+                await _provider.SaveSaltAsync(_dekSaltBase64, ct).ConfigureAwait(false);
+                _saltNeedsUpload = false;
+                _settings.Sync.SaltNeedsUpload = false;
+            }
             _settings.Sync.LastCursor = "";
             _settings.Sync.PendingDeletes.Clear();
             _settings.Sync.PendingRestores.Clear();
@@ -677,9 +716,13 @@ public class SyncEngine
 
     private async Task PushSaltIfNeededAsync(CancellationToken ct)
     {
-        if (!_saltNeedsUpload) return;
+        // 2026-09-09 盐分叉修复：除实例字段外同时检查持久化标记（引擎重建/重启后实例字段丢失曾导致盐永远不上云）
+        if (!_saltNeedsUpload && !_settings.Sync.SaltNeedsUpload) return;
+        if (string.IsNullOrEmpty(_dekSaltBase64)) return;
         await _provider.SaveSaltAsync(_dekSaltBase64, ct).ConfigureAwait(false);
         _saltNeedsUpload = false;
+        _settings.Sync.SaltNeedsUpload = false;
+        _settings.Save();
     }
 
     private async Task<string?> GetCloudSaltAsync()
