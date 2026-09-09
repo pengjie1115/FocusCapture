@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Threading;
 using FocusCapture.Models;
 using FocusCapture.Services;
@@ -123,6 +124,10 @@ public partial class AIDialogWindow : Window
         InitializeComponent();
         MessagesList.ItemsSource = _bubbles;
         HistoryPanel.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
+        HistoryPanel.ItemAction += (item, action, context) => Dispatcher.BeginInvoke(new Action(() => HandleItemAction(item, action, context)));
+        HistoryPanel.BatchAction += (action, items, context) => Dispatcher.BeginInvoke(new Action(() => HandleBatchAction(action, items, context)));
+        HistoryPanel.GroupsManageRequested += () => Dispatcher.BeginInvoke(new Action(HandleGroupsManage));
+        HistoryPanel.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
         Closed += OnWindowClosed;
     }
 
@@ -462,14 +467,205 @@ public partial class AIDialogWindow : Window
     private void BtnHistory_Click(object sender, RoutedEventArgs e)
     {
         if (!_drawerOpen)
-            HistoryPanel.Load(ChatSessionService.ListSessions());
+            RefreshDrawer();
+        OpenDrawer(!_drawerOpen);
+    }
 
-        _drawerOpen = !_drawerOpen;
-        var anim = new DoubleAnimation(_drawerOpen ? 240 : 0, TimeSpan.FromMilliseconds(180))
+    /// <summary>展开/收起抽屉（宿主动画唯一入口；收起按钮复用）。宽度参数化见「布局改造」提交。</summary>
+    private void OpenDrawer(bool open)
+    {
+        _drawerOpen = open;
+        var anim = new DoubleAnimation(open ? 240 : 0, TimeSpan.FromMilliseconds(180))
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
         };
         HistoryPanel.BeginAnimation(WidthProperty, anim);
+    }
+
+    /// <summary>刷新抽屉列表（展开中才刷新；启动下拉/操作完成后宿主调用）</summary>
+    private void RefreshDrawer()
+    {
+        if (!_drawerOpen) return;
+        HistoryPanel.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
+    }
+
+    // ── 历史会话管理（阶段二）：条目操作 / 批量操作 / 分组管理 / 回收站 ──
+
+    /// <summary>条目操作（三个点菜单）。改字段统一走"内存会话优先"：改的就是当前打开的会话时
+    /// 直接改内存字段（否则文件与内存漂移），否则 Load 文件改后 Save。</summary>
+    private void HandleItemAction(HistoryItemViewModel item, ChatItemAction action, string? context)
+    {
+        switch (action)
+        {
+            case ChatItemAction.BatchStart:
+                HistoryPanel.EnterBatchMode();
+                break;
+
+            case ChatItemAction.Rename:
+            {
+                var name = PromptDialog.Show(this, "重命名会话", "会话标题（留空恢复默认预览）：");
+                if (name == null) return;
+                ApplySessionMeta(item, s => s.Title = name);
+                RefreshDrawer();
+                break;
+            }
+
+            case ChatItemAction.TogglePin:
+                ApplySessionMeta(item, s => s.Pinned = !s.Pinned);
+                RefreshDrawer();
+                break;
+
+            case ChatItemAction.Group:
+                ApplySessionMeta(item, s => s.GroupId = context ?? "");
+                RefreshDrawer();
+                break;
+
+            case ChatItemAction.Export:
+                if (Enum.TryParse<ExportFormat>(context, out var fmt))
+                    ExportOne(item, fmt);
+                break;
+
+            case ChatItemAction.Delete:
+                DeleteSessions([item]);
+                break;
+        }
+    }
+
+    /// <summary>批量操作（多选操作条）。结束统一退出多选模式并刷新。</summary>
+    private void HandleBatchAction(ChatBatchAction action, IReadOnlyList<HistoryItemViewModel> items, string? context)
+    {
+        if (items.Count == 0) return;
+        switch (action)
+        {
+            case ChatBatchAction.Delete:
+                DeleteSessions(items);
+                HistoryPanel.ExitBatchMode();
+                RefreshDrawer();
+                break;
+
+            case ChatBatchAction.Group:
+                foreach (var item in items)
+                    ApplySessionMeta(item, s => s.GroupId = context ?? "");
+                HistoryPanel.ExitBatchMode();
+                RefreshDrawer();
+                break;
+
+            case ChatBatchAction.Export:
+                if (!Enum.TryParse<ExportFormat>(context, out var fmt)) return;
+                ExportMany(items, fmt);
+                HistoryPanel.ExitBatchMode();
+                break;
+        }
+    }
+
+    private void HandleGroupsManage()
+    {
+        new ChatGroupsWindow { Owner = this }.ShowDialog();
+        RefreshDrawer();
+    }
+
+    private void HandleRecycleBin()
+    {
+        new ChatTrashWindow { Owner = this }.ShowDialog();
+        RefreshDrawer();
+    }
+
+    /// <summary>改单会话元数据：当前打开的会话改内存字段（保持内存与文件一致），否则 Load → 改 → Save。
+    /// Save 自动自增 Rev + 触发 SessionChanged（同步管道入口），重命名/置顶/分组无需额外接线。</summary>
+    private void ApplySessionMeta(HistoryItemViewModel item, Action<ChatSessionService> mutate)
+    {
+        if (_session != null && _session.SessionId == item.Id)
+        {
+            mutate(_session);
+            _session.Save();
+            return;
+        }
+        var svc = ChatSessionService.Load(item.FilePath);
+        if (svc == null) return;
+        mutate(svc);
+        svc.Save();
+    }
+
+    /// <summary>删除（单项/批量共用）：确认弹窗 → 当前打开的会话先切断内存引用（新会话接管，防后续 Save 复活文件）
+    /// → 经 AIDialogHelper.SessionDeleted 走 MarkDeleted（trash + 删除清单 + Notify，闭环①）。</summary>
+    private void DeleteSessions(IReadOnlyList<HistoryItemViewModel> items)
+    {
+        var tip = items.Count == 1
+            ? "删除该会话？会移入会话回收站。"
+            : $"删除选中的 {items.Count} 个会话？将移入会话回收站。";
+        if (System.Windows.MessageBox.Show(this, tip, "删除会话",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        foreach (var item in items)
+        {
+            if (_session != null && _session.SessionId == item.Id)
+                StartNewSession(_mode, null);
+            AIDialogHelper.SessionDeleted?.Invoke(item.Id);
+        }
+    }
+
+    /// <summary>单会话导出：SaveFileDialog 选位置（默认文件名 = 标题/预览）</summary>
+    private void ExportOne(HistoryItemViewModel item, ExportFormat format)
+    {
+        var raw = ChatSessionService.LoadFile(item.FilePath);
+        if (raw == null)
+        {
+            System.Windows.MessageBox.Show(this, "会话文件损坏或无法读取", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出会话",
+            Filter = "所有文件|*.*",
+            FileName = NoteExportService.SanitizeFileName(ChatExportService.ResolveTitle(raw)) + ChatExportService.ExtensionOf(format),
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            var path = File.Exists(dlg.FileName) ? NoteExportService.GetUniquePath(dlg.FileName) : dlg.FileName;
+            ChatExportService.ExportTo(raw, format, path);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, $"导出失败：{ex.Message}", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>批量导出：选目录 → 每个会话各导出一个文件（同名自动 _1/_2 不覆盖）</summary>
+    private void ExportMany(IReadOnlyList<HistoryItemViewModel> items, ExportFormat format)
+    {
+        using var dlg = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "选择导出目录（选中的每个会话各导出一个文件，重名自动加序号不覆盖）",
+            ShowNewFolderButton = true,
+        };
+        if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+        var ok = 0;
+        var fail = 0;
+        foreach (var item in items)
+        {
+            try
+            {
+                var raw = ChatSessionService.LoadFile(item.FilePath);
+                if (raw == null) { fail++; continue; }
+                var name = NoteExportService.SanitizeFileName(ChatExportService.ResolveTitle(raw));
+                if (string.IsNullOrEmpty(name)) name = "会话";
+                var path = NoteExportService.GetUniquePath(Path.Combine(dlg.SelectedPath, name + ChatExportService.ExtensionOf(format)));
+                ChatExportService.ExportTo(raw, format, path);
+                ok++;
+            }
+            catch { fail++; }
+        }
+
+        System.Windows.MessageBox.Show(this,
+            $"导出完成：成功 {ok} 个{(fail > 0 ? $"，失败 {fail} 个" : "")}。\n目录：{dlg.SelectedPath}",
+            "批量导出", MessageBoxButton.OK,
+            fail > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
     /// <summary>加载历史会话回看（可继续对话）。历史 JSON 未存原笔记引用：「追加到原笔记」不可用，「存为新笔记」正常。</summary>
@@ -645,6 +841,27 @@ public static class AIDialogHelper
     private static NoteService? _noteService;
     private static AppSettings? _settings;
     private static Window? _owner;
+
+    /// <summary>删除会话管道（阶段二删除 UI → 阶段一 MarkDeleted：trash + 删除清单 + Notify）。
+    /// 由 MainWindow 创建 ChatSyncEngine 后注入；未注入（未配同步）时仅本地行为退化为无删除——
+    /// 历史管理必须可用，故 AIDialogWindow 在此兜底直接移文件（不动同步清单）。</summary>
+    public static Action<string>? SessionDeleted;
+
+    /// <summary>删除会话（UI 唯一入口）：有同步引擎走 MarkDeleted 闭环①；无引擎直接移 trash（纯本地）。</summary>
+    public static void DeleteSession(string sessionId)
+    {
+        if (SessionDeleted != null) { SessionDeleted.Invoke(sessionId); return; }
+        try
+        {
+            var svc = ChatSessionService.LoadByAnyId(sessionId);
+            if (svc != null)
+            {
+                Directory.CreateDirectory(ChatSessionService.TrashDir);
+                File.Move(svc, Path.Combine(ChatSessionService.TrashDir, Path.GetFileName(svc)));
+            }
+        }
+        catch { /* 删除失败下次对账兜底；本地无同步时无清单可补 */ }
+    }
 
     public static void Initialize(NoteService noteService, AppSettings settings, Window? owner)
     {

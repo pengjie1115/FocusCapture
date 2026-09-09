@@ -194,7 +194,7 @@ public class ChatSessionService
         }
     }
 
-    /// <summary>扫描 chat_history 目录生成会话摘要列表（按 SavedAt 倒序；置顶/标题的展示排序留阶段二）。
+    /// <summary>扫描 chat_history 目录生成会话摘要列表（排序：置顶优先 → SavedAt 倒序；预览：标题优先回退首条用户消息）。
     /// 损坏/无法解析的文件跳过。只扫顶层，trash 子目录（会话回收站）不会被列出。</summary>
     public static IReadOnlyList<SessionSummary> ListSessions()
     {
@@ -223,7 +223,7 @@ public class ChatSessionService
                         payload.Title ?? "",
                         payload.Pinned,
                         payload.GroupId ?? "",
-                        firstUser.Length > 40 ? firstUser[..40] + "…" : firstUser,
+                        BuildPreview(payload.Title, firstUser),
                         payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
                 }
                 catch (Exception ex) when (ex is JsonException or IOException)
@@ -232,7 +232,12 @@ public class ChatSessionService
                     Debug.WriteLine($"[FocusCapture] 会话文件解析跳过: {file}: {ex.Message}");
                 }
             }
-            result.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
+            // 阶段二排序：置顶优先 → SavedAt 倒序（分区展示由 HistoryDrawer 依据 Pinned/GroupId 再组织）
+            result.Sort((a, b) =>
+            {
+                if (a.Pinned != b.Pinned) return a.Pinned ? -1 : 1;
+                return b.SavedAt.CompareTo(a.SavedAt);
+            });
         }
         catch (Exception ex)
         {
@@ -240,6 +245,97 @@ public class ChatSessionService
         }
         return result;
     }
+
+    /// <summary>列表预览：重命名标题优先，无标题回退首条用户消息前 40 字（方案文档 4.2-2）</summary>
+    private static string BuildPreview(string? title, string firstUser)
+    {
+        if (!string.IsNullOrWhiteSpace(title)) return title;
+        return firstUser.Length > 40 ? firstUser[..40] + "…" : firstUser;
+    }
+
+    /// <summary>按会话 Id 定位本地文件路径（GUID 文件名优先，兼容未回写的旧时间戳文件名）。找不到返回 null。</summary>
+    public static string? LoadByAnyId(string sessionId)
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "FocusCapture", "chat_history");
+        var byId = Path.Combine(dir, sessionId + ".json");
+        if (File.Exists(byId)) return byId;
+        if (!Directory.Exists(dir)) return null;
+        foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+        {
+            try
+            {
+                var s = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(file, Encoding.UTF8));
+                if (s?.Id == sessionId) return file;
+            }
+            catch (JsonException) { /* 损坏文件跳过 */ }
+        }
+        return null;
+    }
+
+    /// <summary>读取会话文件原始结构（导出/回收站列表用，不构造会话服务实例）。损坏返回 null。</summary>
+    public static SessionFile? LoadFile(string filePath)
+    {
+        try
+        {
+            if (!File.Exists(filePath)) return null;
+            return JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(filePath, Encoding.UTF8));
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            Debug.WriteLine($"[FocusCapture] 会话文件读取失败: {filePath}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>扫描会话回收站（chat_history\trash）生成摘要列表，SavedAt 倒序。回收站 UI 用。</summary>
+    public static IReadOnlyList<SessionSummary> ListTrashSessions()
+    {
+        var result = new List<SessionSummary>();
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "FocusCapture", "chat_history", "trash");
+            if (!Directory.Exists(dir)) return result;
+
+            foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+            {
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(file, Encoding.UTF8));
+                    if (payload == null || !Enum.TryParse<ExplainMode>(payload.Mode, out _)) continue;
+                    var firstUser = payload.Messages?.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    result.Add(new SessionSummary(
+                        file,
+                        string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
+                        payload.SavedAt,
+                        payload.Mode,
+                        payload.Title ?? "",
+                        payload.Pinned,
+                        payload.GroupId ?? "",
+                        BuildPreview(payload.Title, firstUser),
+                        payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
+                }
+                catch (Exception ex) when (ex is JsonException or IOException)
+                {
+                    Debug.WriteLine($"[FocusCapture] 回收站文件解析跳过: {file}: {ex.Message}");
+                }
+            }
+            result.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FocusCapture] 会话回收站扫描失败: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>会话回收站目录路径</summary>
+    public static string TrashDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "FocusCapture", "chat_history", "trash");
 
     private static string BuildSystemPrompt(ExplainMode mode, string? noteContext, string? noteContent)
     {

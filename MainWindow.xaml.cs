@@ -279,6 +279,7 @@ public partial class MainWindow : Window
         var engine = new SyncEngine(_settings, _noteService, provider);
         _chatSyncEngine = new ChatSyncEngine(_settings, provider, engine.Gate);
         engine.CycleCompleted += () => _chatSyncEngine.RunOnceAsync();
+        AIDialogHelper.SessionDeleted = id => _chatSyncEngine?.MarkDeleted(id);  // AI 对话删除 UI → MarkDeleted 闭环①（lambda 读字段，引擎重建后自动指向新实例）
         ChatSessionService.SessionChanged -= OnChatSessionChanged;
         ChatSessionService.SessionChanged += OnChatSessionChanged;
         return engine;
