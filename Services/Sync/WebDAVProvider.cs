@@ -17,8 +17,10 @@ namespace FocusCapture.Services.Sync;
 /// - 整桶 PUT 覆盖天然幂等（重复推送同一桶结果一致）；
 /// - 请求频率由引擎按 Limits 控制（30s 合并窗口天然限流），本类不做 sleep；
 /// - 桶规则：ISO 周分桶（updatedAt UTC），≤Limits.MaxBatchSize 条/桶，文件名 notes-{yyyy-Www}-{seq}.json（§5.0.3）。
+/// 另实现 IFileStorageProvider（AI 会话同步的通用文件级方法）：只把既有 HTTP 能力公开出去，
+/// 笔记桶相关方法（PullAsync/PushAsync/FullAsync/GetMetaAsync/SaveSaltAsync）逻辑一行未动。
 /// </summary>
-public class WebDAVProvider : ISyncProvider
+public class WebDAVProvider : ISyncProvider, IFileStorageProvider
 {
     private const string DavNs = "{DAV:}";
     private readonly HttpClient _http;
@@ -143,10 +145,18 @@ public class WebDAVProvider : ISyncProvider
         await PutMetaAsync(meta, ct).ConfigureAwait(false);
     }
 
+    // ── IFileStorageProvider 实现（AI 会话同步用；转发既有 WebDAV 方言方法，笔记桶语义不受影响） ──
+
+    Task<string?> IFileStorageProvider.DownloadFileAsync(string fileName, CancellationToken ct)
+        => DownloadFileOrNullAsync(fileName, ct);
+
+    Task IFileStorageProvider.UploadFileAsync(string fileName, string content, CancellationToken ct)
+        => PutFileAsync(fileName, content, ct);
+
     // ── WebDAV 方言 ──
 
     /// <summary>首次同步前确保 Base URL 目录存在：PROPFIND 400/404/405/409 → MKCOL（坚果云自定义子目录不会自动存在，QUEST-5 审查补充；400 为坚果云对不存在目录的实测返回，2026-09-05 新设备验证补充）。</summary>
-    private async Task EnsureDirectoryAsync(CancellationToken ct)
+    public async Task EnsureDirectoryAsync(CancellationToken ct)
     {
         var (exists, status) = await PropFindAsync(ct).ConfigureAwait(false);
         if (exists) return;
@@ -205,13 +215,30 @@ public class WebDAVProvider : ISyncProvider
         }
     }
 
+    // IFileStorageProvider.ListFilesAsync 显式实现：转发既有 PROPFIND Depth=1 方言方法
+    Task<List<string>> IFileStorageProvider.ListFilesAsync(CancellationToken ct) => ListFilesAsync(ct);
+
     private Task<string> GetFileAsync(string fileName, CancellationToken ct)
         => SendAsync(new HttpRequestMessage(HttpMethod.Get, _baseUrl + fileName), "读取", fileName, ct);
+
+    /// <summary>下载文件，404 返回 null（IFileStorageProvider.DownloadFileAsync 实现；笔记桶路径不用它）</summary>
+    private async Task<string?> DownloadFileOrNullAsync(string fileName, CancellationToken ct)
+    {
+        try
+        {
+            return await GetFileAsync(fileName, ct).ConfigureAwait(false);
+        }
+        catch (SyncProviderException ex) when (ex.StatusCode == 404)
+        {
+            return null;
+        }
+    }
 
     private Task PutFileAsync(string fileName, string content, CancellationToken ct)
         => SendAsync(new HttpRequestMessage(HttpMethod.Put, _baseUrl + fileName) { Content = new StringContent(content, Encoding.UTF8, "application/json") }, "上传", fileName, ct);
 
-    private Task DeleteFileAsync(string fileName, CancellationToken ct)
+    /// <summary>DELETE 文件（公开以实现 IFileStorageProvider.DeleteFileAsync；笔记桶孤儿清理同用此方法）</summary>
+    public Task DeleteFileAsync(string fileName, CancellationToken ct)
         => SendAsync(new HttpRequestMessage(HttpMethod.Delete, _baseUrl + fileName), "删除", fileName, ct);
 
     private Task MkColAsync(CancellationToken ct)
