@@ -64,7 +64,9 @@ public class SyncEngine
 
     /// <summary>
     /// 笔记同步周期成功完成后的对外"搭车"触发点（AI 会话同步 ChatSyncEngine 由此接入）。
-    /// 触发时机：SyncNowAsync 笔记部分成功、并发闸已释放之后；执行时以共享闸串行，不会与笔记同步并发。
+    /// 触发时机：SyncNowAsync 笔记部分成功、并发闸已释放之后。
+    /// 串行约定（2026-09-09 死锁修复）：本事件触发时【不预拿共享闸】，串行由 handler 自行拿闸保证
+    /// （ChatSyncEngine.RunOnceAsync 内部 await Gate）——预拿会让 handler 二次拿闸自我死锁（SemaphoreSlim 不可重入）。
     /// 硬约束：handler 抛异常/失败不影响笔记同步的返回结果（调用方已全兜）。
     /// </summary>
     public event Func<Task>? CycleCompleted;
@@ -218,7 +220,8 @@ public class SyncEngine
     /// 立即同步：push 盐（首配）→ pull（对账合并）→ push（全量合并上传）→ 笔记部分成功后触发搭车 hook。
     /// auto=true（合并窗口/轮询触发）时遇限流/网络错误指数退避 30s/2min/10min，连续 3 次失败停止自动重试；
     /// auto=false（手动"立即同步"）失败直接返回原因，等用户再点。
-    /// 搭车 hook：笔记部分成功、闸释放后，以共享闸串行触发 CycleCompleted（AI 会话同步）；
+    /// 搭车 hook：笔记部分成功、闸释放后触发（2026-09-09 死锁修复：此处【不预拿闸】，
+    /// 串行由 handler 内部自行拿闸保证——预拿 + handler 二次拿闸 = SemaphoreSlim 自我死锁）；
     /// hook 抛异常/失败绝不影响本方法返回的笔记 SyncResult（零回归红线）。
     /// </summary>
     public async Task<SyncResult> SyncNowAsync(bool auto = false)
@@ -231,13 +234,8 @@ public class SyncEngine
                 var handlers = CycleCompleted;
                 if (handlers != null)
                 {
-                    await _gate.WaitAsync().ConfigureAwait(false);
-                    try
-                    {
-                        foreach (Func<Task> handler in handlers.GetInvocationList())
-                            await handler().ConfigureAwait(false);
-                    }
-                    finally { _gate.Release(); }
+                    foreach (Func<Task> handler in handlers.GetInvocationList())
+                        await handler().ConfigureAwait(false);
                 }
             }
             catch { /* 会话同步失败由 ChatSyncEngine 自己留痕，不污染笔记同步结果 */ }
