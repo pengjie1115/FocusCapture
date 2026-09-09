@@ -27,7 +27,12 @@ public class SyncNote
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";   // ISO 8601 UTC，明文（不敏感）
     [JsonPropertyName("updatedAt")]
-    public string UpdatedAt { get; set; } = "";   // ISO 8601 UTC，明文（对账需要）
+    public string UpdatedAt { get; set; } = "";   // ISO 8601 UTC，明文（对账需要）；= 笔记行原始时间戳（墓碑=删除时刻），不随上传变化
+    [JsonPropertyName("uploadedAt")]
+    public string UploadedAt { get; set; } = "";  // ISO 8601 UTC，明文；上传时刻（2026-09-09 新增）。增量拉取游标以此为键——
+                                                  // UpdatedAt 是笔记原始时间戳（可能远早于上传时刻），拿它做增量过滤会把
+                                                  // "事后才同步的旧笔记"永久漏在他端之外（Bug：A 传 5 条 B 只到 4 条/一条不到）。
+                                                  // 存量行（升级前已上云）此字段为空 → 拉取侧视为"始终投递"（幂等，一次性补齐历史漏）
     [JsonPropertyName("deleted")]
     public bool Deleted { get; set; }
     [JsonPropertyName("purged")]
@@ -36,6 +41,11 @@ public class SyncNote
     public string DeviceId { get; set; } = "";    // 最后修改设备
     [JsonPropertyName("prevContent")]
     public string? PrevContent { get; set; }      // 冲突被覆盖方快照（本地留存）
+
+    /// <summary>增量拉取游标键：优先 UploadedAt（上传时刻），存量行为空则退回 UpdatedAt。
+    /// ISO 8601 UTC 字符串序 = 时间序。</summary>
+    [JsonIgnore]
+    public string CursorKey => string.IsNullOrEmpty(UploadedAt) ? UpdatedAt : UploadedAt;
 
     /// <summary>
     /// 确定性 ID：SHA256(相对路径 + "|" + 完整行内容) 前 16 字节 hex（小写）。

@@ -45,12 +45,17 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
     public async Task<SyncPullResult> PullAsync(string? since, CancellationToken ct)
     {
         var notes = await FullAsync(ct).ConfigureAwait(false);
-        // since 语义 = 桶内 UpdatedAt >= since（含边界，分钟精度防同分钟变更漏一轮；重复拉取靠确定性 ID 幂等去重，无害）
+        // since 语义 = 桶内 CursorKey（上传时刻 UploadedAt，存量行退回 UpdatedAt）>= since。
+        // 2026-09-09 修复：原按 UpdatedAt（笔记原始时间戳）过滤——A 端事后才同步的旧笔记时间戳小于
+        // 他端游标，被永久过滤（"传 5 条对端只到 4 条/一条不到"的根因）。改按上传时刻后，
+        // 何时上传与笔记内容时间解耦。存量行 UploadedAt 为空 → 始终投递（幂等，升级后首轮全量补齐历史漏）。
+        // 重复投递靠确定性 ID 幂等去重，无害。
         var filtered = string.IsNullOrEmpty(since)
             ? notes
-            : notes.Where(n => string.CompareOrdinal(n.UpdatedAt, since) >= 0).ToList();
-        // ISO 8601 UTC 字符串序 = 时间序（string 默认比较器即 ordinal）
-        var newest = notes.Count > 0 ? notes.Max(n => n.UpdatedAt) : null;
+            : notes.Where(n => string.IsNullOrEmpty(n.UploadedAt)
+                               || string.CompareOrdinal(n.CursorKey, since) >= 0).ToList();
+        // 游标键同样取 CursorKey（含未投递的行，只进不退）
+        var newest = notes.Count > 0 ? notes.Max(n => n.CursorKey) : null;
         return new SyncPullResult(filtered, newest);
     }
 
@@ -80,11 +85,11 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
                 await DeleteFileAsync(old, ct).ConfigureAwait(false);
         }
 
-        // 更新 meta：桶清单 = 目标桶；游标 = 最新 updatedAt（只进不退）
+        // 更新 meta：桶清单 = 目标桶；游标 = 最新上传时刻 CursorKey（只进不退，与 PullAsync 过滤键一致）
         meta.Buckets = targetBuckets.Keys.OrderBy(x => x, StringComparer.Ordinal).ToList();
         if (changes.Count > 0)
         {
-            var newest = changes.Max(n => n.UpdatedAt) ?? "";
+            var newest = changes.Max(n => n.CursorKey) ?? "";
             if (string.IsNullOrEmpty(meta.Cursor) || string.CompareOrdinal(newest, meta.Cursor) > 0)
                 meta.Cursor = newest;
         }

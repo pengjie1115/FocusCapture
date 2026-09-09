@@ -78,6 +78,33 @@ public class RecycleBinService
         }
     }
 
+    /// <summary>
+    /// 幂等落回收站（2026-09-09 新增，同步拉取重放保护）：回收站中已存在同 (相对路径 + 原始行) 记录时不重复写入。
+    /// 背景：增量拉取改为"上传时刻"游标后，存量墓碑（无 UploadedAt）在升级后首轮会全量重放一次，
+    /// 普通 Add 不去重 → 同一行在回收站出现多条。仅同步重放路径使用本方法；用户主动删除仍走 Add。
+    /// </summary>
+    public bool AddIfAbsent(string relativePath, IReadOnlyList<string> lines)
+    {
+        if (lines.Count == 0) return true;
+        var wanted = lines.ToHashSet(StringComparer.Ordinal);
+        if (Directory.Exists(_binDir))
+        {
+            foreach (var file in Directory.GetFiles(_binDir, "recycle-*.json"))
+            {
+                try
+                {
+                    var entry = JsonSerializer.Deserialize<RecycleBinEntry>(File.ReadAllText(file, Encoding.UTF8));
+                    if (entry == null) continue;
+                    if (string.Equals(entry.RelativePath, relativePath, StringComparison.Ordinal)
+                        && entry.Lines.Any(l => wanted.Contains(l)))
+                        return true;   // 已有记录：视为成功，不重复写
+                }
+                catch { /* 损坏记录跳过 */ }
+            }
+        }
+        return Add(relativePath, lines);
+    }
+
     /// <summary>列出全部回收站记录（按删除时间倒序），返回 (记录文件名, 记录内容)</summary>
     public List<(string FileName, RecycleBinEntry Entry)> List()
     {

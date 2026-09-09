@@ -408,8 +408,9 @@ public class SyncEngine
                 }
                 else
                 {
-                    // 本机没有该行（如 B 从未见过这条）：仅落回收站，供查看/恢复（回收站双向同步）
-                    _noteService.RecycleBin.Add(ResolveRelativePath(cloud), new[] { content });
+                    // 本机没有该行（如 B 从未见过这条）：仅落回收站，供查看/恢复（回收站双向同步）。
+                    // AddIfAbsent：存量墓碑（升级后首轮全量重放）幂等，不重复塞记录（2026-09-09）
+                    _noteService.RecycleBin.AddIfAbsent(ResolveRelativePath(cloud), new[] { content });
                 }
             }
             else
@@ -439,9 +440,11 @@ public class SyncEngine
 
     private async Task PushFlowAsync(CancellationToken ct = default)
     {
-        // 1) 本机集合：明文行 → SyncNote（Content=完整原始行密文；Tags 从文件名；ID 用原始行哈希）
+        // 1) 本机集合：明文行 → SyncNote（Content=完整原始行密文；Tags 从文件名；ID 用原始行哈希）。
+        //    UploadedAt=本次推送时刻（增量拉取游标键，2026-09-09 新增）；已在云端且未删的行在合并步骤保留原值（防桶内容漂移）
         var localNotes = new List<SyncNote>();
         var localTsById = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        var pushedAt = NoteService.ToUtcIsoString(DateTime.Now);
         foreach (var (rel, line, entry) in _noteService.ReadAllLines())
         {
             var ts = NoteService.ToUtcIsoString(entry.Timestamp);
@@ -453,6 +456,7 @@ public class SyncEngine
                 Tags = string.IsNullOrEmpty(entry.Tag) ? [] : new[] { entry.Tag },
                 CreatedAt = ts,
                 UpdatedAt = ts,
+                UploadedAt = pushedAt,
                 DeviceId = _settings.Sync.DeviceId,
             });
             localTsById[id] = entry.Timestamp;
@@ -463,7 +467,9 @@ public class SyncEngine
         //      否则 DeviceId 被改写、每次同步云端桶都变（回声识别失效）；
         //    - 本机新行（云端没有该 ID 的）TryAdd 加入——MD 只增不减：修改=追加新行（新 ID），同 ID 行内容必相同；
         //    - 本机活行 vs 云端墓碑：恢复清单内、或行时间戳晚于删除时间（删除后重录）→ 覆盖墓碑
-        //      （UpdatedAt=now 保证他端增量拉取可见），否则墓碑保持（本机推过的删除不复活）；
+        //      （UpdatedAt/UploadedAt=now 保证他端增量拉取可见），否则墓碑保持（本机推过的删除不复活）；
+        //    - 云端已有未删行：本机构造的 UploadedAt（=now）弃用，保留云端原值——桶内容稳定不漂移
+        //      （每次 push 都刷新 UploadedAt 会导致整桶反复 PUT + 他端反复全量重放，2026-09-09）；
         //    - PendingDeletes 覆盖（本机软删 wins），被覆盖的云端版本进 PrevContent 快照（密文）。
         var byId = new Dictionary<string, SyncNote>(StringComparer.Ordinal);
         var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
@@ -478,10 +484,12 @@ public class SyncEngine
                 if (isRestore || isRecreated)
                 {
                     n.UpdatedAt = NoteService.ToUtcIsoString(DateTime.Now);   // 视为最新变更，他端增量拉取可见
-                    byId[n.Id] = n;
+                    byId[n.Id] = n;                                           // UploadedAt 保持 =now，同上保证可见
                 }
                 continue;   // 墓碑仍新 → 保持墓碑，不复活
             }
+            if (existing != null)
+                n.UploadedAt = existing.UploadedAt;   // 云端已有未删行：保留原上传时刻（桶内容稳定）
             byId.TryAdd(n.Id, n);
         }
         foreach (var d in _settings.Sync.PendingDeletes)
@@ -508,6 +516,8 @@ public class SyncEngine
     public void QueuePendingDelete(SyncNote deletedNote)
     {
         deletedNote.DeviceId = _settings.Sync.DeviceId;
+        if (string.IsNullOrEmpty(deletedNote.UploadedAt))
+            deletedNote.UploadedAt = NoteService.ToUtcIsoString(DateTime.Now);   // 墓碑也要有上传时刻，否则他端增量拉取看不到（2026-09-09）
         _settings.Sync.PendingDeletes.Add(deletedNote);
         _settings.Save();
         NotifyLocalChange();
@@ -537,6 +547,7 @@ public class SyncEngine
                     Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
                     CreatedAt = NoteService.ToUtcIsoString(ts),
                     UpdatedAt = nowUtc,
+                    UploadedAt = nowUtc,   // 墓碑可见性靠上传时刻（2026-09-09）
                     Deleted = true,
                     Purged = true,
                     DeviceId = _settings.Sync.DeviceId,
@@ -586,6 +597,7 @@ public class SyncEngine
                 Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
                 CreatedAt = NoteService.ToUtcIsoString(ParseLineTimestamp(line)),
                 UpdatedAt = nowUtc,
+                UploadedAt = nowUtc,   // 墓碑可见性靠上传时刻（2026-09-09）
                 Deleted = true,
                 DeviceId = _settings.Sync.DeviceId,
             });
