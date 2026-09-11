@@ -853,9 +853,7 @@ public partial class SettingsWindow : Window
 
     // ── 外观：自定义托盘图标 ──
 
-    private static string CustomIconPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FocusCapture", "custom_icon.png");
+    private static string CustomIconPath => FocusCapturePaths.Combine("custom_icon.png");
 
     private void UpdateIconUI()
     {

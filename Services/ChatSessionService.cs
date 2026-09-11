@@ -32,9 +32,7 @@ public class ChatSessionService
         _toolResultLimit = toolResultLimit > 0 ? toolResultLimit : 8000;
         _messages = new List<ChatMessage> { new(ChatRoles.System, _systemPrompt) };
 
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "FocusCapture", "chat_history");
+        var dir = FocusCapturePaths.Combine("chat_history");
         Directory.CreateDirectory(dir);
         // 文件名策略：{GUID}.json（文件名不再承载时间语义，列表排序按 SavedAt；旧时间戳文件保持原名不迁移）
         _sessionId = Guid.NewGuid().ToString();
@@ -201,9 +199,7 @@ public class ChatSessionService
         var result = new List<SessionSummary>();
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "FocusCapture", "chat_history");
+            var dir = FocusCapturePaths.Combine("chat_history");
             if (!Directory.Exists(dir)) return result;
 
             // GUID 文件名不再含时间 → 排序按文件内 SavedAt 倒序（铁律：改 GUID 文件名必须同步改此处排序）
@@ -256,9 +252,7 @@ public class ChatSessionService
     /// <summary>按会话 Id 定位本地文件路径（GUID 文件名优先，兼容未回写的旧时间戳文件名）。找不到返回 null。</summary>
     public static string? LoadByAnyId(string sessionId)
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "FocusCapture", "chat_history");
+        var dir = FocusCapturePaths.Combine("chat_history");
         var byId = Path.Combine(dir, sessionId + ".json");
         if (File.Exists(byId)) return byId;
         if (!Directory.Exists(dir)) return null;
@@ -295,9 +289,7 @@ public class ChatSessionService
         var result = new List<SessionSummary>();
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "FocusCapture", "chat_history", "trash");
+            var dir = FocusCapturePaths.Combine("chat_history", "trash");
             if (!Directory.Exists(dir)) return result;
 
             foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
@@ -333,9 +325,7 @@ public class ChatSessionService
     }
 
     /// <summary>会话回收站目录路径</summary>
-    public static string TrashDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FocusCapture", "chat_history", "trash");
+    public static string TrashDir => FocusCapturePaths.Combine("chat_history", "trash");
 
     private static string BuildSystemPrompt(ExplainMode mode, string? noteContext, string? noteContent)
     {

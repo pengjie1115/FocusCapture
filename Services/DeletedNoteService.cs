@@ -10,9 +10,9 @@ namespace FocusCapture.Services;
 public class DeletedNoteService
 {
     private const int AutoCleanupDays = 90;
-    private static readonly string BaseDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FocusCapture");
-    private static readonly string FilePath = Path.Combine(BaseDir, "deleted.json");
+    // 路径走 FocusCapturePaths（2026-09-11）：测试隔离时可改道；属性动态求值，不缓存。
+    private static string BaseDir => FocusCapturePaths.Root;
+    private static string FilePath => FocusCapturePaths.Combine("deleted.json");
 
     private List<DeletedNote> _records = new();
 

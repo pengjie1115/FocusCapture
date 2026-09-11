@@ -157,9 +157,7 @@ public class ChatGroupsWindow : Window
 
     private static IEnumerable<string> SafeSessionFiles()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "FocusCapture", "chat_history");
+        var dir = FocusCapturePaths.Combine("chat_history");
         return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*.json") : Array.Empty<string>();
     }
 

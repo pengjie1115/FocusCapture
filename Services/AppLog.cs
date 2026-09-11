@@ -43,10 +43,7 @@ public static class AppLog
         }
     }
 
-    private static string Dir =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "FocusCapture", "logs");
+    private static string Dir => FocusCapturePaths.Combine("logs");
 
     /// <summary>日志目录（设置面板跳转用，确保目录存在）</summary>
     public static string EnsureLogDir()

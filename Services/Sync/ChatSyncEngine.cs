@@ -68,10 +68,8 @@ public class ChatSyncEngine
     private const string CloudDeletionsFile = "chat_deletions.json";
     private const string TrashDirName = "trash";              // 本地会话回收站：chat_history\trash
 
-    private static readonly string ChatHistoryDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FocusCapture", "chat_history");
-    private static readonly string StatePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FocusCapture", "chat_sync_state.json");
+    private static string ChatHistoryDir => FocusCapturePaths.Combine("chat_history");
+    private static string StatePath => FocusCapturePaths.Combine("chat_sync_state.json");
 
     private static readonly JsonSerializerOptions StateJsonOptions = new() { WriteIndented = true };
 

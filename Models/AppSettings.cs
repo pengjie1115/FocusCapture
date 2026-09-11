@@ -12,10 +12,9 @@ public class HotkeyBinding
 
 public class AppSettings
 {
-    private const string ConfigDir = "FocusCapture";
-    private static readonly string ConfigPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        ConfigDir, "settings.json");
+    // 配置路径统一由 FocusCapturePaths 解析（2026-09-11）：测试隔离时可改道，生产默认值不变。
+    // 必须是属性而非 static readonly —— 静态字段在类型初始化时求值并缓存，会导致覆盖失效。
+    private static string ConfigPath => FocusCapturePaths.Combine("settings.json");
 
     // ── 热键 ──
     public HotkeyBinding SummonHotkey { get; set; } = new() { Modifiers = 1, Key = 0x20 };         // Alt+Space

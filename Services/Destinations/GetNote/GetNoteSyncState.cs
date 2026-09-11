@@ -12,9 +12,7 @@ namespace FocusCapture.Services.Destinations.GetNote;
 /// </summary>
 public class GetNoteSyncState
 {
-    private static readonly string StatePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FocusCapture", "getnote_sync_state.json");
+    private static string StatePath => FocusCapturePaths.Combine("getnote_sync_state.json");
 
     private readonly Dictionary<string, string> _map;
     private readonly object _lock = new();

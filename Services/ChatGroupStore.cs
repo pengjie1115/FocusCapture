@@ -19,9 +19,7 @@ public class ChatGroup
 /// </summary>
 public static class ChatGroupStore
 {
-    private static readonly string StorePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FocusCapture", "chat_groups.json");
+    private static string StorePath => FocusCapturePaths.Combine("chat_groups.json");
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
