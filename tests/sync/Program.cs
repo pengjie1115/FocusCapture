@@ -237,20 +237,24 @@ internal static class Program
             Check(before.Count == after.Count && before.All(kv =>
                 after.TryGetValue(kv.Key, out var v) && v == kv.Value), "回声识别：连续 3 轮云端桶无变化");
 
-            // ── D 密钥变更：行为诊断（2026-09-11）──
-            // 先观察「换授权码」在双设备下的真实行为链，再据此写断言 —— 不写想当然的检查点。
-            Console.WriteLine("  [诊断 D] --- 换授权码行为链 ---");
+            // ── D 换授权码：云端密文自动重写 + 旧码设备可见提示（2026-09-11 新增行为）──
+            // 背景：此前换码只改本地钥匙、云端密文不重写 → 换码后新钥匙反而读不到自己的数据
+            //（旧码却仍能读）。经用户拍板改为：检测到 DEK 变化即自动全量重传。
+            var cursorA0 = sa.Sync.LastCursor;
             await ea.SetTokenKeyAsync("NewToken456");
-            var rA2 = await ea.SyncNowAsync();
-            Console.WriteLine($"  [诊断 D] A 换码后 SyncNow: Success={rA2.Success} Error={rA2.Error ?? "(null)"}");
+            Check(sa.Sync.LastSyncResult.Contains("已全量重传"), "D A 换码后自动全量重传（云端改用新钥匙加密）");
+            Check(sa.Sync.LastCursor != cursorA0, "D 换码重传后游标已重置");
+
             var rBold = await eb.SyncNowAsync();
-            Console.WriteLine($"  [诊断 D] B 仍用旧码同步: Success={rBold.Success} Error={rBold.Error ?? "(null)"}");
-            Console.WriteLine($"  [诊断 D] B 行数={nb.ReadAllLines().Count}");
+            Check(rBold.Success, "D B 用旧码同步不崩溃（跳过解不开的条目）");
+            Check(sb.Sync.LastSyncResult.Contains("解密失败"), "D B 用旧码解不开新密文，且提示可见（非静默）");
+            Check(nb.ReadAllLines().Count == 4, "D B 本地数据完好（本地为明文事实源，不受密钥不一致影响）");
+
             await eb.SetTokenKeyAsync("NewToken456");
+            Check(sb.Sync.LastSyncResult.Contains("已全量重传"), "D B 换新码后同样自动重传");
             var rB2 = await eb.SyncNowAsync();
-            Console.WriteLine($"  [诊断 D] B 换码后 SyncNow: Success={rB2.Success} Error={rB2.Error ?? "(null)"}");
-            Console.WriteLine($"  [诊断 D] B 行数={nb.ReadAllLines().Count}");
-            Console.WriteLine("  [诊断 D] --- 结束 ---");
+            Check(rB2.Success, "D B 换新码后同步成功");
+            Check(!sb.Sync.LastSyncResult.Contains("解密失败"), "D 两端密钥对齐后不再有解密失败");
 
             // E 自愈：重置同步状态（清空云端桶 + 全量重传）→ 双端仍一致
             Check((await ea.ResetSyncAsync()).Success, "E 重置同步状态（清空云端+全量重传）");

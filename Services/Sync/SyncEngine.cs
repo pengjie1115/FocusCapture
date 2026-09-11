@@ -134,8 +134,55 @@ public class SyncEngine
             _settings.Save();
         }
 
+        var previousDek = _dek;
         _dek = CryptoService.DeriveKey(token, Convert.FromBase64String(saltBase64));
         _dekSaltBase64 = saltBase64;
+
+        // 换码检测（2026-09-11）：云端密文是用**旧钥匙**加密的，若不重写，则所有持新钥匙的
+        // 设备都解不开（而仍配旧码的设备反而能读）—— 即"换了码反而读不到"的反直觉状态。
+        // 故检测到 DEK 变化时，自动执行一次全量重传，把云端密文改由新钥匙加密。
+        if (previousDek != null && !_dek.SequenceEqual(previousDek))
+        {
+            try
+            {
+                await _gate.WaitAsync(ct).ConfigureAwait(false);
+                try { await ReuploadAllAsync("授权码已更换", ct).ConfigureAwait(false); }
+                finally { _gate.Release(); }
+            }
+            catch (Exception ex)
+            {
+                // 换码本身已生效（本地 DEK 已更新）；重写失败不阻断，避免"码没换成"的错觉。
+                // 下次同步会因密钥不一致给出可见提示（SyncNotesCoreAsync 的解密失败文案）。
+                _settings.Sync.LastSyncResult = $"已更换授权码，但云端数据重写失败：{ex.Message}";
+                _settings.Save();
+                StatusChanged?.Invoke(_settings.Sync.LastSyncResult);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 用当前 DEK 重写云端全部密文：清空云端桶 → 重写盐 → 清游标 → 全量重传。
+    /// 适用于「换授权码」「密钥重置」等使云端密文与当前钥匙脱节的场景。
+    /// 调用方须自行持有 <see cref="_gate"/>（本方法不取锁，避免与外层重复获取）。
+    /// </summary>
+    private async Task ReuploadAllAsync(string reason, CancellationToken ct = default)
+    {
+        await _provider.PushAsync(Array.Empty<SyncNote>(), null, ct).ConfigureAwait(false);   // 清空云端桶
+        if (!string.IsNullOrEmpty(_dekSaltBase64))
+        {
+            await _provider.SaveSaltAsync(_dekSaltBase64, ct).ConfigureAwait(false);          // 盐随之重写
+            _saltNeedsUpload = false;
+            _settings.Sync.SaltNeedsUpload = false;
+        }
+        _settings.Sync.LastCursor = "";
+        _settings.Sync.PendingDeletes.Clear();
+        _settings.Sync.PendingRestores.Clear();
+        _settings.Save();
+        await PushFlowAsync(ct).ConfigureAwait(false);                                        // 全量重传
+        _settings.Sync.LastSyncResult = $"成功（{reason}，已全量重传）";
+        _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+        _settings.Save();
+        StatusChanged?.Invoke($"已用新密钥重写云端数据（{reason}）");
     }
 
     /// <summary>
@@ -673,24 +720,9 @@ public class SyncEngine
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await _provider.PushAsync(Array.Empty<SyncNote>(), null, ct).ConfigureAwait(false);   // 清空云端桶
-            // 2026-09-09 盐分叉修复：重置即重建云端状态，盐必须随之写入——否则云端盐为空，
-            // 他端无从对齐密钥（实测事故：A 重置后云端盐仍空，B 拉取仍解不开）
-            if (!string.IsNullOrEmpty(_dekSaltBase64))
-            {
-                await _provider.SaveSaltAsync(_dekSaltBase64, ct).ConfigureAwait(false);
-                _saltNeedsUpload = false;
-                _settings.Sync.SaltNeedsUpload = false;
-            }
-            _settings.Sync.LastCursor = "";
-            _settings.Sync.PendingDeletes.Clear();
-            _settings.Sync.PendingRestores.Clear();
-            _settings.Save();
-            await PushFlowAsync(ct).ConfigureAwait(false);   // 全量重传
-            _settings.Sync.LastSyncResult = "成功（已重置并全量重传）";
-            _settings.Sync.LastSyncAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
-            _settings.Save();
-            StatusChanged?.Invoke("同步状态已重置，全量重传完成");
+            // 复用统一的全量重传实现（清空云端桶 → 重写盐 → 清游标 → 全量重传）。
+            // 原内联实现与此完全一致，抽出以免两处走偏（2026-09-11）。
+            await ReuploadAllAsync("已重置同步状态", ct).ConfigureAwait(false);
             return SyncResult.SuccessResult;
         }
         catch (Exception ex)
