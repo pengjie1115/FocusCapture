@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>FocusCapture.SyncTests</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 本工程必须引用主项目：要驱动 SyncEngine / NoteService / WebDAVProvider 等有内部依赖的组件。
+         代价是拉入 WPF / NAudio / sherpa.onnx，编译较慢 —— 故归类为「慢层」，
+         仅在与同步相关的改动后运行。轻量纯逻辑检查点仍在 tests/（链接源文件，秒级，属「快层」）。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\FocusCapture.csproj" />
+  </ItemGroup>
+
+</Project>
