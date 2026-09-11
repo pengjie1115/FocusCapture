@@ -10,14 +10,25 @@ namespace FocusCapture.Services;
 public class DeletedNoteService
 {
     private const int AutoCleanupDays = 90;
-    // 路径走 FocusCapturePaths（2026-09-11）：测试隔离时可改道；属性动态求值，不缓存。
-    private static string BaseDir => FocusCapturePaths.Root;
-    private static string FilePath => FocusCapturePaths.Combine("deleted.json");
+
+    /// <summary>删除记录文件路径（实例级，2026-09-11 由 static 改为实例字段）。</summary>
+    private readonly string _filePath;
 
     private List<DeletedNote> _records = new();
 
-    public DeletedNoteService()
+    /// <summary>
+    /// 构造函数。
+    /// <paramref name="filePath"/> 为 null → 使用默认全局位置
+    /// （`%AppData%\FocusCapture\deleted.json`，随 <see cref="FocusCapturePaths"/> 改道），与改造前行为一致；
+    /// 显式传入 → 该实例独立持有删除记录，供「多设备模拟」等需要各自独立的场景使用。
+    /// </summary>
+    /// <remarks>
+    /// 背景：原先为 static 路径，导致同一进程内多个 NoteService 实例共享同一份删除记录
+    /// （测试模拟 A/B 双设备时相互串台）。生产环境单进程单实例不受影响，故默认值保持全局。
+    /// </remarks>
+    public DeletedNoteService(string? filePath = null)
     {
+        _filePath = filePath ?? FocusCapturePaths.Combine("deleted.json");
         Load();
         CleanupOld();
     }
@@ -89,8 +100,8 @@ public class DeletedNoteService
     {
         try
         {
-            if (!File.Exists(FilePath)) return;
-            var json = File.ReadAllText(FilePath);
+            if (!File.Exists(_filePath)) return;
+            var json = File.ReadAllText(_filePath);
             _records = JsonSerializer.Deserialize(json, AppJsonContext.Default.ListDeletedNote) ?? new();
         }
         catch { _records = new(); }
@@ -100,8 +111,8 @@ public class DeletedNoteService
     {
         try
         {
-            Directory.CreateDirectory(BaseDir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(_records,
+            Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+            File.WriteAllText(_filePath, JsonSerializer.Serialize(_records,
                 AppJsonContext.Default.ListDeletedNote), Encoding.UTF8);
         }
         catch { /* best effort */ }

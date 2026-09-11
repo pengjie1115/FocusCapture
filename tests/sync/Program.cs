@@ -148,8 +148,10 @@ internal static class Program
             var dirB = Path.Combine(root, "B"); Directory.CreateDirectory(dirB);
             var sa = new AppSettings { NotesPath = dirA };
             var sb = new AppSettings { NotesPath = dirB };
-            var na = new NoteService(sa);
-            var nb = new NoteService(sb);
+            // A/B 各自独立的删除记录（2026-09-11）：否则两个 NoteService 实例共享同一份 deleted.json，
+            // A 的删除会直接改变 B 的可见结果，「跨设备删除传播」无法被真实检验。
+            var na = new NoteService(sa, Path.Combine(dirA, "deleted.json"));
+            var nb = new NoteService(sb, Path.Combine(dirB, "deleted.json"));
             var pa = new WebDAVProvider(server.BaseUrl, "u", "t");
             var pb = new WebDAVProvider(server.BaseUrl, "u", "t");
             var ea = new SyncEngine(sa, na, pa, Backoff);
@@ -191,34 +193,40 @@ internal static class Program
             await ea.SyncNowAsync();
             Check(na.ReadAllLines().Any(x => x.Line.Contains("【编辑】")), "C-3 B 编辑 → A 拉取到编辑行");
 
-            // A 删除 1 条（未清空回收站）→ 云端保留
+            // A 删除 1 条 → 删除即同步（SyncEngine.OnLinesDeleted）：立即生成墓碑并传播到他端
+            // 注：原断言期望「未清空回收站前不上云」属 2026-08-27 之前的旧设计；
+            //     现行为为「删除即同步」，2026-09-11 实测确认并经用户拍板改写。
             var aEntry = na.ReadAllLines().First(x => x.Line.Contains("A 笔记 2"));
             Check(na.DeleteNote(aEntry.Entry), "A 删除成功（进回收站，未清空）");
             Check(na.RecycleBin.List().Count == 1, "A 回收站有 1 条");
             await ea.SyncNowAsync();
             await eb.SyncNowAsync();
+            var bCountC4 = nb.ReadAllLines().Count;
+            var bBinC4 = nb.RecycleBin.List().Count;
+            var cloudTombC4 = server.ListFiles().Where(f => f.StartsWith("notes-"))
+                .Select(f => SyncBucket.FromJson(server.ReadFile(f))!)
+                .SelectMany(x => x.Notes).Count(n => n.Deleted);
+            Console.WriteLine($"  [C-4] A行={na.ReadAllLines().Count} B行={bCountC4} A回收站={na.RecycleBin.List().Count} B回收站={bBinC4} 云端墓碑={cloudTombC4}");
+            Check(cloudTombC4 == 1, "C-4 云端生成软删墓碑（删除即同步）");
+            Check(bCountC4 == 4, "C-4 他端同步后少 1 行");
+            Check(bBinC4 == 1, "C-4 他端该行进本地回收站（可恢复 —— 防误删保证）");
 
-            // ── C-4 / C-5 的「B 侧」验证：环境局限，当前无法有效检验（2026-09-11 复核） ──
-            // 原因：DeletedNoteService 内部使用 static 文件路径（%AppData%\FocusCapture\deleted.json），
-            //       而 A/B 是两个 NoteService 实例 → 二者共享同一份删除记录。
-            // 后果：A 的删除 / 清空会直接改变 B 的可见结果（NoteService 读列表时按 IsDeleted 过滤），
-            //       因此「B 是否受影响」无法被真实检验 —— 原 C-4 断言期望 B 不受影响，
-            //       实际却因共享而少一行（假红）。
-            // 范围：生产环境为单进程单实例，静态共享不影响其正确性；仅「双设备模拟」场景失真。
-            // 待办：若需真实验证跨设备删除传播，须让删除记录随设备隔离 —— 涉及主项目结构，需单独决策。
-            Console.WriteLine("  SKIP  C-4 未清空前 B 行数不变 —— 环境局限：A/B 共享删除记录");
-            Console.WriteLine("  SKIP  C-5 B 行数变化 / B 行进回收站 —— 环境局限：同上");
-
-            // A 清空回收站 → 软删标记上云（此段不依赖 B，可有效验证）
+            // A 清空回收站 → 彻底删除传播 → 他端清除本地行与回收站记录（不再可恢复）
+            // 依据 SyncEngine.QueueRecycleBinPurge 注释：「Purged=true 表示彻底删除：他端删除本地行并清除回收站记录」
             var purged = na.RecycleBin.PurgeAll();
             Check(purged.Count == 1, "清空回收站返回记录");
             ea.QueueRecycleBinPurge(purged);
             await ea.SyncNowAsync();
             await eb.SyncNowAsync();
-            var deletedNotes = server.ListFiles().Where(f => f.StartsWith("notes-"))
+            var bCountC5 = nb.ReadAllLines().Count;
+            var bBinC5 = nb.RecycleBin.List().Count;
+            var cloudTombC5 = server.ListFiles().Where(f => f.StartsWith("notes-"))
                 .Select(f => SyncBucket.FromJson(server.ReadFile(f))!)
-                .SelectMany(x => x.Notes).Where(n => n.Deleted).ToList();
-            Check(deletedNotes.Count == 1, "C-5 云端该笔记打上软删标记（Deleted=true）");
+                .SelectMany(x => x.Notes).Count(n => n.Deleted);
+            Console.WriteLine($"  [C-5] A行={na.ReadAllLines().Count} B行={bCountC5} B回收站={bBinC5} 云端墓碑={cloudTombC5}");
+            Check(bCountC5 == 4, "C-5 彻底删除后他端行数不变（该行已不存在）");
+            Check(bBinC5 == 0, "C-5 他端回收站记录被清除（彻底删除，不再可恢复）");
+            Check(cloudTombC5 == 1, "C-5 云端墓碑保留（Deleted=true）");
 
             // 回声识别：连续 3 轮双向同步后云端桶无变化（无死循环/无重复推送）
             var before = server.ListFiles().Where(f => f.StartsWith("notes-"))
@@ -229,17 +237,20 @@ internal static class Program
             Check(before.Count == after.Count && before.All(kv =>
                 after.TryGetValue(kv.Key, out var v) && v == kv.Value), "回声识别：连续 3 轮云端桶无变化");
 
-            // ── D 密钥变更场景：暂时挂起（2026-09-11） ──
-            // 原为「重置主密码」：该功能已于 2026-08-15 废弃（v3.0 改为「坚果云授权码派生 DEK」，
-            // 见 SyncEngine L82-88 注释），旧断言调用的 ResetMasterPasswordAsync 已不存在。
-            //
-            // 为什么不当场改成「换授权码」：新架构下二者并不等价 ——
-            // SetTokenKeyAsync 在本地已有 E2eeSalt 时**沿用旧盐**，只换 DEK；
-            // 于是行为链变成「用新 DEK 拉取旧密文 → 解密失败 → 是否中止 / 是否报错 / 报什么错」
-            // 全靠实测才能确定。没跑通就不写断言，否则等于把想当然的行为固化成"永远正确的标准"。
-            //
-            // TODO（下一步）：实测上述行为链后，据此设计新的密钥变更检查点。
-            // var rOld = await eb.SyncNowAsync();
+            // ── D 密钥变更：行为诊断（2026-09-11）──
+            // 先观察「换授权码」在双设备下的真实行为链，再据此写断言 —— 不写想当然的检查点。
+            Console.WriteLine("  [诊断 D] --- 换授权码行为链 ---");
+            await ea.SetTokenKeyAsync("NewToken456");
+            var rA2 = await ea.SyncNowAsync();
+            Console.WriteLine($"  [诊断 D] A 换码后 SyncNow: Success={rA2.Success} Error={rA2.Error ?? "(null)"}");
+            var rBold = await eb.SyncNowAsync();
+            Console.WriteLine($"  [诊断 D] B 仍用旧码同步: Success={rBold.Success} Error={rBold.Error ?? "(null)"}");
+            Console.WriteLine($"  [诊断 D] B 行数={nb.ReadAllLines().Count}");
+            await eb.SetTokenKeyAsync("NewToken456");
+            var rB2 = await eb.SyncNowAsync();
+            Console.WriteLine($"  [诊断 D] B 换码后 SyncNow: Success={rB2.Success} Error={rB2.Error ?? "(null)"}");
+            Console.WriteLine($"  [诊断 D] B 行数={nb.ReadAllLines().Count}");
+            Console.WriteLine("  [诊断 D] --- 结束 ---");
 
             // E 自愈：重置同步状态（清空云端桶 + 全量重传）→ 双端仍一致
             Check((await ea.ResetSyncAsync()).Success, "E 重置同步状态（清空云端+全量重传）");

@@ -52,10 +52,14 @@ public class NoteService
     /// <summary>云同步拉取落地后由 SyncEngine 调用。</summary>
     public void RaiseCloudDataLanded() => CloudDataLanded?.Invoke();
 
-    public NoteService(AppSettings settings)
+    /// <summary>
+    /// 构造函数。<paramref name="deletedRecordPath"/> 为 null → 删除记录使用默认全局位置（生产行为不变）；
+    /// 显式传入 → 该实例使用独立的删除记录，供「双设备模拟」等测试场景（2026-09-11 新增）。
+    /// </summary>
+    public NoteService(AppSettings settings, string? deletedRecordPath = null)
     {
         _settings = settings;
-        _deletedService = new DeletedNoteService();
+        _deletedService = new DeletedNoteService(deletedRecordPath);
         _recycleBin = new RecycleBinService(settings.NotesPath);
     }
 
