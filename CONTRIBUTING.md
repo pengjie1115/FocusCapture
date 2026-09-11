@@ -25,6 +25,18 @@ dotnet publish -c Release -r win-x64 --self-contained true \
 
 > 注意：Release 构建**禁用 IL 裁剪**（`PublishTrimmed=false`），这是刻意的——WPF/WinForms 的 COM 互操作类型无法被静态裁剪分析，裁剪会导致启动时 TypeLoadException。请勿开启裁剪。
 
+## 跑检查点
+
+改完代码、提交前请先跑自动化检查点（无需网络，秒级）：
+
+```bash
+tests\run-tests.bat            # 快层：加密 / 时间解析 —— 每次改动都该跑
+tests\sync\run-sync-tests.bat  # 慢层：驱动真实同步引擎 —— 改动涉及 Services\Sync\ 时跑
+```
+
+退出码 `0` = 全部通过，`1` = 有失败。检查点跑在临时沙箱中，**不会触碰你的真实数据**。
+新增 / 修改检查点的规则见 [`REGRESSION.md`](REGRESSION.md) 第二节。
+
 ## 提 Issue
 
 - **Bug 报告**：请使用 [Bug 报告模板](.github/ISSUE_TEMPLATE/bug_report.md)，务必包含：复现步骤、期望行为、实际行为、系统环境、崩溃日志（`%LocalAppData%\FocusCapture\startup-error.log`）
@@ -40,7 +52,7 @@ dotnet publish -c Release -r win-x64 --self-contained true \
    - `refactor: 重构（不改变行为）`
    - `chore: 杂项（构建、依赖等）`
 3. 保持变更聚焦：一个 PR 解决一个问题
-4. 描述清楚改动内容和测试方式
+4. 描述清楚改动内容和测试方式：改同步相关代码请贴出 `tests\sync\run-sync-tests.bat` 的结果，其余贴 `tests\run-tests.bat` 的
 
 ## 代码规范
 
