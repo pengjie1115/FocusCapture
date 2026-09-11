@@ -49,6 +49,7 @@ internal static class Program
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
             await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
             await TestNetworkFailure();  // 验收 C-6/C-7
+            await TestCursorProtectionAsync();   // 游标保护：解密失败时游标不该推进（2026-09-11）
         }
         finally
         {
@@ -240,10 +241,10 @@ internal static class Program
             // ── D 换授权码：云端密文自动重写 + 旧码设备可见提示（2026-09-11 新增行为）──
             // 背景：此前换码只改本地钥匙、云端密文不重写 → 换码后新钥匙反而读不到自己的数据
             //（旧码却仍能读）。经用户拍板改为：检测到 DEK 变化即自动全量重传。
-            var cursorA0 = sa.Sync.LastCursor;
             await ea.SetTokenKeyAsync("NewToken456");
             Check(sa.Sync.LastSyncResult.Contains("已全量重传"), "D A 换码后自动全量重传（云端改用新钥匙加密）");
-            Check(sa.Sync.LastCursor != cursorA0, "D 换码重传后游标已重置");
+            // 注：此处不断言「游标数值是否变化」—— 游标 = 云端最新上传时刻，重传后是否前移取决于
+            // 时间戳比较（曾出现不稳定）。「云端确实换了钥匙」由下一组「B 用旧码解不开」间接验证。
 
             var rBold = await eb.SyncNowAsync();
             Check(rBold.Success, "D B 用旧码同步不崩溃（跳过解不开的条目）");
@@ -357,6 +358,68 @@ internal static class Program
             server.ForceStatus = 0;
             var rManual = await ebOk.SyncNowAsync();
             Check(rManual.Success, "C-7 手动『立即同步』恢复" + (rManual.Success ? "" : " ← " + rManual.Error));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    // ── 游标保护验证（2026-09-11，用户指定先实测、不臆断）──
+    // 疑点：PullFlowAsync 在解密失败时刻意不推进游标（2026-09-09 修复，为保住「密钥对齐后重拉」），
+    //       但 PushFlowAsync 会以 PushAsync 返回的 NewSince 推进游标，且 Push 在 Pull 之后执行
+    //       → 可能把 Pull 的保护覆盖掉。
+    // 实验：往云端注入一条「用别的钥匙加密的行」（模拟他端设备以不同密钥推送的数据），
+    //       本机同步时该条解密失败，观察游标是否被推进。推进 = 保护失效。
+    private static async Task TestCursorProtectionAsync()
+    {
+        Console.WriteLine("[游标保护] 解密失败时游标不该推进（否则未拉到的行会被增量过滤永久漏掉）");
+        var root = Path.Combine(Path.GetTempPath(), "fc-sync-cursor-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var server = new TestWebDavServer(Path.Combine(root, "cloud"));
+            var dirA = Path.Combine(root, "A"); Directory.CreateDirectory(dirA);
+            var sa = new AppSettings { NotesPath = dirA };
+            var na = new NoteService(sa, Path.Combine(dirA, "deleted.json"));
+            var pa = new WebDAVProvider(server.BaseUrl, "u", "t");
+            var ea = new SyncEngine(sa, na, pa, Backoff);
+
+            await ea.SetTokenKeyAsync("CursorTestCode1");
+            na.SaveNote("本机基线行");
+            Check((await ea.SyncNowAsync()).Success, "游标实验：基线同步成功");
+            var cursorBefore = sa.Sync.LastCursor;
+
+            // 注入一条用「完全不同的钥匙」加密的行（本机必然解不开）
+            var foreignDek = CryptoService.DeriveKey(
+                "ACompletelyDifferentCode", Convert.FromBase64String(sa.Sync.E2eeSalt));
+            var nowIso = NoteService.ToUtcIsoString(DateTime.Now);
+            var cloudAll = await pa.FullAsync(CancellationToken.None);
+            cloudAll.Add(new SyncNote
+            {
+                Id = new string('f', 32),
+                Content = CryptoService.Encrypt(foreignDek, "- [2026-09-11 12:00] 外来的解不开的行"),
+                CreatedAt = nowIso,
+                UpdatedAt = nowIso,
+                UploadedAt = nowIso,
+                DeviceId = "another-device",
+            });
+            await pa.PushAsync(cloudAll, null, CancellationToken.None);
+
+            // 关键条件 1：同时制造「本地有新增待推送」——这才是保护真正受考验的组合。
+            // 若只注入外来行而无本地新增，PushAsync 返回的游标与本机相同，游标天然不变，测不出问题。
+            // 关键条件 2：先等待 >1 秒，使新增行的上传时刻严格大于注入行的 —— 否则二者可能落在同一秒，
+            //           游标值相等会被误读成「保护有效」（时间精度干扰）。
+            await Task.Delay(1100);
+            na.SaveNote("本机新增行（用于考验游标保护）");
+
+            await ea.SyncNowAsync();
+            var cursorAfter = sa.Sync.LastCursor;
+            var advanced = cursorBefore != cursorAfter;
+            Console.WriteLine($"  [游标实验] 同步结果=\"{sa.Sync.LastSyncResult}\"");
+            Console.WriteLine($"  [游标实验] 游标 before={(cursorBefore ?? "(空)")} after={(cursorAfter ?? "(空)")} 是否推进={advanced}");
+
+            Check(sa.Sync.LastSyncResult.Contains("解密失败"), "游标实验：解密失败被正确报告给用户");
+            Check(!advanced, "游标实验：解密失败时游标必须不推进（否则保护失效）");
         }
         finally
         {

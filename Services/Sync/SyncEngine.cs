@@ -312,6 +312,7 @@ public class SyncEngine
                 try
                 {
                     await PushSaltIfNeededAsync(CancellationToken.None).ConfigureAwait(false);
+                    var cursorBeforePull = _settings.Sync.LastCursor;
                     var (saltChanged, decryptFailed) = await PullFlowAsync().ConfigureAwait(false);
                     if (saltChanged)
                     {
@@ -321,6 +322,17 @@ public class SyncEngine
                             return SyncResult.Failed("云端密钥已重置，请重新配置授权码");
                     }
                     await PushFlowAsync().ConfigureAwait(false);
+
+                    // 2026-09-11 实测修复：本轮存在解密失败时，PushFlow 可能已把游标推进
+                    //（本地新增行的上传时刻更大 → 云端 CursorKey 前移），这会抵消
+                    // PullFlowAsync「解密失败不推进游标」的保护 —— 那批未拉到的行因其
+                    // UpdatedAt/UploadedAt ≤ 新游标，下轮增量拉取会被永久过滤掉，即便密钥
+                    // 随后对齐也捞不回来。实测证据：before=09:36:45Z → after=09:36:47Z。
+                    if (decryptFailed > 0)
+                    {
+                        _settings.Sync.LastCursor = cursorBeforePull;
+                        _settings.Save();
+                    }
                     // 2026-09-09：解密失败不再静默——写进同步结果，设置页可见（不再显示单纯"成功"误导用户）
                     _settings.Sync.LastSyncResult = decryptFailed > 0
                         ? $"成功（{decryptFailed} 条云端数据解密失败，两端密钥可能不一致，游标已回退待密钥对齐后重拉）"
