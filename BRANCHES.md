@@ -58,4 +58,4 @@
 | 远程 | 分支 | 备注 |
 |------|------|------|
 | Gitee（origin） | main | 旧分支已删（2026-09-01） |
-| GitHub | main | 2026-09-02 删 4 个残留；**feature/license-gate 漏删仍在（2026-09-09 实测确认），当晚补删因 SSL 连续断连未成，待网络窗口补删** |
+| GitHub | main | 2026-09-02 删 4 个残留。**feature/license-gate 漏删**：2026-09-09、09-11 两次尝试补删均因网络失败（先 `HTTP2 framing layer`、后 `502 CONNECT tunnel failed`）→ **仍待窗口**。删除不影响找回：hash `2f752f0` 已在本表第四节留档，且本地对象可达 |
