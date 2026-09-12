@@ -48,6 +48,7 @@ internal static class Program
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
             await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
+            await TestLineIdentityAsync();   // 行身份改造：未到期待办定位/删除/跨端一致（2026-09-12）
             await TestNetworkFailure();  // 验收 C-6/C-7
             await TestCursorProtectionAsync();   // 游标保护：解密失败时游标不该推进（2026-09-11）
         }
@@ -67,12 +68,18 @@ internal static class Program
     private static void TestUnit()
     {
         Console.WriteLine("[单测] 确定性 ID / E2EE / 恢复码");
-        var id1 = SyncNote.ComputeId("灵感_2026-08-12.md", "- [2026-08-12 10:00] 你好");
-        var id2 = SyncNote.ComputeId("灵感_2026-08-12.md", "- [2026-08-12 10:00] 你好");
-        var id3 = SyncNote.ComputeId("灵感_2026-08-12.md", "- [2026-08-12 10:01] 你好");
+        var line = "- [2026-08-12 10:00] 你好";
+        var id1 = SyncNote.ComputeId(line);
+        var id2 = SyncNote.ComputeId(line);
+        var id3 = SyncNote.ComputeId("- [2026-08-12 10:01] 你好");
         Check(id1 == id2 && id1 != id3 && id1.Length == 32, "确定性 ID：同行同 ID / 不同行不同 ID");
-        Check(id1 != SyncNote.ComputeId("灵感_2026-08-12.md", "你好"),
+        Check(id1 != SyncNote.ComputeId("你好"),
             "ID 基于完整原始行（含时间戳前缀，审查修正点）");
+        // v4（2026-09-12 行身份改造）：ID 只由行文本决定，不再含相对路径 —— 同一条行在 A 的提醒日文件与
+        // B 的创建日文件里必须是同一个身份，否则跨端删除不生效、旧版本行被反复投递回本地。
+        // 端到端验收见 G 组（TestLineIdentityAsync），此处只锁"纯函数"性质。
+        Check(SyncNote.ComputeId(line) == SyncNote.ComputeId(new string(line.ToCharArray())),
+            "ID 为行的纯函数（不受任何外部上下文/路径影响）");
 
         var salt = CryptoService.GenerateSalt();
         var dek = CryptoService.DeriveKey("MasterPass123", salt);
@@ -271,6 +278,83 @@ internal static class Program
         finally
         {
             try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    // ── 行身份改造验收（2026-09-12）：未到期待办的定位 / 删除 / 跨端一致 / 不重复落地 ──
+    //
+    // 复现并锁住用户 2026-09-11 实测报的两个 bug：
+    //   ①本机创建的"未到期待办"删不掉（弹「删除失败：未在笔记文件中找到该条目，可能已被外部修改」）——
+    //     带提醒的待办写入时归到**提醒日**文件，而删除查找按**创建日**猜文件 → 文件名对不上 → 恒失败；
+    //   ②跨端删除不生效（B 删了 A 上还在）：ID 曾含相对路径，同一行在 A 的提醒日文件、在 B 的创建日文件
+    //     → 身份分裂 → 墓碑对不上；附带旧版本行被反复投递（已办待办反复复活、副本每轮 +1）。
+
+    private static async Task TestLineIdentityAsync()
+    {
+        Console.WriteLine("[行身份] 未到期待办：定位 / 删除 / 跨端一致（2026-09-12 改造验收）");
+        var root = Path.Combine(Path.GetTempPath(), "fc-line-identity-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var server = new TestWebDavServer(Path.Combine(root, "cloud"));
+            var dirA = Path.Combine(root, "A"); Directory.CreateDirectory(dirA);
+            var dirB = Path.Combine(root, "B"); Directory.CreateDirectory(dirB);
+            var sa = new AppSettings { NotesPath = dirA };
+            var sb = new AppSettings { NotesPath = dirB };
+            var na = new NoteService(sa, Path.Combine(dirA, "deleted.json"));
+            var nb = new NoteService(sb, Path.Combine(dirB, "deleted.json"));
+            var ea = new SyncEngine(sa, na, new WebDAVProvider(server.BaseUrl, "u", "t"), Backoff);
+            var eb = new SyncEngine(sb, nb, new WebDAVProvider(server.BaseUrl, "u", "t"), Backoff);
+            await ea.SetTokenKeyAsync("MasterPass123");
+            Check((await ea.SyncNowAsync()).Success, "G-0 A 首次同步");
+
+            var due = DateTime.Today.AddDays(3).Date.AddHours(9);   // 提醒日 ≠ 创建日 → 归"未到期"
+            var dueFile = $"灵感_{due:yyyy-MM-dd}.md";
+
+            // G-1 写入归类：带提醒的待办写进提醒日文件（不是创建日文件）
+            var created = na.SaveNote("G1 真建未到期", null, NoteType.Todo, due);
+            Check(created != null && File.Exists(Path.Combine(dirA, dueFile)),
+                "G-1 带提醒待办写入提醒日文件 灵感_{DueTime}.md");
+
+            // G-2 创建端删除（bug ①）：改造前 FindEntryFile 只按创建日找文件 → 找不到 → 必失败
+            var g1 = na.LoadNotes(due.Date).FirstOrDefault(e => e.Content.Contains("G1 真建未到期"));
+            Check(g1 != null && na.DeleteNote(g1),
+                "G-2 创建端能删掉自己的未到期待办（改造前必红：报『未在笔记文件中找到该条目』）");
+
+            // G-3 手写一条"行时间戳早于现在"的未到期待办进提醒日文件（模拟历史数据）。
+            //     行时间戳必须早于删除时刻，否则会命中"删除后重录 → 本机 wins"的保护分支（那是另一条既有规则）。
+            var oldTs = DateTime.Now.AddMinutes(-5);
+            var handLine = $"- [{oldTs:yyyy-MM-dd HH:mm}] 【待办】G2 手写未到期 (提醒: {due:yyyy-MM-dd HH:mm:ss})";
+            File.AppendAllText(Path.Combine(dirA, dueFile), handLine + Environment.NewLine, Encoding.UTF8);
+            await ea.SyncNowAsync();
+            // B 首配（须在 A 首轮同步之后：云端已有盐，两端才能派生同一 DEK）
+            await eb.SetTokenKeyAsync("MasterPass123");
+            await eb.SyncNowAsync();
+
+            var bCopies = nb.ReadAllLines().Where(x => x.Line.Contains("G2 手写未到期")).ToList();
+            Check(bCopies.Count == 1, "G-3 B 端只落地一份（改造前：两端文件不同 → ID 不同 → 每轮重复落地）");
+            Check(bCopies.Count > 0 && Path.GetFileName(bCopies[0].RelativePath) != dueFile,
+                "G-3 B 端按创建日落地（与 A 的提醒日文件不同 —— 位置分裂正是改造前 ID 分叉的来源）");
+            Check(nb.LoadNotes(due.Date).Any(e => e.Content.Contains("G2 手写未到期")),
+                "G-4 B 端在提醒日面板能看到它（显示与行的物理位置解耦）");
+
+            // G-4b 再同步两轮：确认不再重复落地（改造前每轮 +1 份副本）
+            await ea.SyncNowAsync();
+            await eb.SyncNowAsync();
+            Check(nb.ReadAllLines().Count(x => x.Line.Contains("G2 手写未到期")) == 1,
+                "G-4 再同步两轮仍只一份（改造前每轮副本 +1）");
+
+            // G-5 跨端删除（bug ②）：B 删掉 A 创建的未到期待办 → A 端必须真的没了
+            var bLine = nb.ReadAllLines().First(x => x.Line.Contains("G2 手写未到期"));
+            Check(nb.DeleteNote(bLine.Entry), "G-5 B 端删除成功");
+            await eb.SyncNowAsync();
+            await ea.SyncNowAsync();
+            Check(!na.ReadAllLines().Any(x => x.Line.Contains("G2 手写未到期")),
+                "G-5 B 的删除传播到 A（改造前墓碑 ID 与 A 的行 ID 不同 → A 上仍在）");
+        }
+        finally
+        {
+            if (_failed == 0) { try { Directory.Delete(root, true); } catch { } }
+            else Console.WriteLine($"  [有失败] 行身份测试沙箱已保留：{root}");
         }
     }
 

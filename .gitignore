@@ -32,6 +32,7 @@ Thumbs.db
 *.orig
 
 # 内部开发文档（不推送仓库）
+/MIGRATION.md
 docs/QUEST-*.md
 docs/TASK*.md
 docs/FEATURE-*.md

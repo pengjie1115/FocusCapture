@@ -34,7 +34,9 @@ public class NoteService
     /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
     public event Action? NotesChanged;
 
-    /// <summary>本机删除事件（DeleteNote 成功后触发）：(相对路径, 被删的原始行)。SyncEngine 订阅后生成删除标记随下次同步传播。</summary>
+    /// <summary>本机"行消失"事件（v4 2026-09-12 起两处触发）：(相对路径, 消失的原始行)。
+    /// ①DeleteNote 成功后（行已进回收站）②UpdateTodo 原地改行后（旧版本行被替换掉，不进回收站）。
+    /// SyncEngine 订阅后为其生成删除墓碑随下次同步传播——否则云端会永远留着旧行，被反复投递回本地。</summary>
     public event Action<string, IReadOnlyList<string>>? LinesDeleted;
 
     /// <summary>回收站服务（公开：SyncEngine 软删落地、UI 层复用同一实例）。</summary>
@@ -227,52 +229,43 @@ public class NoteService
     public NoteEntry? SaveAiNote(string text)
         => SaveNote(text, "AI 回填");
 
-    /// <summary>定位 entry 所在的 md 文件（当天灵感文件 + 全部标签文件），找不到返回 null</summary>
+    /// <summary>
+    /// 定位 entry 所在的 md 文件（v4 2026-09-12：**全库扫行**，不再按文件名猜），找不到返回 null。
+    /// 旧实现只查 `灵感_{entry.Timestamp:yyyy-MM-dd}.md` + 标签文件，但待办写入时按**提醒日**归类
+    /// （未到期待办躺在 `灵感_{DueTime}.md` 里）→ 文件名与时间戳日对不上 → 删除/编辑一律报
+    /// "未在笔记文件中找到该条目"（实测：创建端删不掉自己的未到期待办，而另一端从云端落地时按创建日写，
+    /// 反而删得掉——同一行在两台设备落进不同文件造成的"口径分裂"，根因见 SyncNote.ComputeId 注释）。
+    /// 匹配优先级：整行精确匹配（IsEntryLine）优先，退而取行首时间戳前缀匹配（兼容用户手工改过的行）。
+    /// </summary>
     private string? FindEntryFile(NoteEntry entry)
     {
+        if (!Directory.Exists(_settings.NotesPath)) return null;
+
         // 行前缀：完整日期（新格式）；旧格式 [HH:mm] 行作为兼容回退
         var fullPrefix = $"- [{entry.Timestamp:yyyy-MM-dd HH:mm}]";
         var timePrefix = $"- [{entry.Timestamp:HH:mm}]";
+        string? prefixHit = null;
 
-        var dayFile = Path.Combine(_settings.NotesPath, $"灵感_{entry.Timestamp:yyyy-MM-dd}.md");
-        var candidates = new List<string>();
-        if (File.Exists(dayFile)) candidates.Add(dayFile);
-
-        if (Directory.Exists(_settings.NotesPath))
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
         {
-            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+            try
             {
-                var fileName = Path.GetFileNameWithoutExtension(file);
-                if (fileName.StartsWith("灵感_")) continue;
-                if (!candidates.Contains(file)) candidates.Add(file);
+                foreach (var rawLine in File.ReadAllLines(file, Encoding.UTF8))
+                {
+                    var line = rawLine.TrimEnd('\r');
+                    if (IsEntryLine(line, entry)) return file;   // 整行精确匹配最可信，直接返回
+                    if (prefixHit == null &&
+                        (line.StartsWith(fullPrefix, StringComparison.Ordinal) ||
+                         line.StartsWith(timePrefix, StringComparison.Ordinal)))
+                        prefixHit = file;                        // 记为候选，继续找是否有精确匹配
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Note", $"定位条目所在文件失败 ({file})", ex);
             }
         }
-
-        foreach (var file in candidates)
-        {
-            if (FileContainsLine(file, fullPrefix) || FileContainsLine(file, timePrefix))
-                return file;
-        }
-        return null;
-    }
-
-    private static bool FileContainsLine(string filePath, string prefix)
-    {
-        try
-        {
-            var text = File.ReadAllText(filePath, Encoding.UTF8);
-            var idx = text.IndexOf(prefix, StringComparison.Ordinal);
-            while (idx >= 0)
-            {
-                if (idx == 0 || text[idx - 1] == '\n') return true;
-                idx = text.IndexOf(prefix, idx + 1, StringComparison.Ordinal);
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error("Note", $"读取笔记文件失败 ({filePath})", ex);
-        }
-        return false;
+        return prefixHit;
     }
 
     /// <summary>删除笔记：物理删除 MD 对应行（选项 A）+ 软删除记录；关联的 AI 释义/编辑标记行一并删除。</summary>
@@ -360,6 +353,9 @@ public class NoteService
         var filePath = FindEntryFileByLine(entry);
         if (filePath == null) return false;
 
+        // 被替换掉的旧行文本（v4 2026-09-12）：改行成功且文本确实变化时，把它交给同步层生成删除墓碑。
+        string? replacedLine = null;
+
         lock (FileWriteLock)
         {
             try
@@ -381,8 +377,12 @@ public class NoteService
                 else if (dueTime.HasValue) updated.DueTime = dueTime;
                 if (status.HasValue) updated.TodoStatus = status.Value;
 
-                lines[matchedIndex] = NoteEntry.FormatTodoLine(updated);
+                var oldLine = lines[matchedIndex].TrimEnd('\r');
+                var newLine = NoteEntry.FormatTodoLine(updated);
+                lines[matchedIndex] = newLine;
                 File.WriteAllLines(filePath, lines, Encoding.UTF8);
+                if (!string.Equals(oldLine, newLine, StringComparison.Ordinal))
+                    replacedLine = oldLine;
             }
             catch (Exception ex)
             {
@@ -397,6 +397,14 @@ public class NoteService
         if (clearDue) entry.DueTime = null;
         else if (dueTime.HasValue) entry.DueTime = dueTime;
         if (status.HasValue) entry.TodoStatus = status.Value;
+
+        // v4（2026-09-12 行身份改造）：原地改行 = 旧版本行在本地消失。若不告知同步层，云端那条旧版本行
+        // 永不删除，而任何"本机没有该行"的设备都会在每次拉取时把它当新行落回来（**本机自己也算**，
+        // 因为改行后本机也认不出旧行了）——这就是"点已完成 → 过一会待办又变回未办、每轮多留一份已办副本"
+        // 的根因。这里复用删除事件把旧行作为 Deleted=true 墓碑推给同步层（不写回收站：旧版本只是被替换，
+        // 不是用户主动删除；本机 MD 只增不减原则在 UpdateTodo 处本就是唯一例外，见类注释）。
+        if (replacedLine != null)
+            LinesDeleted?.Invoke(Path.GetFileName(filePath), new[] { replacedLine });
 
         NotesChanged?.Invoke();
         return true;
@@ -482,34 +490,32 @@ public class NoteService
         return Math.Abs((ts - entry.Timestamp).TotalMinutes) < 1;
     }
 
-    /// <summary>按指定日期加载笔记：该日灵感文件 + 所有标签文件（旧格式标签行归入“今天”）</summary>
+    /// <summary>
+    /// 按指定日期加载笔记（v4 2026-09-12：**扫描全部 md 后按"归类时间"过滤**，与行的物理位置解耦）。
+    /// 归类口径统一为 <see cref="TodoDisplayTime"/>：待办=提醒日（无提醒则创建日）、笔记=行时间戳 —— 与
+    /// 日历计数（LoadNoteCounts）、面板排序完全一致。
+    /// 旧实现只读 `灵感_{日期}.md` + 标签文件，于是"行落在别的文件里就看不到"，反过来逼迫写入必须与日期对齐
+    /// （未到期待办因此被写进提醒日文件，而删除/云端落地又用别的口径找文件 → 同一行在两端分裂成不同身份）。
+    /// </summary>
     public List<NoteEntry> LoadNotes(DateTime date)
     {
         var result = new List<NoteEntry>();
-        var day = date.ToString("yyyy-MM-dd");
+        if (!Directory.Exists(_settings.NotesPath)) return result;
 
-        // 读取该日灵感文件（无标签笔记）
-        var dayFile = Path.Combine(_settings.NotesPath, $"灵感_{day}.md");
-        if (File.Exists(dayFile))
+        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
         {
-            result.AddRange(ParseNotes(dayFile, null, date));
-        }
-
-        // 也读取所有 tag 文件：新格式行按行内日期归类，旧格式行没有日期、统一归入“今天”
-        if (Directory.Exists(_settings.NotesPath))
-        {
-            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
-            {
-                var fileName = Path.GetFileNameWithoutExtension(file);
-                if (fileName.StartsWith("灵感_")) continue; // already parsed
-
-                var fileEntries = ParseNotes(file, fileName, DateTime.Today);
-                // v3（2026-08-28）：待办按 DueTime 归类日期过滤（有提醒的待办跟随提醒日期，普通笔记按创建日）
-                result.AddRange(fileEntries.Where(e => TodoDisplayTime(e).Date == date.Date));
-            }
+            var fileName = Path.GetFileNameWithoutExtension(file);
+            var isDayFile = fileName.StartsWith("灵感_", StringComparison.Ordinal);
+            var tag = isDayFile ? null : fileName;
+            // 旧格式 [HH:mm] 行无日期：灵感文件按文件名日期归属，标签文件按"今天"归属（与 LoadNoteCounts 一致）
+            var dateContext = isDayFile && DateTime.TryParse(fileName["灵感_".Length..], out var fileDate)
+                ? fileDate
+                : DateTime.Today;
+            result.AddRange(ParseNotes(file, tag, dateContext));
         }
 
         return result
+            .Where(e => TodoDisplayTime(e).Date == date.Date)
             .Where(e => !_deletedService.IsDeleted(e))
             .OrderByDescending(e => e.Timestamp)
             .ToList();
@@ -942,9 +948,13 @@ public class NoteService
         foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
         {
             var fileName = Path.GetFileNameWithoutExtension(file);
-            var tag = fileName.StartsWith("灵感_", StringComparison.Ordinal) ? null : fileName;
-            // dateContext 影响旧格式 [HH:mm] 行的归属（与 LoadNotes 一致用今天）
-            result.AddRange(ParseNotes(file, tag, DateTime.Today));
+            var isDayFile = fileName.StartsWith("灵感_", StringComparison.Ordinal);
+            var tag = isDayFile ? null : fileName;
+            // 旧格式 [HH:mm] 行的归属日期（v4 2026-09-12 与 LoadNotes 统一）：灵感文件用文件名日期，标签文件用今天
+            var dateContext = isDayFile && DateTime.TryParse(fileName["灵感_".Length..], out var fileDate)
+                ? fileDate
+                : DateTime.Today;
+            result.AddRange(ParseNotes(file, tag, dateContext));
         }
 
         return result

@@ -48,14 +48,22 @@ public class SyncNote
     public string CursorKey => string.IsNullOrEmpty(UploadedAt) ? UpdatedAt : UploadedAt;
 
     /// <summary>
-    /// 确定性 ID：SHA256(相对路径 + "|" + 完整行内容) 前 16 字节 hex（小写）。
-    /// 同一行在任何设备生成相同 ID → 天然幂等、天然去重、无需索引表。
-    /// 相对路径 = 相对 NotesPath 的路径（如 "灵感_2026-08-12.md"），保证双机路径一致 → ID 一致。
+    /// 确定性 ID：SHA256(完整行内容) 前 16 字节 hex（小写）—— 同一行在任何设备、任何文件生成相同 ID
+    /// → 天然幂等、天然去重、无需索引表。
+    /// <para>
+    /// v4（2026-09-12 行身份改造）：**相对路径不再参与 ID**。原口径 SHA256(相对路径 + "|" + 行) 的前提是
+    /// "同一行在任何设备落在同一个文件"，但实测该前提不成立——同一行的物理归属在系统内有三套口径：
+    /// 本地写入按**提醒日**（未到期待办写 `灵感_{DueTime}.md`）、跨端落地按**创建日**（`ResolveRelativePath`）、
+    /// 删除查找按时间戳猜文件。三套口径不一致 → 同一条行在不同设备/不同操作路径下落进不同文件 → ID 分裂。
+    /// 实测后果（2026-09-12 排查）：①本机删不掉自己的未到期待办（找不到文件）②跨端删除不生效（墓碑 ID 对不上）
+    /// ③旧版本行被当作"本机没有的新行"反复投递回本地（已办待办反复复活、副本累积）。
+    /// </para>
+    /// 行文本自带 `- [yyyy-MM-dd HH:mm] ` 时间戳前缀，唯一性已足够，路径不提供额外区分度。
+    /// 代价：同文本行若被人工复制到两个文件，会被视为同一条（同一个 ID）—— 这正是我们要的去重语义。
     /// </summary>
-    public static string ComputeId(string relativePath, string lineContent)
+    public static string ComputeId(string lineContent)
     {
-        var raw = relativePath + "|" + lineContent;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(lineContent));
         return Convert.ToHexString(hash, 0, 16).ToLowerInvariant();
     }
 
