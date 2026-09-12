@@ -175,7 +175,7 @@
                                        FontSize="14" FontWeight="SemiBold"
                                        VerticalAlignment="Center"/>
                             <Button x:Name="BtnCalendar"
-                                    Content="📅 日历"
+                                    Content="📅 今天"
                                     FontSize="11"
                                     Height="24"
                                     Padding="8,0"
@@ -186,6 +186,7 @@
                                     BorderThickness="1"
                                     Cursor="Hand"
                                     VerticalAlignment="Center"
+                                    ToolTip="选择时间范围：预设周期或自定义区间"
                                     Click="BtnCalendar_Click"/>
                             <Button x:Name="BtnSyncUpload"
                                     Content="↑"

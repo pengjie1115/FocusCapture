@@ -269,6 +269,10 @@ public partial class SettingsWindow : Window
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
         NotesPathText.Text = _settings.NotesPath;
         AutoStartCheck.IsChecked = _settings.AutoStart;
+        // v3.8：灵感速览唤出行为下拉回显
+        foreach (ComboBoxItem it in QuickViewSummonCombo.Items)
+            if ((string)it.Tag == (_settings.QuickViewRestoreLastFilter ? "Restore" : "Today"))
+                QuickViewSummonCombo.SelectedItem = it;
         // 供应商下拉：6 预设 + 自定义（Tag=null 表示自定义）
         AiProviderCombo.Items.Clear();
         foreach (var p in AiProviders.Presets)
@@ -560,6 +564,17 @@ public partial class SettingsWindow : Window
 
     private void AutoStart_Changed(object sender, RoutedEventArgs e)
     { if (_suppressEvents) return; _settings.AutoStart = AutoStartCheck.IsChecked == true; SetAutoStart(_settings.AutoStart); _settings.Save(); }
+
+    // v3.8：灵感速览唤出行为（当天 / 恢复上次筛选），QuickViewWindow.Show 时按此项决定是否重置
+    private void QuickViewSummon_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (QuickViewSummonCombo.SelectedItem is ComboBoxItem it)
+        {
+            _settings.QuickViewRestoreLastFilter = (string)it.Tag == "Restore";
+            _settings.Save();
+        }
+    }
 
     private void AiBaseUrl_TextChanged(object sender, TextChangedEventArgs e)
     {

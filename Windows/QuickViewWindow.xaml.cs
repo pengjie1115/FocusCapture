@@ -188,7 +188,54 @@ public partial class QuickViewWindow : Window
         // AI 助手名称自定义：标题栏入口按钮文案同源读取（三处入口之一）
         BtnAiAsk.Content = string.IsNullOrWhiteSpace(settings.AiAssistantName) ? "AI 问答" : settings.AiAssistantName;
         BtnAiAsk.Width = Math.Max(72, BtnAiAsk.Content.ToString()!.Length * 14 + 24);
+        // v3.8：「恢复上次筛选」开启时跨启动还原时间筛选（默认行为是唤出时重置为当天，见 ApplySummonBehavior）
+        if (settings.QuickViewRestoreLastFilter) RestoreLastFilterFromSettings();
         UpdateSyncButtonsState();   // 启动时根据引擎状态决定按钮是否可用
+    }
+
+    /// <summary>时间筛选弹层（懒创建；组件自包含，供后续可组装标题栏复用）</summary>
+    private DatePickerPopup? _datePicker;
+
+    /// <summary>从设置还原上次的时间筛选（模式 + 单日/区间），解析失败静默回退默认（今天）</summary>
+    private void RestoreLastFilterFromSettings()
+    {
+        try
+        {
+            if (_settings.QuickViewLastTimeMode == "Range"
+                && DateTime.TryParse(_settings.QuickViewLastRangeStart, out var rs)
+                && DateTime.TryParse(_settings.QuickViewLastRangeEnd, out var re))
+            {
+                _rangeStart = rs;
+                _rangeEnd = re > rs ? re : rs;
+                _loadMode = NoteLoadMode.Range;
+            }
+            else if (DateTime.TryParse(_settings.QuickViewLastDate, out var d))
+            {
+                _selectedDate = d;
+                _loadMode = NoteLoadMode.Date;
+            }
+        }
+        catch { /* 解析失败回退默认 */ }
+    }
+
+    /// <summary>时间筛选变化后落盘（跨启动记忆 + 弹层勾选回显）</summary>
+    private void SaveLastFilterToSettings()
+    {
+        switch (_loadMode)
+        {
+            case NoteLoadMode.Range:
+                _settings.QuickViewLastTimeMode = "Range";
+                _settings.QuickViewLastRangeStart = _rangeStart.ToString("yyyy-MM-dd");
+                _settings.QuickViewLastRangeEnd = _rangeEnd.ToString("yyyy-MM-dd");
+                break;
+            case NoteLoadMode.Date:
+                _settings.QuickViewLastTimeMode = "Date";
+                _settings.QuickViewLastDate = _selectedDate.ToString("yyyy-MM-dd");
+                break;
+            case NoteLoadMode.Search:
+                return;   // 查找模式不记忆时间筛选
+        }
+        _settings.Save();
     }
 
     /// <summary>重新加载当前选中日期的笔记（打开时与刷新按钮共用）</summary>
@@ -346,15 +393,34 @@ public partial class QuickViewWindow : Window
 
     private void UpdateModeIndicator()
     {
+        // v3.8：单日/区间状态直接显示在时间按钮上（UpdateTimeButtonLabel），指示行只留查找与未到期筛选
         if (_typeFilter.Contains("Future"))
             ModeIndicator.Text = "筛选：未到期（明天及以后）";
-        else if (_loadMode == NoteLoadMode.Range)
-            ModeIndicator.Text = $"区间：{_rangeStart:yyyy-MM-dd}  ~  {_rangeEnd:yyyy-MM-dd}";
         else if (_loadMode == NoteLoadMode.Search)
             ModeIndicator.Text = $"查找：\"{_searchKeyword}\"";
         else
-            ModeIndicator.Text = $"单日：{_selectedDate:yyyy-MM-dd}";
+            ModeIndicator.Text = "";
         BtnReturnToDate.Visibility = _loadMode == NoteLoadMode.Date ? Visibility.Collapsed : Visibility.Visible;
+        UpdateTimeButtonLabel();
+    }
+
+    /// <summary>v3.8：时间按钮直接显示当前筛选（预设名或日期区间），替代旧「单日： …」指示文案</summary>
+    private void UpdateTimeButtonLabel()
+    {
+        QuickTimePreset preset;
+        DateTime start, end;
+        if (_loadMode == NoteLoadMode.Range)
+        {
+            start = _rangeStart;
+            end = _rangeEnd;
+        }
+        else
+        {
+            start = _selectedDate;
+            end = _selectedDate;
+        }
+        preset = DatePickerPopup.MatchPreset(start, end);
+        BtnCalendar.Content = $"📅 {DatePickerPopup.GetLabel(preset, start, end)}";
     }
 
     /// <summary>焦点回归自动刷新（切回面板/关闭弹窗后列表同步最新笔记）</summary>
@@ -368,29 +434,41 @@ public partial class QuickViewWindow : Window
     /// <summary>标题栏刷新按钮：立即重新加载列表</summary>
     private void BtnRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
 
-    /// <summary>日历按钮：打开热力图弹窗，选中区间后切换到区间笔记。单日选=start=end=选中日；区间选=start..end。</summary>
+    /// <summary>时间按钮（v3.8）：弹出预设 + 自定义日历弹层。弹层当前勾选跟随当前生效筛选；再点一次按钮 = 收起。</summary>
     private void BtnCalendar_Click(object sender, RoutedEventArgs e)
     {
-        // 非模态 Show：点击日历弹窗以外的任何区域 → 窗口失活 → Deactivated 自动收起
-        var cal = new CalendarWindow(_noteService, _selectedDate) { Owner = this };
-        cal.DateRangeSelected += (start, end) =>
+        _datePicker ??= new DatePickerPopup(_noteService);
+        _datePicker.Selected -= ApplyTimeSelection;
+        _datePicker.Selected += ApplyTimeSelection;
+
+        if (_datePicker.IsOpen)
         {
-            if (start == end)
-            {
-                // 单日选 → 回到 Date 模式
-                _selectedDate = start;
-                _loadMode = NoteLoadMode.Date;
-            }
-            else
-            {
-                // 区间选 → Range 模式
-                _rangeStart = start;
-                _rangeEnd = end;
-                _loadMode = NoteLoadMode.Range;
-            }
-            ReloadNotes();
-        };
-        cal.Show();
+            _datePicker.Close();
+            return;
+        }
+
+        var (start, end) = _loadMode == NoteLoadMode.Range
+            ? (_rangeStart, _rangeEnd)
+            : (_selectedDate, _selectedDate);
+        _datePicker.Open(BtnCalendar, DatePickerPopup.MatchPreset(start, end), start, end);
+    }
+
+    /// <summary>弹层选择结果 → 切换 Date/Range 模式 + 落盘 + 重载列表（单日 start==end 回 Date 模式，与旧日历同口径）</summary>
+    private void ApplyTimeSelection(TimeFilterSelection selection)
+    {
+        if (selection.Start == selection.End)
+        {
+            _selectedDate = selection.Start;
+            _loadMode = NoteLoadMode.Date;
+        }
+        else
+        {
+            _rangeStart = selection.Start;
+            _rangeEnd = selection.End;
+            _loadMode = NoteLoadMode.Range;
+        }
+        SaveLastFilterToSettings();
+        ReloadNotes();
     }
 
     /// <summary>查找按钮：弹出 SearchDialog 输入关键词，确认后进入 Search 模式替换列表。</summary>
@@ -408,7 +486,16 @@ public partial class QuickViewWindow : Window
     private void BtnReturnToDate_Click(object sender, RoutedEventArgs e)
     {
         _loadMode = NoteLoadMode.Date;
+        SaveLastFilterToSettings();
         ReloadNotes();
+    }
+
+    /// <summary>v3.8 唤出行为：默认每次唤出重置为当天笔记；设置开启「恢复上次的筛选」时保持现状（跨启动由构造函数还原）。</summary>
+    private void ApplySummonBehavior()
+    {
+        if (_settings.QuickViewRestoreLastFilter) return;
+        _selectedDate = DateTime.Today;
+        if (_loadMode != NoteLoadMode.Date) _loadMode = NoteLoadMode.Date;
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1376,6 +1463,7 @@ public partial class QuickViewWindow : Window
 
     public new void Show()
     {
+        ApplySummonBehavior();
         Refresh();
         base.Show();
         Activate();
@@ -1384,6 +1472,7 @@ public partial class QuickViewWindow : Window
 
     public new void Hide()
     {
+        _datePicker?.Close();
         if (_exportDialog != null && _exportDialog.IsVisible)
         {
             _exportDialog.Close();
