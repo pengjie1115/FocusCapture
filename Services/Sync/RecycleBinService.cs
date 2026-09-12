@@ -79,9 +79,11 @@ public class RecycleBinService
     }
 
     /// <summary>
-    /// 幂等落回收站（2026-09-09 新增，同步拉取重放保护）：回收站中已存在同 (相对路径 + 原始行) 记录时不重复写入。
+    /// 幂等落回收站（2026-09-09 新增，同步拉取重放保护）：回收站中已存在含同一原始行的记录时不重复写入。
     /// 背景：增量拉取改为"上传时刻"游标后，存量墓碑（无 UploadedAt）在升级后首轮会全量重放一次，
     /// 普通 Add 不去重 → 同一行在回收站出现多条。仅同步重放路径使用本方法；用户主动删除仍走 Add。
+    /// v4（2026-09-12 行身份改造）：判重只看**行文本**，不比相对路径 —— 同一条行的物理文件在两端不保证一致
+    /// （写入按提醒日、落地按创建日），带路径判重会漏判 → 回收站出现重复记录。
     /// </summary>
     public bool AddIfAbsent(string relativePath, IReadOnlyList<string> lines)
     {
@@ -95,9 +97,8 @@ public class RecycleBinService
                 {
                     var entry = JsonSerializer.Deserialize<RecycleBinEntry>(File.ReadAllText(file, Encoding.UTF8));
                     if (entry == null) continue;
-                    if (string.Equals(entry.RelativePath, relativePath, StringComparison.Ordinal)
-                        && entry.Lines.Any(l => wanted.Contains(l)))
-                        return true;   // 已有记录：视为成功，不重复写
+                    if (entry.Lines.Any(l => wanted.Contains(l)))
+                        return true;   // 已有同内容记录：视为成功，不重复写
                 }
                 catch { /* 损坏记录跳过 */ }
             }
@@ -185,12 +186,13 @@ public class RecycleBinService
 
     /// <summary>
     /// 按内容批量移除回收站记录（回收站双向同步用）：他端"恢复/彻底删除"传播到本机时，
-    /// 清掉与本端 (相对路径 + 原始行) 匹配的记录。单次扫描目录，避免逐条重复 IO。
-    /// 返回移除的记录数。
+    /// 清掉含同一原始行的记录。单次扫描目录，避免逐条重复 IO。返回移除的记录数。
+    /// v4（2026-09-12 行身份改造）：匹配只看**行文本**（同 AddIfAbsent）——相对路径在两端不保证一致，
+    /// 带路径匹配会漏清 → 回收站残留无法恢复的幽灵记录。
     /// </summary>
     public int RemoveMatchingBatch(IEnumerable<(string RelativePath, string Line)> items)
     {
-        var wanted = items.Where(x => !string.IsNullOrEmpty(x.RelativePath) && !string.IsNullOrEmpty(x.Line)).ToList();
+        var wanted = items.Where(x => !string.IsNullOrEmpty(x.Line)).ToList();
         if (!Directory.Exists(_binDir) || wanted.Count == 0) return 0;
         var removed = 0;
         foreach (var file in Directory.GetFiles(_binDir, "recycle-*.json"))
@@ -199,8 +201,7 @@ public class RecycleBinService
             {
                 var entry = JsonSerializer.Deserialize<RecycleBinEntry>(File.ReadAllText(file, Encoding.UTF8));
                 if (entry == null) continue;
-                var hit = wanted.RemoveAll(w => string.Equals(entry.RelativePath, w.RelativePath, StringComparison.Ordinal)
-                                                && entry.Lines.Contains(w.Line)) > 0;
+                var hit = wanted.RemoveAll(w => entry.Lines.Contains(w.Line)) > 0;
                 if (!hit) continue;
                 File.Delete(file);
                 removed++;

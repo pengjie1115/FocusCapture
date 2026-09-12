@@ -25,7 +25,8 @@ public record SyncResult(bool Success, string? Error)
 /// - 线程：后台执行（Timer 回调 → Task.Run），SemaphoreSlim(1) 防并发；UI 更新由订阅方 marshal 到 Dispatcher；
 /// - 本机明文是唯一事实源，云端只是镜像（§5.0.4）；
 /// - Content 字段承载【完整原始 MD 行】的密文（含 `- [yyyy-MM-dd HH:mm] ` 前缀，保持行格式不被破坏）；
-///   ID = SHA256(相对路径 | 完整原始行)（2026-08-13 审查修正：必须用原始行，防同文件同内容撞 ID）。
+///   ID = SHA256(完整原始行)（2026-08-13 审查修正：必须用原始行，防同内容撞 ID；
+///   2026-09-12 行身份改造：相对路径不再参与，见 SyncNote.ComputeId 注释）。
 /// </summary>
 public class SyncEngine
 {
@@ -448,7 +449,14 @@ public class SyncEngine
 
         var localLines = new Dictionary<string, (string RelativePath, string Line, NoteEntry Entry)>(StringComparer.Ordinal);
         foreach (var x in _noteService.ReadAllLines())
-            localLines[SyncNote.ComputeId(x.RelativePath, x.Line)] = x;
+            localLines[SyncNote.ComputeId(x.Line)] = x;
+
+        // v4（2026-09-12）：内容级兜底。ID 口径从「路径+行」改为「行」后，云端存的旧口径记录（含路径）
+        // 与新口径算出的 ID 必然不同，只靠 ID 判重会让它们在升级后整批被当成"本机没有的新行"落回来
+        // （重复副本爆炸）。这里按行文本再建一份索引：内容已在本地 → 视同已落地。
+        var localByText = new Dictionary<string, (string RelativePath, string Line)>(StringComparer.Ordinal);
+        foreach (var x in localLines.Values)
+            localByText.TryAdd(x.Line, (x.RelativePath, x.Line));
 
         // 回收站清理 / 恢复传播的批量收集（单次扫描目录，避免逐条重复 IO）
         var binRemovals = new List<(string RelativePath, string Line)>();
@@ -483,6 +491,9 @@ public class SyncEngine
                 binRemovals.Add((relPurged, content));
                 if (localLines.TryGetValue(cloud.Id, out var live))
                     _noteService.RemoveLines(live.RelativePath, new HashSet<string> { live.Line });
+                // v4：旧口径墓碑的 ID 对不上，按行文本兜底定位本地同内容活行（否则旧记录的"彻底删除"永远不生效）
+                else if (localByText.TryGetValue(content, out var liveByText))
+                    _noteService.RemoveLines(liveByText.RelativePath, new HashSet<string> { liveByText.Line });
                 continue;
             }
 
@@ -502,16 +513,20 @@ public class SyncEngine
                 {
                     // 本机没有该行（如 B 从未见过这条）：仅落回收站，供查看/恢复（回收站双向同步）。
                     // AddIfAbsent：存量墓碑（升级后首轮全量重放）幂等，不重复塞记录（2026-09-09）
-                    _noteService.RecycleBin.AddIfAbsent(ResolveRelativePath(cloud), new[] { content });
+                    // v4：本机存在同内容活行时不落回收站——说明是同一条行、只是身份口径不同（旧格式记录），
+                    // 否则会为一条活着的行凭空造出回收站记录。
+                    if (!localByText.ContainsKey(content))
+                        _noteService.RecycleBin.AddIfAbsent(ResolveRelativePath(cloud), new[] { content });
                 }
             }
             else
             {
-                if (!localLines.ContainsKey(cloud.Id))
+                if (!localLines.ContainsKey(cloud.Id) && !localByText.ContainsKey(content))
                 {
                     // 云端新行（他端新增/他端恢复）→ 按 Tags/灵感日规则写回原文件（保持原始行格式不变）
                     var relativePath = ResolveRelativePath(cloud);
                     _noteService.AppendLine(relativePath, content);
+                    localByText[content] = (relativePath, content);
                     binRemovals.Add((relativePath, content));   // 他端恢复传播：清掉本机回收站的对应删除记录
                     landedCount++;
                 }
@@ -541,10 +556,10 @@ public class SyncEngine
         var localNotes = new List<SyncNote>();
         var localTsById = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var pushedAt = NoteService.ToUtcIsoString(DateTime.Now);
-        foreach (var (rel, line, entry) in _noteService.ReadAllLines())
+        foreach (var (_, line, entry) in _noteService.ReadAllLines())
         {
             var ts = NoteService.ToUtcIsoString(entry.Timestamp);
-            var id = SyncNote.ComputeId(rel, line);
+            var id = SyncNote.ComputeId(line);
             localNotes.Add(new SyncNote
             {
                 Id = id,
@@ -569,7 +584,17 @@ public class SyncEngine
         //    - PendingDeletes 覆盖（本机软删 wins），被覆盖的云端版本进 PrevContent 快照（密文）。
         var byId = new Dictionary<string, SyncNote>(StringComparer.Ordinal);
         var cloudAll = await _provider.FullAsync(ct).ConfigureAwait(false);
-        foreach (var cloud in cloudAll) byId[cloud.Id] = cloud;
+        foreach (var cloud in cloudAll)
+        {
+            // v4（2026-09-12）存量补齐：UploadedAt 是 2026-09-09 才引入的字段，之前的记录为空；而本方法
+            // 对"云端已存在未删行"一律保留原 UploadedAt（防桶内容漂移）→ 空值永远补不上。拉取侧对空值记录
+            // 是"无条件投递"（为升级后补齐历史漏而设），于是这批老记录每次拉取都被投递、永不衰减 ——
+            // 实测后果：旧版本行被反复落回本地（已办待办反复复活）。补写一次上传时刻即可让它们回归
+            // 正常增量过滤，同时保留"补写时刻=now → 本轮仍投递给各端一次"的历史补齐语义。
+            if (string.IsNullOrEmpty(cloud.UploadedAt))
+                cloud.UploadedAt = pushedAt;
+            byId[cloud.Id] = cloud;
+        }
         foreach (var n in localNotes)
         {
             if (byId.TryGetValue(n.Id, out var existing) && existing.Deleted)
@@ -638,7 +663,7 @@ public class SyncEngine
                 var tag = GetTagFromFileName(entry.RelativePath);
                 _settings.Sync.PendingDeletes.Add(new SyncNote
                 {
-                    Id = SyncNote.ComputeId(entry.RelativePath, line),
+                    Id = SyncNote.ComputeId(line),
                     Content = CryptoService.Encrypt(_dek, line),
                     Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
                     CreatedAt = NoteService.ToUtcIsoString(ts),
@@ -658,12 +683,13 @@ public class SyncEngine
     /// 回收站恢复联动：把恢复的行 ID 压入 PendingRestores，push 时以活行覆盖云端删除标记
     /// （防止恢复的行被云端旧墓碑再次"删掉"），并触发同步传播到其他设备。
     /// </summary>
+    /// <remarks>v4（2026-09-12）：参数 relativePath 保留仅为兼容调用方，ID 已不依赖路径（见 SyncNote.ComputeId）。</remarks>
     public void QueuePendingRestore(string relativePath, IEnumerable<string> lines)
     {
         var added = false;
         foreach (var line in lines)
         {
-            var id = SyncNote.ComputeId(relativePath, line);
+            var id = SyncNote.ComputeId(line);
             if (!_settings.Sync.PendingRestores.Contains(id))
             {
                 _settings.Sync.PendingRestores.Add(id);
@@ -676,8 +702,9 @@ public class SyncEngine
     }
 
     /// <summary>
-    /// 删除即同步（NoteService.LinesDeleted 订阅入口）：移入回收站的行立即生成 Deleted=true 墓碑
-    /// 压入 PendingDeletes，随下次 push 以覆盖形式上传——云端活动记录只剩未删的行。
+    /// 删除/原地改行事件入口（NoteService 的 LinesDeleted 订阅）：消失的行立即生成 Deleted=true 墓碑
+    /// 压入 PendingDeletes，随下次 push 以覆盖形式上传——云端活动记录只剩仍存在的行。
+    /// 触发来源有二：①DeleteNote 移入回收站 ②UpdateTodo 原地改行（旧版本行随之消失，见 2026-09-12 行身份改造）。
     /// </summary>
     private void OnLinesDeleted(string relativePath, IReadOnlyList<string> lines)
     {
@@ -688,7 +715,7 @@ public class SyncEngine
         {
             _settings.Sync.PendingDeletes.Add(new SyncNote
             {
-                Id = SyncNote.ComputeId(relativePath, line),
+                Id = SyncNote.ComputeId(line),
                 Content = CryptoService.Encrypt(_dek, line),
                 Tags = string.IsNullOrEmpty(tag) ? [] : new[] { tag },
                 CreatedAt = NoteService.ToUtcIsoString(ParseLineTimestamp(line)),
