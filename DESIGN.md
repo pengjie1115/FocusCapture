@@ -425,6 +425,8 @@ background: rgba(10, 14, 20, 0.85);
 | Ctrl+Alt+F1 | 剪贴板捕获开关 |
 | Ctrl+Alt+V | 打开灵感速览 |
 | Ctrl+Alt+R | 启动沉浸语音 |
+| Ctrl+Alt+A | 唤起 AI 问答 |
+| Ctrl+Alt+T | 打开/收起待办汇总面板 |
 | Ctrl+S | 语音输入保存 |
 
 要求：

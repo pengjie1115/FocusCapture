@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private ReminderService? _reminderService;                    // v3.5 Phase3：提醒定时器/弹窗调度/角标
     private ReminderPopupWindow? _reminderPopup;                  // v3.5 Phase3：单条/多条到点弹窗
     private DailySummaryWindow? _dailySummary;                    // v3.5 Phase3：每日汇总弹窗
+    private TodoSummaryWindow? _todoSummaryWindow;                // v3.8：待办汇总面板（热键可唤出/收起，故需持实例）
     private IntPtr _hwnd; // 保存窗口句柄供剪贴板监听和热键切换使用
     private bool _settingsOpen;
 
@@ -103,18 +104,10 @@ public partial class MainWindow : Window
             if (_floatBall != null)
                 _floatBall.BadgeClicked += () => Dispatcher.Invoke(() =>
                 {
-                    // v3（2026-08-28 二次修复）：每次点击都 new 新实例，从根上杜绝「已关闭窗口不能再 Show」；
-                    // 汇总窗无状态（每次 RefreshAll 全量重载），复用旧实例毫无收益，反而引入生命周期风险
-                    try
-                    {
-                        var w = new TodoSummaryWindow(_noteService!, _settings);
-                        w.RefreshAll(_noteService!.LoadAllEntries());
-                        w.Show();
-                    }
-                    catch (Exception ex)
-                    {
-                        LogStartupError("OpenTodoSummary", ex);
-                    }
+                    // 角标点击语义 = 唤出（不改）：已打开则刷新数据并前置，未打开则新建。
+                    // v3.8：实例生命周期改由 ShowTodoSummary 统一管理（关闭事件置 null），
+                    // 根上仍是「已关闭的窗口绝不再 Show」；热键入口复用同一方法，杜绝两份逻辑漂移。
+                    ShowTodoSummary();
                 });
             _noteService.NotesChanged += () => _reminderService?.Refresh();
             // 2026-09-09：云同步拉取落地 → 刷新灵感速览（若开着）+ 待办角标。独立事件，不走 NotesChanged（防反向推回云端）
@@ -186,8 +179,42 @@ public partial class MainWindow : Window
             case HotkeyService.ID_VOICE_INPUT: ShowVoiceInput(); break;
             case HotkeyService.ID_TODO_SWITCH: _inputWindow?.ToggleType(); break;   // v3.5：全局切换笔记/待办类型
             case HotkeyService.ID_SETTINGS: OpenSettings(); break;                  // v3.7：唤出设置面板
+            case HotkeyService.ID_AI_ASK: AIDialogHelper.Open(ExplainMode.Ask); break;   // v3.8：唤起 AI 问答（复用单例窗口，每次开新会话）
+            case HotkeyService.ID_TODO_SUMMARY: ToggleTodoSummary(); break;              // v3.8：待办汇总面板（唤出/收起）
         }
     });
+
+    /// <summary>v3.8：待办汇总面板——显示（已打开则刷新数据并前置）。角标点击与热键唤出共用。
+    /// 生命周期：单例 + Closed 置 null，已关闭的窗口绝不再 Show（复用前提是窗口无状态，每次 RefreshAll 全量重载）。</summary>
+    private void ShowTodoSummary()
+    {
+        if (_noteService == null) return;
+        try
+        {
+            if (_todoSummaryWindow == null)
+            {
+                _todoSummaryWindow = new TodoSummaryWindow(_noteService, _settings);
+                _todoSummaryWindow.Closed += (_, _) => _todoSummaryWindow = null;
+            }
+            _todoSummaryWindow.RefreshAll(_noteService.LoadAllEntries());
+            _todoSummaryWindow.Show();
+            if (_todoSummaryWindow.WindowState == WindowState.Minimized)
+                _todoSummaryWindow.WindowState = WindowState.Normal;
+            _todoSummaryWindow.Activate();
+        }
+        catch (Exception ex)
+        {
+            _todoSummaryWindow = null;   // 异常实例不复用，下次唤出重建
+            LogStartupError("OpenTodoSummary", ex);
+        }
+    }
+
+    /// <summary>v3.8：热键入口——按一次唤出，再按一次收起（与灵感速览/输入框一致的语义）。</summary>
+    private void ToggleTodoSummary()
+    {
+        if (_todoSummaryWindow?.IsVisible == true) { _todoSummaryWindow.Hide(); return; }
+        ShowTodoSummary();
+    }
 
     private void ToggleClipboardCapture()
     {
@@ -432,6 +459,7 @@ public partial class MainWindow : Window
         if (_floatBall != null) { var (l, t) = _floatBall.GetPosition(); _settings.BallLeft = l; _settings.BallTop = t; _settings.Save(); }
         AIDialogHelper.CloseAll();
         _floatBall?.Close(); _inputWindow?.Close(); _quickViewWindow?.Close(); _voiceWindow?.Close(); _notifyIcon?.Dispose();
+        _todoSummaryWindow?.Close();   // v3.8：待办汇总改为实例常驻，退出时一并关闭
         WpfApp.Current.Shutdown();
     }
 

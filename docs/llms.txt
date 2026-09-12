@@ -28,6 +28,8 @@
 - Ctrl+Alt+F1：剪贴板自动捕获 开/关
 - Ctrl+Alt+V：打开/关闭 灵感速览
 - Ctrl+Alt+R：启动沉浸式语音输入
+- Ctrl+Alt+A：唤起 AI 问答
+- Ctrl+Alt+T：打开/收起 待办汇总面板
 - Ctrl+S：语音输入窗内保存
 
 ## 隐私说明
