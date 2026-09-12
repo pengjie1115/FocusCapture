@@ -130,9 +130,10 @@ public partial class ImportPreviewDialog : Window
 
     private void BtnPickTargetDate_Click(object sender, RoutedEventArgs e)
     {
+        // v3.8：CalendarWindow 退役，改用单选即关的 MiniCalendarPicker（与旧单日选择行为一致）
         var initial = ParseDateInput(TargetDateInput.Text) ?? DateTime.Today;
-        var cal = new CalendarWindow(_noteService, initial);
-        cal.DateSelected += d => TargetDateInput.Text = d.ToString("yyyy-MM-dd");
-        cal.Show();
+        var picker = new MiniCalendarPicker(_noteService);
+        picker.DatePicked += d => TargetDateInput.Text = d.ToString("yyyy-MM-dd");
+        picker.Show(sender as Button ?? BtnPickTargetDate, initial);
     }
 }

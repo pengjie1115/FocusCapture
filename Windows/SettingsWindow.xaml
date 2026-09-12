@@ -754,6 +754,20 @@
                               Checked="AutoStart_Changed"
                               Unchecked="AutoStart_Changed"/>
 
+                    <!-- v3.8：灵感速览唤出行为 -->
+                    <DockPanel Margin="0,14,0,0">
+                        <TextBlock Text="灵感速览" Width="130" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="QuickViewSummonCombo" Width="200" Height="28"
+                                  HorizontalAlignment="Left"
+                                  Style="{StaticResource DarkComboBox}"
+                                  SelectionChanged="QuickViewSummon_Changed">
+                            <ComboBoxItem Content="唤出时显示当天的笔记" Tag="Today"/>
+                            <ComboBoxItem Content="唤出时恢复上次的筛选" Tag="Restore"/>
+                        </ComboBox>
+                    </DockPanel>
+                    <TextBlock Text="「恢复上次的筛选」= 再次唤出面板时沿用关闭前的日期/区间（含自定义，跨重启生效）"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
                     <TextBlock Text="笔记存储路径" Margin="0,16,0,4"/>
                     <Grid>
                         <TextBox x:Name="NotesPathText"

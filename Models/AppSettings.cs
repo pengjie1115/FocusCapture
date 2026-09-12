@@ -78,6 +78,15 @@ public class AppSettings
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 
+    // ── 灵感速览时间筛选（v3.8）──
+    // 唤出行为：false = 每次唤出重置为当天笔记（默认）；true = 恢复上一次的时间筛选
+    public bool QuickViewRestoreLastFilter { get; set; } = false;
+    // 上次时间筛选存档（跨启动记忆，供「恢复上次筛选」与弹层勾选回显用；Search 模式不记忆）
+    public string QuickViewLastTimeMode { get; set; } = "Date";   // "Date" / "Range"
+    public string QuickViewLastDate { get; set; } = "";           // Date 模式单日（yyyy-MM-dd；空 = 今天）
+    public string QuickViewLastRangeStart { get; set; } = "";     // Range 模式起（yyyy-MM-dd）
+    public string QuickViewLastRangeEnd { get; set; } = "";       // Range 模式止（yyyy-MM-dd）
+
     // ── 沉浸式语音输入 ──
     public HotkeyBinding VoiceInputHotkey { get; set; } = new() { Modifiers = 3, Key = 0x52 }; // Ctrl+Alt+R
     public HotkeyBinding SaveHotkey { get; set; } = new() { Modifiers = 2, Key = 0x53 };       // Ctrl+S
