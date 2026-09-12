@@ -35,6 +35,9 @@ public partial class SettingsWindow : Window
         BuildSearchIndex();
         ShowSection(0);
         LoadSettings(); KeyDown += OnKeyDown;
+        // v3.8：录制热键期间全局热键被临时注销（见 StartCapture）——录制中途直接关窗时补回注册，
+        // 否则用户的热键会整体失效且毫无提示（三个出口：正常录完 / Esc 取消 / 关窗，缺一不可）
+        Closed += (_, _) => { if (_capturing) _hotkeyService?.RegisterAll(); };
         SubscribeChatSyncStatus();
     }
 
@@ -256,6 +259,8 @@ public partial class SettingsWindow : Window
         BtnQuickViewHotkey.Content = Win32.HotkeyToString(_settings.QuickViewHotkey);
         BtnVoiceInputHotkey.Content = Win32.HotkeyToString(_settings.VoiceInputHotkey);
         BtnSettingsHotkey.Content = Win32.HotkeyToString(_settings.SettingsHotkey);
+        BtnAiAskHotkey.Content = Win32.HotkeyToString(_settings.AiAskHotkey);
+        BtnTodoSummaryHotkey.Content = Win32.HotkeyToString(_settings.TodoSummaryHotkey);
         InputOpacitySlider.Value = _settings.InputOpacity;
         BallOpacitySlider.Value = _settings.FloatBallOpacity;
         QuickViewOpacitySlider.Value = _settings.QuickViewOpacity;
@@ -293,7 +298,23 @@ public partial class SettingsWindow : Window
         LoadTodoSettings();
         LoadInputSettings();
         _suppressEvents = false;
+        RefreshHotkeyWarning();           // v3.8：回显上次注册失败的键位（多为被其他程序占用）
         _ = LoadGetNoteTopicsQuietly();   // 凭证已配置时后台拉取知识库列表（不阻塞设置打开）
+    }
+
+    /// <summary>v3.8：注册失败提示——键位被其他程序占用时 RegisterHotKey 会失败，
+    /// 用户表现为「按了没反应」。此处把 HotkeyService 留痕的失败项显式列在热键板块。</summary>
+    private void RefreshHotkeyWarning()
+    {
+        var fails = _hotkeyService?.LastFailures;
+        if (fails == null || fails.Count == 0)
+        {
+            HotkeyWarningBorder.Visibility = Visibility.Collapsed;
+            return;
+        }
+        HotkeyWarningText.Text = "以下快捷键注册失败（可能已被其他程序占用），请换一组："
+            + string.Join("、", fails.Select(f => $"{f.Name}（{f.Keys}）"));
+        HotkeyWarningBorder.Visibility = Visibility.Visible;
     }
 
     /// <summary>v3.6 输入框设置回填（自动隐藏模式/秒数 + 位置记忆）</summary>
@@ -377,6 +398,9 @@ public partial class SettingsWindow : Window
     {
         if (_capturing) return;
         _capturing = true; _onCaptureDone = done;
+        // v3.8：录制期间临时注销全部全局热键——否则按下已注册的组合键会当场触发它（例如录 Ctrl+Alt+V 就弹速览）。
+        // 恢复点共三个：录完走 _onChanged → RegisterAll、Esc 走 CancelCapture、关窗走 Closed（都要有）。
+        _hotkeyService?.UnregisterAll();
         btn.Content = "按下新快捷键…";
         btn.Background = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
         Keyboard.Focus(btn);
@@ -398,9 +422,15 @@ public partial class SettingsWindow : Window
         };
         _onCaptureDone?.Invoke(hk); _capturing = false; _onCaptureDone = null;
         _onChanged?.Invoke();
+        RefreshHotkeyWarning();   // v3.8：注册在 _onChanged 内完成，之后才能读到本次失败清单
     }
 
-    private void CancelCapture() { _capturing = false; _onCaptureDone = null; LoadSettings(); }
+    private void CancelCapture()
+    {
+        _capturing = false; _onCaptureDone = null;
+        _hotkeyService?.RegisterAll();   // v3.8：Esc 取消必须补回注册（StartCapture 已临时注销），否则所有热键失效
+        LoadSettings();
+    }
 
     private void DoneCapture(Button btn, Models.HotkeyBinding hk)
     {
@@ -418,6 +448,10 @@ public partial class SettingsWindow : Window
     { _settings.VoiceInputHotkey = hk; BtnVoiceInputHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnVoiceInputHotkey, hk); });
     private void BtnSettings_Click(object sender, RoutedEventArgs e) => StartCapture(BtnSettingsHotkey, hk =>
     { _settings.SettingsHotkey = hk; BtnSettingsHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnSettingsHotkey, hk); });
+    private void BtnAiAsk_Click(object sender, RoutedEventArgs e) => StartCapture(BtnAiAskHotkey, hk =>
+    { _settings.AiAskHotkey = hk; BtnAiAskHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnAiAskHotkey, hk); });
+    private void BtnTodoSummary_Click(object sender, RoutedEventArgs e) => StartCapture(BtnTodoSummaryHotkey, hk =>
+    { _settings.TodoSummaryHotkey = hk; BtnTodoSummaryHotkey.Content = Win32.HotkeyToString(hk); DoneCapture(BtnTodoSummaryHotkey, hk); });
 
     private void BtnReset_Click(object sender, RoutedEventArgs e)
     {
@@ -426,7 +460,9 @@ public partial class SettingsWindow : Window
         _settings.QuickViewHotkey = new() { Modifiers = 3, Key = 0x56 };
         _settings.VoiceInputHotkey = new() { Modifiers = 3, Key = 0x52 };
         _settings.SettingsHotkey = new() { Modifiers = 3, Key = 0x53 };
-        _settings.Save(); LoadSettings(); _onChanged?.Invoke();
+        _settings.AiAskHotkey = new() { Modifiers = 3, Key = 0x41 };
+        _settings.TodoSummaryHotkey = new() { Modifiers = 3, Key = 0x54 };
+        _settings.Save(); LoadSettings(); _onChanged?.Invoke(); RefreshHotkeyWarning();
     }
 
     // ── v3.5 待办与提醒（改即保存 + 即时校验） ──

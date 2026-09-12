@@ -21,6 +21,8 @@ public class AppSettings
     public HotkeyBinding ClipboardToggleHotkey { get; set; } = new() { Modifiers = 3, Key = 0x70 }; // Ctrl+Alt+F1
     public HotkeyBinding QuickViewHotkey { get; set; } = new() { Modifiers = 3, Key = 0x56 };       // Ctrl+Alt+V
     public HotkeyBinding SettingsHotkey { get; set; } = new() { Modifiers = 3, Key = 0x53 };        // Ctrl+Alt+S：唤出设置面板
+    public HotkeyBinding AiAskHotkey { get; set; } = new() { Modifiers = 3, Key = 0x41 };          // Ctrl+Alt+A：唤起 AI 问答
+    public HotkeyBinding TodoSummaryHotkey { get; set; } = new() { Modifiers = 3, Key = 0x54 };    // Ctrl+Alt+T：待办汇总面板（按一次唤出，再按收起）
 
     // ── 剪贴板自动捕获 ──
     public bool ClipboardCaptureEnabled { get; set; } = false;

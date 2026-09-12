@@ -349,10 +349,32 @@
                                 Click="BtnSettings_Click"/>
                     </DockPanel>
 
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="唤起 AI 问答" Width="130" VerticalAlignment="Center"/>
+                        <Button x:Name="BtnAiAskHotkey" Width="200" HorizontalAlignment="Right"
+                                Click="BtnAiAsk_Click"/>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="待办汇总面板" Width="130" VerticalAlignment="Center"/>
+                        <Button x:Name="BtnTodoSummaryHotkey" Width="200" HorizontalAlignment="Right"
+                                Click="BtnTodoSummary_Click"/>
+                    </DockPanel>
+
                     <Button x:Name="BtnResetHotkeys" Content="恢复默认热键"
                             Width="140" HorizontalAlignment="Right"
                             Margin="0,12,0,0"
                             Click="BtnReset_Click"/>
+
+                    <!-- 注册失败提示（占用/冲突）：默认收起，由 RefreshHotkeyWarning 填充。
+                         注意：必须用 Border 包一层 —— 本板块的直接子 TextBlock 会被 BuildSearchIndex
+                         当作「下一行的名称」，裸放会污染「恢复默认热键」那行的搜索标题。 -->
+                    <Border x:Name="HotkeyWarningBorder" Visibility="Collapsed" Margin="0,12,0,0"
+                            Background="#33E05A5A" BorderBrush="#E05A5A" BorderThickness="1"
+                            CornerRadius="4" Padding="10,6">
+                        <TextBlock x:Name="HotkeyWarningText" Foreground="#E05A5A" FontSize="12"
+                                   TextWrapping="Wrap"/>
+                    </Border>
                 </StackPanel>
 
                 <!-- ── 板块 1：AI 模型 ── -->
