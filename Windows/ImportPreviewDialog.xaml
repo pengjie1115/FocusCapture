@@ -31,8 +31,10 @@
                     <TextBlock Text="导入预览"
                                Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"
                                VerticalAlignment="Center"/>
+                    <!-- 关闭按钮：显式清零 Padding（理由同 ExportDialog：全局样式 8,4 会挤压 24px 小按钮） -->
                     <Button Content="×" FontSize="16"
                             Width="24" Height="24"
+                            Padding="0"
                             Background="Transparent"
                             Foreground="#888888"
                             BorderThickness="0"
@@ -80,7 +82,7 @@
                              LostFocus="TargetDateInput_LostFocus"
                              KeyDown="TargetDateInput_KeyDown"/>
                     <Button Grid.Column="2" x:Name="BtnPickTargetDate" Content="📅"
-                            FontSize="12" Width="28" Height="28" Margin="6,0,0,0"
+                            FontSize="12" Width="28" Height="28" Padding="0" Margin="6,0,0,0"
                             Cursor="Hand" ToolTip="选目标日期"
                             Click="BtnPickTargetDate_Click"/>
                 </Grid>

@@ -294,13 +294,19 @@ public partial class QuickViewWindow : Window
         UpdateSelectionUI();
     }
 
+    /// <summary>Windows 自带矢量图标字体（Win10+ 随系统提供）。用于标题栏图标钮与铬区按钮，
+    /// 替代此前混用的 emoji（🔍）与符号（⟳）——后者在面板所用字体里字形缺失或基线偏位，
+    /// 渲染出来会缺笔画（⟳ 的箭头丢失）或明显不居中。</summary>
+    private static readonly FontFamily IconFont = new("Segoe MDL2 Assets");
+
     /// <summary>按功能目录生成一个标题栏按钮并挂既有 Click 处理器（功能逻辑与重构前完全一致）。</summary>
     private Button CreateToolbarButton(string id)
     {
         var def = QuickViewToolbarCatalog.Find(id)!;
+        var useGlyph = !string.IsNullOrEmpty(def.Glyph);
         var btn = new Button
         {
-            Content = def.Label,
+            Content = useGlyph ? def.Glyph : def.Label,
             FontSize = def.FontSize,
             Height = 24,
             Background = Brushes.Transparent,
@@ -319,6 +325,10 @@ public partial class QuickViewWindow : Window
         else
         {
             btn.Width = 28;
+            // 图标钮必须显式清零内边距：全局 Button 样式带 Padding="8,4"，
+            // 而 28px 宽减掉左右各 8 只剩 12px 内容区，图标会被挤偏甚至裁切。
+            btn.Padding = new Thickness(0);
+            btn.FontFamily = IconFont;
         }
         if (!string.IsNullOrEmpty(def.ToolTip)) btn.ToolTip = def.ToolTip;
         btn.Click += ToolbarButtonClick;
@@ -338,7 +348,17 @@ public partial class QuickViewWindow : Window
         return brush;
     }
 
-    /// <summary>生成的按钮统一入口：按 id 分派到原有处理器（与 XAML 写死时代同一套方法）。</summary>
+    /// <summary>
+    /// 扩展功能的外部动作出口（由 MainWindow 构造本窗口后注入），参数为功能 id。
+    /// 为什么要绕这一道：待办汇总、回收站、设置、导入、每日总结这几个窗口的依赖
+    /// （热键服务、悬浮球当前坐标、导入预览构造）只有主程序持有；且待办汇总在主程序里
+    /// 已有单例管理逻辑（ShowTodoSummary），若在本窗口再实现一份，两处入口迟早行为不一致。
+    /// 未注入时（例如快照工具/测试直接构造本窗口）点击扩展按钮静默忽略，不抛异常。
+    /// </summary>
+    public Action<string>? ExternalActionRequested { get; set; }
+
+    /// <summary>生成的按钮统一入口：按 id 分派到原有处理器（与 XAML 写死时代同一套方法）。
+    /// 扩展功能见 <see cref="ExternalActionRequested"/>。</summary>
     private void ToolbarButtonClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: null } btn) return;
@@ -353,6 +373,14 @@ public partial class QuickViewWindow : Window
             case "AiAsk": BtnAiAsk_Click(sender, e); break;
             case "Export": BtnExport_Click(sender, e); break;
             case "GetNote": BtnGetNote_Click(sender, e); break;
+            // 扩展功能：交给主程序统一开窗（2026-09-13）
+            case "TodoSummary":
+            case "RecycleBin":
+            case "Settings":
+            case "Import":
+            case "DailySummary":
+                ExternalActionRequested?.Invoke(id);
+                break;
         }
     }
 
@@ -377,7 +405,9 @@ public partial class QuickViewWindow : Window
     {
         var maximized = WindowState == WindowState.Maximized;
         RootBorder.CornerRadius = new CornerRadius(maximized ? 0 : 8);
-        BtnMaximize.Content = maximized ? "❐" : "□";
+        // 图标必须落在图标字体里有字形的码位上：此前的 "❐" / "□" 在 Segoe MDL2 Assets 中无字形，
+        // 会在切换最大化/还原时渲染成空框（2026-09-13 随铬区按钮改字体时发现的连带问题）。
+        BtnMaximize.Content = maximized ? "\uE923" : "\uE922";
     }
 
     /// <summary>边缘缩放后把宽度回写设置（防抖落盘；悬浮球位置记忆同款先例）。</summary>
@@ -784,18 +814,35 @@ public partial class QuickViewWindow : Window
         var engine = _syncEngineProvider?.Invoke();
         var enabled = engine != null && engine.IsMasterPasswordSet;
         var tip = enabled ? null : "云同步未配置或未解锁，请到设置页连接";
-        ApplySyncButton("SyncUpload", "↑", "上传笔记到云端（沿用全量同步机制）", enabled, tip);
-        ApplySyncButton("SyncDownload", "↓", "从云端拉取笔记到本地（仅拉不推）", enabled, tip);
+        ApplySyncButton("SyncUpload", "上传笔记到云端（沿用全量同步机制）", enabled, tip);
+        ApplySyncButton("SyncDownload", "从云端拉取笔记到本地（仅拉不推）", enabled, tip);
     }
 
-    private void ApplySyncButton(string id, string idleContent, string idleTip, bool enabled, string? disabledTip)
+    /// <summary>同步进行中状态使用的图标（环形箭头）。必须是图标字体里有字形的码位。</summary>
+    private const string SyncRunningGlyph = "\uE72C";
+
+    /// <summary>
+    /// 刷新单个同步按钮的状态。
+    /// 图标改为统一从功能目录取（2026-09-13 修正）：此前这里硬编码 "↑" / "↓" 文本字符，
+    /// 而按钮的 FontFamily 已换成 Segoe MDL2 Assets —— 该字体没有这两个字形，按钮会渲染成空框。
+    /// 同理「上传中…」这类中文在图标字体下同样没有字形，且图标钮仅 28px 宽也放不下中文，
+    /// 故进行中状态改用图标表示，文字状态交给 ToolTip（信息不丢失）。
+    /// </summary>
+    private void ApplySyncButton(string id, string idleTip, bool enabled, string? disabledTip)
     {
         if (!_toolbarButtons.TryGetValue(id, out var btn)) return;
+        var idleGlyph = QuickViewToolbarCatalog.Find(id)?.Glyph;
         btn.IsEnabled = enabled && !_syncRunning;
-        btn.ToolTip = enabled ? idleTip : disabledTip;
-        btn.Content = _syncRunning && id == "SyncUpload" ? "上传中…"
-            : _syncRunning && id == "SyncDownload" ? "拉取中…"
-            : idleContent;
+        if (_syncRunning)
+        {
+            btn.Content = SyncRunningGlyph;
+            btn.ToolTip = id == "SyncUpload" ? "上传中…" : "拉取中…";
+        }
+        else
+        {
+            if (!string.IsNullOrEmpty(idleGlyph)) btn.Content = idleGlyph;
+            btn.ToolTip = enabled ? idleTip : disabledTip;
+        }
     }
 
     /// <summary>正在同步：禁用两个按钮，避免并发同步（SyncEngine 自身也有 SemaphoreSlim 闸）</summary>

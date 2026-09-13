@@ -623,8 +623,8 @@ public partial class SettingsWindow : Window
         FillToolbarList(ToolbarLeftList, left);
         FillToolbarList(ToolbarRightList, right);
 
-        FillToolbarCombo(ToolbarLeftAddCombo, left, right);
-        FillToolbarCombo(ToolbarRightAddCombo, left, right);
+        FillToolbarCombo(ToolbarLeftAddCombo, left, right, isLeft: true);
+        FillToolbarCombo(ToolbarRightAddCombo, left, right, isLeft: false);
         RefreshToolbarBudget();
     }
 
@@ -646,8 +646,10 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>「可用功能」下拉：只列两侧都未启用的功能；预算放不下的项禁用并注明。</summary>
-    private void FillToolbarCombo(ComboBox combo, List<string> left, List<string> right)
+    /// <summary>「可用功能」下拉：只列两侧都未启用的功能；预算放不下的项禁用并注明。
+    /// 下拉为空是**正常情况**（功能池已全部启用完），此时显示提示并把添加按钮/下拉一并置灰 ——
+    /// 否则用户点了发现毫无反应，只会以为界面坏了（2026-09-13 实际反馈）。</summary>
+    private void FillToolbarCombo(ComboBox combo, List<string> left, List<string> right, bool isLeft)
     {
         combo.Items.Clear();
         foreach (var def in QuickViewToolbarCatalog.All)
@@ -662,7 +664,13 @@ public partial class SettingsWindow : Window
             };
             combo.Items.Add(item);
         }
-        combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
+
+        var hasAvailable = combo.Items.Count > 0;
+        combo.SelectedIndex = hasAvailable ? 0 : -1;
+        combo.IsEnabled = hasAvailable;
+        (isLeft ? ToolbarLeftEmptyHint : ToolbarRightEmptyHint).Visibility =
+            hasAvailable ? Visibility.Collapsed : Visibility.Visible;
+        (isLeft ? ToolbarLeftAddBtn : ToolbarRightAddBtn).IsEnabled = hasAvailable;
     }
 
     /// <summary>预算文字：已用 / 可用像素；超出预算红字提示（宽度过低 + 按钮过多会标题栏重叠）。</summary>

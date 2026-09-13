@@ -106,59 +106,8 @@ public partial class ExportDialog : Window
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
 
-    /// <summary>导入按钮：打开文件选择 → 解析 TXT/MD/Word → 弹预览窗让用户勾选 + 选目标日期 → 写入 MD。</summary>
-    private void BtnImport_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var dlg = new Microsoft.Win32.OpenFileDialog
-            {
-                Title = "选择要导入的文件",
-                Filter = NoteImportService.FormatFilter,
-                CheckFileExists = true,
-                Multiselect = false
-            };
-            // 默认起始目录：当前导出生效文件夹 或 我的文档
-            var startDir = !string.IsNullOrWhiteSpace(_settings.ExportFolderPath) && Directory.Exists(_settings.ExportFolderPath)
-                ? _settings.ExportFolderPath
-                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            dlg.InitialDirectory = startDir;
-
-            if (dlg.ShowDialog(this) != true) return;
-            var path = dlg.FileName;
-
-            NoteImportService.ImportPreview? preview;
-            try
-            {
-                preview = new NoteImportService().Parse(path);
-            }
-            catch (Exception parseEx)
-            {
-                System.Windows.MessageBox.Show($"解析失败：{parseEx.Message}", "导入失败",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (preview.Entries.Count == 0)
-            {
-                System.Windows.MessageBox.Show("文件中没有可识别的笔记内容。", "导入",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            var previewDialog = new ImportPreviewDialog(preview, _noteService) { Owner = this };
-            if (previewDialog.ShowDialog() != true) return;
-
-            // 复用项目已有的 NoteService 实例（保证 NotesChanged 事件被同步引擎订阅到）
-            var written = _noteService.ImportNotes(previewDialog.SelectedEntries, previewDialog.TargetDate);
-
-            System.Windows.MessageBox.Show($"成功导入 {written} 条笔记到 {previewDialog.TargetDate:yyyy-MM-dd}。",
-                "导入完成", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            System.Windows.MessageBox.Show($"导入失败：{ex.Message}", "错误",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
+    /// <summary>导入按钮：走 ImportFlow 的统一流程。
+    /// 2026-09-13 起流程体抽到 ImportFlow —— 灵感速览面板也加了同一个入口，
+    /// 两处必须共用一份实现，否则迟早各改各的、行为漂移。</summary>
+    private void BtnImport_Click(object sender, RoutedEventArgs e) => ImportFlow.Run(this, _noteService, _settings);
 }

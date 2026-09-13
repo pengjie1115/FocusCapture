@@ -26,10 +26,14 @@
                     <TextBlock Text="全局查找"
                                Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"
                                VerticalAlignment="Center"/>
-                    <Button Content="×" FontSize="16"
+                    <!-- 关闭按钮（2026-09-13 修正）：原为文本字符「×」且未清 Padding，
+                         全局 Button 样式带的 Padding="8,4" 把 24px 宽的内容区压到只剩 8px，
+                         字符被挤压偏移；同时 #888888 在深色底上偏暗。 -->
+                    <Button Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                             Width="24" Height="24"
+                            Padding="0"
                             Background="Transparent"
-                            Foreground="#888888"
+                            Foreground="#CCCCCC"
                             BorderThickness="0"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Center"

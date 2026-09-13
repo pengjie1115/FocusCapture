@@ -186,6 +186,37 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- 标题栏自定义编辑器的功能列表项（v3.9）：
+             必须显式指定 Foreground —— 这两个 ListBox 若走系统默认项样式，
+             未选中项文字会按系统控件文字色绘制（深色背景上几乎看不见，
+             实测文字亮度 55 vs 背景 37）。同窗口的导航列表用自定义项样式，
+             因而继承了窗口前景色，所以一直正常。 -->
+        <Style x:Key="ToolbarListItem" TargetType="ListBoxItem">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="bd" Background="Transparent"
+                                BorderThickness="2,0,0,0" BorderBrush="Transparent"
+                                CornerRadius="0,3,3,0"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#2D2D2D"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#2D2D2D"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="#4CAF50"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="0">
@@ -616,34 +647,49 @@
                     <DockPanel Margin="0,4">
                         <TextBlock Text="左侧区域" Width="130" VerticalAlignment="Center" ToolTip="显示在「灵感速览」标题右边"/>
                         <StackPanel>
-                            <ListBox x:Name="ToolbarLeftList" MaxHeight="132"
+                            <ListBox x:Name="ToolbarLeftList" MaxHeight="145"
+                                     ItemContainerStyle="{StaticResource ToolbarListItem}"
                                      BorderBrush="#555555" BorderThickness="1" Background="#252526"
                                      HorizontalAlignment="Stretch"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <!-- 换行容器（原为 StackPanel）：这一行控件总宽超出面板可用宽度，
+                                 最右侧的「移除」会被挤出可视区、用户完全看不见（2026-09-13 实测截图里找不到该按钮）。 -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <ComboBox x:Name="ToolbarLeftAddCombo" Width="170" Height="28"
                                           Style="{StaticResource DarkComboBox}"/>
-                                <Button Content="添加" Width="52" Margin="6,0,0,0" Click="ToolbarLeftAdd_Click"/>
+                                <Button x:Name="ToolbarLeftAddBtn" Content="添加" Width="52" Margin="6,0,0,0" Click="ToolbarLeftAdd_Click"/>
                                 <Button Content="上移" Width="52" Margin="6,0,0,0" Click="ToolbarLeftUp_Click"/>
                                 <Button Content="下移" Width="52" Margin="6,0,0,0" Click="ToolbarLeftDown_Click"/>
                                 <Button Content="移除" Width="52" Margin="6,0,0,0" Click="ToolbarLeftRemove_Click"/>
-                            </StackPanel>
+                            </WrapPanel>
+                            <!-- 空态提示：功能池已全启用时下拉本来就是空的，不解释一句用户会以为界面坏了。
+                                 必须包在 Border 里 —— 设置页搜索索引会把板块内的裸 TextBlock 抓成"设置项名称"。 -->
+                            <Border x:Name="ToolbarLeftEmptyHint" Margin="0,6,0,0" Visibility="Collapsed">
+                                <TextBlock Text="全部功能都已放上标题栏，先「移除」某一项才能添加新的"
+                                           Foreground="#FF9800" FontSize="11" TextWrapping="Wrap"/>
+                            </Border>
                         </StackPanel>
                     </DockPanel>
 
                     <DockPanel Margin="0,10,0,0">
                         <TextBlock Text="右侧区域" Width="130" VerticalAlignment="Center" ToolTip="显示在固定按钮（最小化/最大化/关闭）左边"/>
                         <StackPanel>
-                            <ListBox x:Name="ToolbarRightList" MaxHeight="132"
+                            <ListBox x:Name="ToolbarRightList" MaxHeight="145"
+                                     ItemContainerStyle="{StaticResource ToolbarListItem}"
                                      BorderBrush="#555555" BorderThickness="1" Background="#252526"
                                      HorizontalAlignment="Stretch"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <!-- 换行容器（原为 StackPanel）：理由同左侧区域，避免「移除」被挤出可视区。 -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <ComboBox x:Name="ToolbarRightAddCombo" Width="170" Height="28"
                                           Style="{StaticResource DarkComboBox}"/>
-                                <Button Content="添加" Width="52" Margin="6,0,0,0" Click="ToolbarRightAdd_Click"/>
+                                <Button x:Name="ToolbarRightAddBtn" Content="添加" Width="52" Margin="6,0,0,0" Click="ToolbarRightAdd_Click"/>
                                 <Button Content="上移" Width="52" Margin="6,0,0,0" Click="ToolbarRightUp_Click"/>
                                 <Button Content="下移" Width="52" Margin="6,0,0,0" Click="ToolbarRightDown_Click"/>
                                 <Button Content="移除" Width="52" Margin="6,0,0,0" Click="ToolbarRightRemove_Click"/>
-                            </StackPanel>
+                            </WrapPanel>
+                            <Border x:Name="ToolbarRightEmptyHint" Margin="0,6,0,0" Visibility="Collapsed">
+                                <TextBlock Text="全部功能都已放上标题栏，先「移除」某一项才能添加新的"
+                                           Foreground="#FF9800" FontSize="11" TextWrapping="Wrap"/>
+                            </Border>
                         </StackPanel>
                     </DockPanel>
                     <TextBlock Text="顺序 = 面板标题栏上从左到右的顺序；最小化/最大化/关闭为固定按钮，不参与配置；同一功能只能出现在一侧"

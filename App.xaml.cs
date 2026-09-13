@@ -1,3 +1,4 @@
+using FocusCapture.Diagnostics;
 using FocusCapture.Services;
 
 namespace FocusCapture;
@@ -41,6 +42,15 @@ public partial class App : WpfApp
         catch { /* best effort */ }
 
         base.OnStartup(e);
+
+        // 界面快照模式（--snapshot）：把窗口渲染成 PNG 后退出，不创建主窗口。
+        // 仅供开发期 UI 自查使用；正常启动（不带该参数）不进入此分支，行为与改造前完全一致。
+        if (UiSnapshot.IsRequested(e.Args))
+        {
+            UiSnapshot.Run(e.Args);
+            return;
+        }
+
         new MainWindow().Show();
     }
 

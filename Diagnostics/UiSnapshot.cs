@@ -1,0 +1,189 @@
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using FocusCapture.Models;
+using FocusCapture.Services;
+using FocusCapture.Windows;
+
+namespace FocusCapture.Diagnostics;
+
+/// <summary>
+/// 界面快照工具（2026-09-13 引入）：把窗口渲染成 PNG，供开发期自查 UI 问题
+/// （控件溢出 / 文字对比度 / 图标对齐 / 字形残缺 / 裁切）。
+///
+/// 用法：<c>FocusCapture.exe --snapshot [--out &lt;目录&gt;]</c>
+/// 输出：默认 <c>%TEMP%\fc-ui-snapshot\</c>，文件名形如 <c>01-灵感速览面板.png</c>，
+///       同时写一份 <c>snapshot.log</c> 记录每个窗口的实际像素尺寸（尺寸异常 = 布局异常的第一信号）。
+///
+/// 设计约束（改动本文件前务必先读）：
+/// - <b>数据隔离</b>：强制把 <see cref="FocusCapturePaths.RootOverride"/> 指向临时沙箱，
+///   绝不读写用户真实的 <c>%AppData%\FocusCapture</c>（沙箱用完即删）。
+/// - <b>零侵入</b>：仅当显式传入 <c>--snapshot</c> 时执行；正常启动不进入该分支，行为与改造前一致。
+/// - <b>必须 Show() 才能渲染</b>：窗口统一摆到屏幕外（Left/Top = -32000），不打扰用户。
+/// - <b>不透明渲染</b>：面板本身 Opacity=0.8，半透明位图不利于像素比对，快照统一置为 1.0。
+/// - <b>DPI 感知</b>：按窗口实际 DPI 缩放出图，保证与屏幕上看到的像素密度一致（125% 缩放也准确）。
+/// </summary>
+internal static class UiSnapshot
+{
+    /// <summary>触发快照的命令行开关。</summary>
+    public const string Flag = "--snapshot";
+
+    private const string OutFlag = "--out";
+
+    /// <summary>命令行是否请求了快照模式。</summary>
+    public static bool IsRequested(string[] args) =>
+        args.Any(a => a.Equals(Flag, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>执行快照：构造各窗口 → 渲染 PNG → 落盘日志 → 退出应用。</summary>
+    public static void Run(string[] args)
+    {
+        var outDir = ResolveOutDir(args);
+        Directory.CreateDirectory(outDir);
+
+        // 隔离沙箱：所有落盘路径改道，绝不触碰真实数据
+        var sandbox = Path.Combine(Path.GetTempPath(), "fc-ui-snapshot",
+            "sandbox-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(sandbox);
+        FocusCapturePaths.RootOverride = sandbox;
+
+        var log = new StringBuilder();
+        log.AppendLine($"输出目录: {outDir}");
+        log.AppendLine($"沙箱目录: {sandbox}");
+        log.AppendLine();
+
+        try
+        {
+            var settings = AppSettings.Load();
+            settings.NotesPath = Path.Combine(sandbox, "notes");
+            Directory.CreateDirectory(settings.NotesPath);
+            var notes = new NoteService(settings, Path.Combine(sandbox, "deleted.json"));
+
+            Capture("01-灵感速览面板", () => new QuickViewWindow(notes, settings), outDir, log);
+
+            Capture("02-设置-灵感速览板块", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 4;   // 4 = 「灵感速览」板块（0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览）
+                return w;
+            }, outDir, log);
+
+            Capture("03-设置-热键板块", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 0;
+                return w;
+            }, outDir, log);
+
+            // 其余可无副作用构造的窗口：用于横向排查同一类 UI 写法（按钮内边距 / 图标字形 / 对齐）
+            Capture("04-全局查找弹窗", () => new SearchDialog(), outDir, log);
+            Capture("05-待办汇总", () => new TodoSummaryWindow(notes, settings), outDir, log);
+            Capture("06-每日总结", () => new DailySummaryWindow(notes, settings), outDir, log);
+            Capture("07-回收站", () => new RecycleBinWindow(notes, notes.RecycleBin), outDir, log);
+            Capture("08-输入框", () => new InputWindow(notes, settings), outDir, log);
+            Capture("09-语音输入", () => new VoiceInputWindow(settings), outDir, log);
+            Capture("10-AI 对话", () => new AIDialogWindow(notes, settings), outDir, log);
+
+            // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
+            // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
+            // 这类错误静态代码看不出来，只能靠渲染结果判定。
+            Capture("11-标题栏全功能预览", () =>
+            {
+                settings.QuickViewToolbarLeft = new List<string>
+                    { "Calendar", "SyncUpload", "SyncDownload", "Search", "Refresh", "AiAsk" };
+                settings.QuickViewToolbarRight = new List<string>
+                    { "Export", "GetNote", "TodoSummary", "RecycleBin", "Settings", "Import", "DailySummary" };
+                settings.QuickViewWidth = 1200;
+                return new QuickViewWindow(notes, settings);
+            }, outDir, log);
+
+            // 图标字符自检：字体里有 ≠ WPF 渲染得出来（缺字形会变豆腐块），挑图标代码时用它一次过筛
+            Capture("12-图标字符可用性自检", () => GlyphProbe.Build(), outDir, log);
+
+            // 全启用状态下的设置面板：验证「下拉为空」的空态提示与按钮置灰。
+            // 此状态在默认布局下不会出现（功能池有剩余），必须先把 13 个全挂上（复用 11 场景改过的 settings）。
+            Capture("13-设置-全启用空态", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 4;
+                return w;
+            }, outDir, log);
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine("!! 快照流程异常: " + ex);
+        }
+        finally
+        {
+            FocusCapturePaths.RootOverride = null;
+            try { Directory.Delete(sandbox, true); } catch { /* 沙箱删不掉不影响结果 */ }
+            try { File.WriteAllText(Path.Combine(outDir, "snapshot.log"), log.ToString(), Encoding.UTF8); }
+            catch { /* 日志写不出也别卡住 */ }
+        }
+
+        // 快照模式下不创建主窗口，显式退出
+        Application.Current?.Shutdown();
+    }
+
+    /// <summary>渲染单个窗口为 PNG。任一环节失败只记日志，不影响其余窗口。</summary>
+    private static void Capture(string name, Func<Window> factory, string outDir, StringBuilder log)
+    {
+        Window? win = null;
+        try
+        {
+            win = factory();
+            win.WindowStartupLocation = WindowStartupLocation.Manual;
+            win.Left = -32000;          // 屏幕外，用户看不见
+            win.Top = -32000;
+            win.ShowInTaskbar = false;
+            win.Opacity = 1.0;          // 见类注释：半透明位图不利于像素比对
+            win.Show();
+            win.UpdateLayout();
+
+            // 布局与渲染管线是异步的，必须各跑完一轮，否则可能截到空白或旧状态
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Render);
+
+            var dpi = VisualTreeHelper.GetDpi(win);
+            var w = (int)Math.Ceiling(win.ActualWidth * dpi.DpiScaleX);
+            var h = (int)Math.Ceiling(win.ActualHeight * dpi.DpiScaleY);
+            if (w <= 0 || h <= 0)
+            {
+                log.AppendLine($"{name}: 尺寸无效 {w}x{h}（窗口未完成布局）");
+                return;
+            }
+
+            var rtb = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            rtb.Render(win);
+
+            var enc = new PngBitmapEncoder();
+            enc.Frames.Add(BitmapFrame.Create(rtb));
+            var path = Path.Combine(outDir, name + ".png");
+            using (var fs = File.Create(path)) enc.Save(fs);
+
+            log.AppendLine($"{name}: {w}x{h} (逻辑 {win.ActualWidth:0}x{win.ActualHeight:0}, DPI {dpi.PixelsPerInchX:0}) -> {path}");
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine($"{name}: 渲染失败 — {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { win?.Close(); } catch { /* 关不掉不影响后续 */ }
+        }
+    }
+
+    /// <summary>解析输出目录：<c>--out &lt;dir&gt;</c> 优先，否则 %TEMP%\fc-ui-snapshot。</summary>
+    private static string ResolveOutDir(string[] args)
+    {
+        var i = Array.FindIndex(args, a => a.Equals(OutFlag, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0 && i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]))
+        {
+            try { return Path.GetFullPath(args[i + 1]); } catch { /* 非法路径回退默认 */ }
+        }
+        return Path.Combine(Path.GetTempPath(), "fc-ui-snapshot");
+    }
+}

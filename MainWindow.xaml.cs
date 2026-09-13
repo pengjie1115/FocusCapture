@@ -78,6 +78,10 @@ public partial class MainWindow : Window
             // v3.5：共享 AI provider（与 AI 对话框同源配置；面板编辑待办时间识别 LLM 兜底用，设置变更后由 OpenSettings 回调重建）
             _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
             _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine, _aiProvider);
+            // v3.9：灵感速览标题栏的扩展功能（待办汇总/回收站/设置/导入/每日总结）统一由主程序开窗 ——
+            // 这些窗口的依赖（热键服务、悬浮球锚点、导入预览构造）只有这里持有，
+            // 且待办汇总在本类已有单例管理逻辑，面板若就地实现会造成两套入口行为漂移。
+            _quickViewWindow.ExternalActionRequested = OnQuickViewExternalAction;
             _voiceWindow = new VoiceInputWindow(_settings);
 
             // v3.5（Phase 3）：待办提醒服务装配 ——
@@ -289,6 +293,60 @@ public partial class MainWindow : Window
             sw.Owner = this; sw.ShowDialog();
         }
         finally { _settingsOpen = false; }
+    }
+
+    // ── v3.9：灵感速览标题栏扩展功能的统一出口 ──
+    // 面板只发 id，开窗逻辑全部收在这里：与托盘菜单、全局热键复用同一批方法，
+    // 保证"面板入口"和"热键/托盘入口"永远走同一段代码，不会各改各的。
+
+    /// <summary>面板扩展按钮的分派表。</summary>
+    private void OnQuickViewExternalAction(string id)
+    {
+        switch (id)
+        {
+            case "TodoSummary":  ToggleTodoSummary(); break;   // 与全局热键同语义：唤出/收起
+            case "RecycleBin":   OpenRecycleBin();    break;
+            case "Settings":     OpenSettings();      break;
+            case "Import":       OpenImport();        break;
+            case "DailySummary": OpenDailySummary();  break;
+        }
+    }
+
+    /// <summary>回收站：模态打开（同设置窗口内的入口），关闭后刷新面板——恢复的笔记要立刻可见。</summary>
+    private void OpenRecycleBin()
+    {
+        if (_noteService == null) return;
+        try
+        {
+            var win = new RecycleBinWindow(_noteService, _noteService.RecycleBin, _syncEngine) { Owner = this };
+            win.ShowDialog();
+            _quickViewWindow?.Refresh();
+        }
+        catch (Exception ex) { LogStartupError("OpenRecycleBin", ex); }
+    }
+
+    /// <summary>导入笔记：复用 ImportFlow（与导出对话框里的导入按钮同一实现）。</summary>
+    private void OpenImport()
+    {
+        if (_noteService == null) return;
+        try
+        {
+            if (ImportFlow.Run(_quickViewWindow, _noteService, _settings))
+                _quickViewWindow?.Refresh();
+        }
+        catch (Exception ex) { LogStartupError("OpenImport", ex); }
+    }
+
+    /// <summary>每日总结：与 ReminderService 的到点汇总走同一个窗口实例（锚点同样取自悬浮球）。</summary>
+    private void OpenDailySummary()
+    {
+        if (_noteService == null || _dailySummary == null) return;
+        try
+        {
+            var (lx, ty) = GetBallAnchor();
+            _dailySummary.ShowSummary(_noteService.LoadAllEntries(), lx, ty);
+        }
+        catch (Exception ex) { LogStartupError("OpenDailySummary", ex); }
     }
 
     // ── QUEST-5：同步引擎生命周期 ──
