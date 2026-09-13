@@ -177,6 +177,16 @@ public partial class QuickViewWindow : Window
     private DateTime? _suggestDue;                                                         // 待设为提醒的时间
     private DispatcherTimer? _suggestTimer;                                                // 建议条 10 秒自动消失
 
+    // ── v3.9 标题栏可组装：生成的按钮按 id 登记，动态状态（文案/可用性）全部按 id 查找，
+    //    按钮被用户移除后相应状态更新自动跳过，无需散落特判 ──
+    private readonly Dictionary<string, Button> _toolbarButtons = new();
+    private bool _syncRunning;   // 重建工具栏时恢复「上传中/拉取中」态
+
+    // 宽度设置边界（设置页同口径；边缘缩放回写也夹在此范围）
+    public const double MinWidthLimit = 480;
+    public const double MaxWidthLimit = 1280;
+    private DispatcherTimer? _widthSaveTimer;   // 边缘缩放防抖落盘
+
     public QuickViewWindow(NoteService noteService, AppSettings settings, Func<SyncEngine?>? syncEngineProvider = null, IChatProvider? aiProvider = null)
     {
         InitializeComponent();
@@ -185,9 +195,13 @@ public partial class QuickViewWindow : Window
         _syncEngineProvider = syncEngineProvider;
         _aiProvider = aiProvider;
         Opacity = settings.QuickViewOpacity;
-        // AI 助手名称自定义：标题栏入口按钮文案同源读取（三处入口之一）
-        BtnAiAsk.Content = string.IsNullOrWhiteSpace(settings.AiAssistantName) ? "AI 问答" : settings.AiAssistantName;
-        BtnAiAsk.Width = Math.Max(72, BtnAiAsk.Content.ToString()!.Length * 14 + 24);
+        Width = Math.Clamp(settings.QuickViewWidth, MinWidthLimit, MaxWidthLimit);
+        Topmost = settings.QuickViewTopmost;
+        // v3.9：窗口壳状态随动（最大化圆角 + 宽度记忆落盘）
+        StateChanged += (_, _) => ApplyChromeState();
+        SizeChanged += (_, _) => ScheduleWidthSave();
+        // v3.9：标题栏按钮按设置生成（含 AI 助手名称、同步按钮可用性等初始态）
+        RebuildToolbar();
         // v3.8：「恢复上次筛选」开启时跨启动还原时间筛选（默认行为是唤出时重置为当天，见 ApplySummonBehavior）
         if (settings.QuickViewRestoreLastFilter) RestoreLastFilterFromSettings();
         UpdateSyncButtonsState();   // 启动时根据引擎状态决定按钮是否可用
@@ -244,12 +258,148 @@ public partial class QuickViewWindow : Window
         ReloadNotes();
     }
 
-    /// <summary>AI 助手名称变更时同步标题栏按钮文案（设置窗口保存后调用）</summary>
+    /// <summary>AI 助手名称变更时同步标题栏按钮文案（设置窗口保存后调用）。按钮可能已被用户移出工具栏，按 id 查找、无则跳过。</summary>
     public void UpdateAiName(string name)
     {
         var final = string.IsNullOrWhiteSpace(name) ? "AI 问答" : name;
-        BtnAiAsk.Content = final;
-        BtnAiAsk.Width = Math.Max(72, final.Length * 14 + 24);
+        if (_toolbarButtons.TryGetValue("AiAsk", out var btn)) btn.Content = final;
+    }
+
+    // ── v3.9 标题栏可组装（配置与预算见 QuickViewToolbarCatalog；设置页编辑器在 SettingsWindow 板块「灵感速览」）──
+
+    /// <summary>按设置重建标题栏两组按钮：清空宿主 → 按有序 id 生成 → 回放动态状态。设置变更后由 ApplySettings 调用。</summary>
+    public void RebuildToolbar()
+    {
+        ToolbarLeftHost.Children.Clear();
+        ToolbarRightHost.Children.Clear();
+        _toolbarButtons.Clear();
+
+        var (left, right) = QuickViewToolbarCatalog.Sanitize(_settings.QuickViewToolbarLeft, _settings.QuickViewToolbarRight);
+        // 清洗结果回写（只在脏时落盘一次：手改 settings.json / 升级残留的未知 id 被修正）
+        if (!left.SequenceEqual(_settings.QuickViewToolbarLeft) || !right.SequenceEqual(_settings.QuickViewToolbarRight))
+        {
+            _settings.QuickViewToolbarLeft = left;
+            _settings.QuickViewToolbarRight = right;
+            _settings.Save();
+        }
+
+        foreach (var id in left) ToolbarLeftHost.Children.Add(CreateToolbarButton(id));
+        foreach (var id in right) ToolbarRightHost.Children.Add(CreateToolbarButton(id));
+
+        // 回放动态状态（按钮可能不在配置里，内部按 id 查找自动跳过）
+        UpdateAiName(_settings.AiAssistantName);
+        UpdateTimeButtonLabel();
+        UpdateSyncButtonsState();
+        SetSyncButtonsRunning(_syncRunning);
+        UpdateSelectionUI();
+    }
+
+    /// <summary>按功能目录生成一个标题栏按钮并挂既有 Click 处理器（功能逻辑与重构前完全一致）。</summary>
+    private Button CreateToolbarButton(string id)
+    {
+        var def = QuickViewToolbarCatalog.Find(id)!;
+        var btn = new Button
+        {
+            Content = def.Label,
+            FontSize = def.FontSize,
+            Height = 24,
+            Background = Brushes.Transparent,
+            Foreground = BrushFromHex(def.Foreground),
+            BorderBrush = BrushFromHex(def.BorderBrush),
+            BorderThickness = new Thickness(1),
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        if (def.IsTextButton)
+        {
+            btn.Padding = new Thickness(8, 0, 8, 0);
+            btn.MinWidth = 60;   // 宽度随内容自适应：时间筛选档位 / AI 名称 / 「导出已选 N 条」都是动态文案
+        }
+        else
+        {
+            btn.Width = 28;
+        }
+        if (!string.IsNullOrEmpty(def.ToolTip)) btn.ToolTip = def.ToolTip;
+        btn.Click += ToolbarButtonClick;
+        _toolbarButtons[id] = btn;
+        return btn;
+    }
+
+    /// <summary>#RRGGBB → 冻结 SolidColorBrush（不走 TypeConverter，兼容 PublishTrimmed）。</summary>
+    private static SolidColorBrush BrushFromHex(string hex)
+    {
+        var s = hex.TrimStart('#');
+        var brush = new SolidColorBrush(Color.FromRgb(
+            Convert.ToByte(s[..2], 16),
+            Convert.ToByte(s[2..4], 16),
+            Convert.ToByte(s[4..6], 16)));
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>生成的按钮统一入口：按 id 分派到原有处理器（与 XAML 写死时代同一套方法）。</summary>
+    private void ToolbarButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: null } btn) return;
+        var id = _toolbarButtons.FirstOrDefault(kv => ReferenceEquals(kv.Value, btn)).Key;
+        switch (id)
+        {
+            case "Calendar": BtnCalendar_Click(sender, e); break;
+            case "SyncUpload": BtnSyncUpload_Click(sender, e); break;
+            case "SyncDownload": BtnSyncDownload_Click(sender, e); break;
+            case "Search": BtnSearch_Click(sender, e); break;
+            case "Refresh": BtnRefresh_Click(sender, e); break;
+            case "AiAsk": BtnAiAsk_Click(sender, e); break;
+            case "Export": BtnExport_Click(sender, e); break;
+            case "GetNote": BtnGetNote_Click(sender, e); break;
+        }
+    }
+
+    /// <summary>设置变更后由 MainWindow 调用：宽度 / 置顶 / 标题栏按钮即时生效（面板未打开也可调用）。</summary>
+    public void ApplySettings()
+    {
+        Topmost = _settings.QuickViewTopmost;
+        if (WindowState == WindowState.Normal)
+            Width = Math.Clamp(_settings.QuickViewWidth, MinWidthLimit, MaxWidthLimit);
+        RebuildToolbar();
+    }
+
+    // ── v3.9 窗口铬区：最小化 / 最大化 / 状态随动 ──
+
+    private void BtnMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void BtnMaximize_Click(object sender, RoutedEventArgs e)
+        => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    /// <summary>最大化时取消圆角（否则四角露透明缺口）并切换按钮图标。</summary>
+    private void ApplyChromeState()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        RootBorder.CornerRadius = new CornerRadius(maximized ? 0 : 8);
+        BtnMaximize.Content = maximized ? "❐" : "□";
+    }
+
+    /// <summary>边缘缩放后把宽度回写设置（防抖落盘；悬浮球位置记忆同款先例）。</summary>
+    private void ScheduleWidthSave()
+    {
+        if (WindowState != WindowState.Normal) return;
+        var w = Math.Clamp(ActualWidth, MinWidthLimit, MaxWidthLimit);
+        if (Math.Abs(_settings.QuickViewWidth - w) < 0.5) return;
+        _settings.QuickViewWidth = w;
+        if (_widthSaveTimer == null)
+        {
+            _widthSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _widthSaveTimer.Tick += WidthSaveTimer_Tick;
+        }
+        _widthSaveTimer.Stop();
+        _widthSaveTimer.Start();
+    }
+
+    private void WidthSaveTimer_Tick(object? sender, EventArgs e)
+    {
+        if (sender is DispatcherTimer t) t.Stop();
+        _settings.Save();
     }
 
     private void ReloadNotes()
@@ -420,7 +570,8 @@ public partial class QuickViewWindow : Window
             end = _selectedDate;
         }
         preset = DatePickerPopup.MatchPreset(start, end);
-        BtnCalendar.Content = $"📅 {DatePickerPopup.GetLabel(preset, start, end)}";
+        if (_toolbarButtons.TryGetValue("Calendar", out var calendarBtn))
+            calendarBtn.Content = $"📅 {DatePickerPopup.GetLabel(preset, start, end)}";
     }
 
     /// <summary>焦点回归自动刷新（切回面板/关闭弹窗后列表同步最新笔记）</summary>
@@ -450,7 +601,8 @@ public partial class QuickViewWindow : Window
         var (start, end) = _loadMode == NoteLoadMode.Range
             ? (_rangeStart, _rangeEnd)
             : (_selectedDate, _selectedDate);
-        _datePicker.Open(BtnCalendar, DatePickerPopup.MatchPreset(start, end), start, end);
+        if (!_toolbarButtons.TryGetValue("Calendar", out var anchorBtn)) return;   // 弹层锚定时间按钮本身；按钮已被移除则无入口
+        _datePicker.Open(anchorBtn, DatePickerPopup.MatchPreset(start, end), start, end);
     }
 
     /// <summary>弹层选择结果 → 切换 Date/Range 模式 + 落盘 + 重载列表（单日 start==end 回 Date 模式，与旧日历同口径）</summary>
@@ -522,10 +674,9 @@ public partial class QuickViewWindow : Window
 
     private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            try { DragMove(); } catch { /* DragMove 在窗口未显示时会抛 InvalidOperationException */ }
-        }
+        if (e.ChangedButton != MouseButton.Left) return;
+        if (WindowState != WindowState.Normal) return;   // 最大化时不拖动（无框窗口 DragMove 行为怪异；拖动还原属后续优化）
+        try { DragMove(); } catch { /* DragMove 在窗口未显示时会抛 InvalidOperationException */ }
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Hide();
@@ -626,27 +777,32 @@ public partial class QuickViewWindow : Window
 
     // ── 同步（2026-08-15 灵感速览同步入口：上传=全量推；下载=只 pull 不 push） ──
 
-    /// <summary>根据当前引擎/解锁状态刷新同步按钮可用性 + ToolTip（窗口激活时由 UpdateSyncButtonsState 触发）</summary>
+    /// <summary>根据当前引擎/解锁状态刷新同步按钮可用性 + ToolTip（窗口激活时由 UpdateSyncButtonsState 触发）。
+    /// 按钮可能已被用户移出工具栏，按 id 查找、无则跳过。</summary>
     private void UpdateSyncButtonsState()
     {
         var engine = _syncEngineProvider?.Invoke();
         var enabled = engine != null && engine.IsMasterPasswordSet;
-        BtnSyncUpload.IsEnabled = enabled;
-        BtnSyncDownload.IsEnabled = enabled;
-        var tip = enabled
-            ? null
-            : "云同步未配置或未解锁，请到设置页连接";
-        BtnSyncUpload.ToolTip = enabled ? "上传笔记到云端（沿用全量同步机制）" : tip;
-        BtnSyncDownload.ToolTip = enabled ? "从云端拉取笔记到本地（仅拉不推）" : tip;
+        var tip = enabled ? null : "云同步未配置或未解锁，请到设置页连接";
+        ApplySyncButton("SyncUpload", "↑", "上传笔记到云端（沿用全量同步机制）", enabled, tip);
+        ApplySyncButton("SyncDownload", "↓", "从云端拉取笔记到本地（仅拉不推）", enabled, tip);
+    }
+
+    private void ApplySyncButton(string id, string idleContent, string idleTip, bool enabled, string? disabledTip)
+    {
+        if (!_toolbarButtons.TryGetValue(id, out var btn)) return;
+        btn.IsEnabled = enabled && !_syncRunning;
+        btn.ToolTip = enabled ? idleTip : disabledTip;
+        btn.Content = _syncRunning && id == "SyncUpload" ? "上传中…"
+            : _syncRunning && id == "SyncDownload" ? "拉取中…"
+            : idleContent;
     }
 
     /// <summary>正在同步：禁用两个按钮，避免并发同步（SyncEngine 自身也有 SemaphoreSlim 闸）</summary>
     private void SetSyncButtonsRunning(bool running)
     {
-        BtnSyncUpload.IsEnabled = !running;
-        BtnSyncDownload.IsEnabled = !running;
-        BtnSyncUpload.Content = running ? "上传中…" : "↑";
-        BtnSyncDownload.Content = running ? "拉取中…" : "↓";
+        _syncRunning = running;
+        UpdateSyncButtonsState();
     }
 
     private void ShowSyncStatus(string text, bool error = false)
@@ -1440,14 +1596,20 @@ public partial class QuickViewWindow : Window
             SelectedCountText.Text = $"已选 {count} 条";
             SelectedCountText.Visibility = Visibility.Visible;
             BtnDeleteSelected.Visibility = Visibility.Visible;
-            BtnExport.Content = $"▼ 导出已选 {count} 条";
+            SetToolbarButtonContent("Export", $"▼ 导出已选 {count} 条");
         }
         else
         {
             SelectedCountText.Visibility = Visibility.Collapsed;
             BtnDeleteSelected.Visibility = Visibility.Collapsed;
-            BtnExport.Content = "▼ 导出";
+            SetToolbarButtonContent("Export", "▼ 导出");
         }
+    }
+
+    /// <summary>按 id 改标题栏按钮文案（按钮可能已被移出工具栏，无则跳过）。</summary>
+    private void SetToolbarButtonContent(string id, string content)
+    {
+        if (_toolbarButtons.TryGetValue(id, out var btn)) btn.Content = content;
     }
 
     /// <summary>CheckBox 勾选/取消 → 同步选中状态并更新删除按钮可见性</summary>
@@ -1465,6 +1627,7 @@ public partial class QuickViewWindow : Window
     {
         ApplySummonBehavior();
         Refresh();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;   // v3.9：最小化中热键唤出 → 先恢复正常态
         base.Show();
         Activate();
         Focus();

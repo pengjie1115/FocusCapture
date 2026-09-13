@@ -49,10 +49,10 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | 13 | 纯逻辑，秒级 | **每次代码改动后** |
+| **快层** | `tests/` | 21 | 纯逻辑，秒级 | **每次代码改动后** |
 | **慢层** | `tests/sync/` | 75 | 需引用主项目（编译较慢） | **改动涉及 `Services/Sync/`、`Services/NoteService.cs`、`Models/SyncNote.cs` 时**；交付前 |
 
-当前覆盖：加密解密、时间解析（快层）；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、**行身份与未到期待办（G 组：全库扫行定位 / 跨端删除 / 显示与文件位置解耦 / 不重复落地）**（慢层）。
+当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、**行身份与未到期待办（G 组：全库扫行定位 / 跨端删除 / 显示与文件位置解耦 / 不重复落地）**（慢层）。
 
 ### 八条硬规则
 
@@ -281,9 +281,30 @@
 | 双端各建同名分组 ⚠ | 同步后两端各剩一个分组（创建时间早者胜），原本引用败者 GroupId 的会话自动归入胜者分组，列表无悬空分组 |
 | 抽屉打开 → 点击条目 → 续聊 ✓ | 上述全部改造不影响原有点击条目→续聊链路（B-9 抽屉基础行为） |
 
+### B-12 灵感速览可组装标题栏 + 窗口壳（QuickViewToolbarCatalog + QuickViewWindow 标题栏/铬区 + SettingsWindow「灵感速览」板块，2026-09-13 新增）
+
+> 覆盖 Services/QuickViewToolbarCatalog.cs（功能目录 8 项 + 配置清洗 + 像素预算，纯逻辑，快层 [3] 直链覆盖）、QuickViewWindow（标题栏按钮按设置生成 RebuildToolbar + 窗口铬区 最小化/最大化/关闭 + WindowChrome 边缘缩放 + 宽度记忆）、AppSettings（QuickViewToolbarLeft/Right + QuickViewWidth + QuickViewTopmost）、SettingsWindow 新板块「灵感速览」（宽度/置顶/唤出行为迁入 + 标题栏自定义编辑器）。八个功能的 Click 逻辑与时间筛选弹层（B-11）完全复用未动。
+
+| 验收动作 | 期望现象 |
+|---|---|
+| 老配置（无新字段）升级后首次唤出 ✓ | 标题栏默认布局与旧版一致：左「📅 今天 / ↑ / ↓」，右「🔍 / ⟳ / AI 问答 / ▼ 导出 / 存」，最右铬区「─ □ ×」（settings.json 无 QuickViewToolbar* 字段即默认） |
+| 点每个标题栏功能按钮 ✓ | 与重构前行为一致：时间筛选弹层（B-11）、上传/拉取、查找、刷新、AI 问答、导出、存到得到大脑 |
+| 设置→灵感速览：左侧列表添加/移除/上移/下移 ✓ | 面板标题栏即时按新顺序重排（改动即存，无需重启）；同一功能两侧只能出现一处 |
+| 「可用功能」下拉 ✓ | 只列两侧都未启用的功能；预算放不下的项显示「（空间不足）」且不可选 |
+| 预算文字 ✓ | 显示「已用 X / 可用 Y px」（可用 = 面板宽度 − 固定开销 180）；超预算变红并提示加宽面板或移除按钮 |
+| 「恢复默认布局」 ✓ | 两侧列表与面板标题栏立即回到默认 8 按钮 |
+| 设置→灵感速览：面板宽度改 480–1280 ✓ | 打开中的面板宽度即时生效；拖动面板边缘缩放后约半秒自动记回设置（重启保持） |
+| 设置→灵感速览：窗口置顶开关 ✓ | 关闭后面板不再压住其他窗口；再开恢复置顶（改动即存即时生效） |
+| 点「─」最小化 ✓ | 面板缩进任务栏（任务栏有图标），点任务栏图标恢复；Ctrl+Alt+V 热键唤出也能从最小化恢复正常态 |
+| 点「□」最大化 / 还原 ✓ | 面板铺满工作区（不盖任务栏），圆角取消、按钮图标切「❐」；再点还原 620 宽带圆角 |
+| 拖动标题栏空白处 ✓ | 窗口跟随拖动；最大化状态下拖动无动作 |
+| Esc / × 关闭再唤出 ✓ | 与旧行为一致（Hide/Show 单例），宽度与工具栏布局保持 |
+| 同步进行中改工具栏布局 ⚠ | 重建后按钮恢复「上传中…/拉取中…」态，不出现并发同步入口 |
+| 手改 settings.json 塞未知 id / 空列表 ⚠ | 下次重建自动清洗：未知 id 丢弃、去重、整列无效回退默认（快层 [3] 覆盖） |
+
 ### B-11 灵感速览时间筛选弹层（DatePickerPopup + QuickViewWindow + AppSettings + SettingsWindow + ImportPreviewDialog 迁移，2026-09-12 新增）
 
-> 覆盖 Windows/DatePickerPopup.xaml(.cs)（左列预设菜单 + 自定义双月日历 + 圆点/Tooltip）、QuickViewWindow（时间按钮接入 + 唤出行为 + 状态落盘）、AppSettings（QuickViewRestoreLastFilter + QuickViewLast*）、SettingsWindow 板块 7「灵感速览」下拉、ImportPreviewDialog（目标日期改用 MiniCalendarPicker）。旧 CalendarWindow 已删除（全库无引用）。数据层零改动（复用 LoadNotes/LoadNotesRange/LoadNoteCounts/LoadTodoDueDates）。
+> 覆盖 Windows/DatePickerPopup.xaml(.cs)（左列预设菜单 + 自定义双月日历 + 圆点/Tooltip）、QuickViewWindow（时间按钮接入 + 唤出行为 + 状态落盘）、AppSettings（QuickViewRestoreLastFilter + QuickViewLast*）、SettingsWindow「灵感速览」板块下拉（v3.9 自「通用」迁入）、ImportPreviewDialog（目标日期改用 MiniCalendarPicker）。旧 CalendarWindow 已删除（全库无引用）。数据层零改动（复用 LoadNotes/LoadNotesRange/LoadNoteCounts/LoadTodoDueDates）。
 
 | 验收动作 | 期望现象 |
 |---|---|
@@ -298,7 +319,7 @@
 | 点弹层外任意处 / 面板失活 ✓ | 弹层收起（不误触选择） |
 | 点「🔍 查找」进关键词模式 ✓ | 指示行显示「查找："关键词"」+ 返回按钮；时间按钮文案不受影响 |
 | 默认设置下关闭面板再唤出（Ctrl+Alt+V） ✓ | 重置为当天笔记，按钮回「📅 今天」 |
-| 设置→通用→灵感速览切「唤出时恢复上次的筛选」 ✓ | 唤出沿用关闭前的日期/区间；自定义区间重启应用后仍还原（settings.json 落 QuickViewLast*） |
+| 设置→灵感速览→唤出行为切「唤出时恢复上次的筛选」 ✓ | 唤出沿用关闭前的日期/区间；自定义区间重启应用后仍还原（settings.json 落 QuickViewLast*） |
 | 勾选导出/删除/已办沉底在区间模式下 ✓ | 与单日模式行为一致（筛选/排序逻辑未动，仅数据源换 LoadNotesRange） |
 | 导入向导：目标日期旁 📅 ✓ | 弹 MiniCalendarPicker 单选即关，选中回填输入框（原 CalendarWindow 链路） |
 

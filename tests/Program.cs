@@ -104,6 +104,49 @@ Check(r4.Matched && Math.Abs((r4.Time - DateTime.Now.AddMinutes(30)).TotalSecond
 var r5 = TimeParser.Parse("下午茶");
 Check(!r5.Matched, "「下午茶」不该被识别成时间");
 
+// ── [3] 灵感速览标题栏目录 QuickViewToolbarCatalog ──
+// 坏了的表现：升级后标题栏空白 / 手改 settings.json 后面板再也唤不出按钮 / 设置页预算虚标。
+Console.WriteLine("[3] 灵感速览标题栏目录 QuickViewToolbarCatalog");
+
+var (dL, dR) = QuickViewToolbarCatalog.Sanitize(null, null);
+Check(dL.SequenceEqual(QuickViewToolbarCatalog.DefaultLeft) && dR.SequenceEqual(QuickViewToolbarCatalog.DefaultRight),
+      "配置为空时必须回退默认布局（升级老用户 settings.json 无此字段即走此路径）",
+      $"实际 left=[{string.Join(",", dL)}] right=[{string.Join(",", dR)}]");
+
+var (cL, cR) = QuickViewToolbarCatalog.Sanitize(
+    new List<string> { "Bogus", "Refresh", "Search", "Search" },
+    new List<string> { "NoSuchThing", "GetNote" });
+Check(cL.SequenceEqual(new[] { "Refresh", "Search" }) && cR.SequenceEqual(new[] { "GetNote" }),
+      "未知 id 必须过滤、重复 id 必须去重、有效项保持原顺序",
+      $"实际 left=[{string.Join(",", cL)}] right=[{string.Join(",", cR)}]");
+
+var (gL, gR) = QuickViewToolbarCatalog.Sanitize(new List<string> { "X", "Y" }, new List<string>());
+Check(gL.SequenceEqual(QuickViewToolbarCatalog.DefaultLeft) && gR.SequenceEqual(QuickViewToolbarCatalog.DefaultRight),
+      "整列全是无效 id 时必须回退默认（不能让标题栏彻底清空）");
+
+var defAll = QuickViewToolbarCatalog.DefaultLeft.Concat(QuickViewToolbarCatalog.DefaultRight)
+    .Select(QuickViewToolbarCatalog.Find).ToList();
+Check(defAll.All(f => f != null) && defAll.Count == 8,
+      "默认布局的 8 个 id 必须都能在功能目录中找到（typo 会让按钮凭空消失）");
+
+Check(Math.Abs(QuickViewToolbarCatalog.AvailableBudget(620) - 440) < 0.01,
+      "620 宽面板的标题栏预算 = 620 - 固定开销 180 = 440px",
+      $"实际 {QuickViewToolbarCatalog.AvailableBudget(620):0}px");
+
+var used = QuickViewToolbarCatalog.UsedBudget(QuickViewToolbarCatalog.DefaultLeft.ToList(),
+    QuickViewToolbarCatalog.DefaultRight.ToList());
+Check(Math.Abs(used - 396) < 0.01,
+      "默认布局的估算占用必须是 396px（预算表数字被随手改动会同时坑设置页与面板）",
+      $"实际 {used:0}px");
+
+Check(!QuickViewToolbarCatalog.CanAdd(620, QuickViewToolbarCatalog.DefaultLeft.ToList(),
+          QuickViewToolbarCatalog.DefaultRight.ToList(), "Export"),
+      "620 宽 + 默认布局下再加一个文字钮必须判为空间不足（396+74 > 440）");
+
+Check(QuickViewToolbarCatalog.CanAdd(1280, QuickViewToolbarCatalog.DefaultLeft.ToList(),
+          QuickViewToolbarCatalog.DefaultRight.ToList(), "AiAsk"),
+      "面板拉宽到 1280 后加按钮必须放行（预算随宽度增长）");
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

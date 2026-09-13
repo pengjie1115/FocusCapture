@@ -68,13 +68,13 @@ public partial class SettingsWindow : Window
     }
 
     private readonly List<SettingEntry> _searchIndex = new();
-    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "输入框", "云同步", "待办与提醒", "通用" };
+    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "通用" };
     private bool _navSuppress; // 程序化切换导航选中项时抑制事件
 
     /// <summary>板块面板列表，顺序与 _sectionNames / 左侧导航一一对应</summary>
     private StackPanel[] SectionPanels() => new[]
     {
-        PanelHotkey, PanelAi, PanelAppearance, PanelDisplay,
+        PanelHotkey, PanelAi, PanelAppearance, PanelDisplay, PanelQuickView,
         PanelInput, PanelSync, PanelTodo, PanelGeneral
     };
 
@@ -269,10 +269,15 @@ public partial class SettingsWindow : Window
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
         NotesPathText.Text = _settings.NotesPath;
         AutoStartCheck.IsChecked = _settings.AutoStart;
-        // v3.8：灵感速览唤出行为下拉回显
+        // v3.8：灵感速览唤出行为下拉回显（v3.9 起在「灵感速览」板块）
         foreach (ComboBoxItem it in QuickViewSummonCombo.Items)
             if ((string)it.Tag == (_settings.QuickViewRestoreLastFilter ? "Restore" : "Today"))
                 QuickViewSummonCombo.SelectedItem = it;
+        // v3.9：灵感速览面板宽度 / 置顶 / 标题栏自定义编辑器回显
+        QuickViewWidthInput.Text = ((int)Math.Clamp(_settings.QuickViewWidth,
+            QuickViewWindow.MinWidthLimit, QuickViewWindow.MaxWidthLimit)).ToString();
+        QuickViewTopmostCheck.IsChecked = _settings.QuickViewTopmost;
+        RebuildToolbarEditor();
         // 供应商下拉：6 预设 + 自定义（Tag=null 表示自定义）
         AiProviderCombo.Items.Clear();
         foreach (var p in AiProviders.Presets)
@@ -574,6 +579,178 @@ public partial class SettingsWindow : Window
             _settings.QuickViewRestoreLastFilter = (string)it.Tag == "Restore";
             _settings.Save();
         }
+    }
+
+    // ── v3.9 灵感速览板块：面板宽度 / 置顶 / 标题栏自定义编辑器 ──
+    // 布局预算与配置清洗都在 QuickViewToolbarCatalog（纯逻辑，tests 快层直链覆盖）。
+    // 每次变更：写设置 → 落盘 → 刷新编辑器 → _onChanged（MainWindow → QuickViewWindow.ApplySettings 即时生效）。
+
+    private void QuickViewWidth_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (!int.TryParse(QuickViewWidthInput.Text.Trim(), out var w)) return;   // 输入中途不处理，失焦回退
+        var clamped = (int)Math.Clamp(w, QuickViewWindow.MinWidthLimit, QuickViewWindow.MaxWidthLimit);
+        if (_settings.QuickViewWidth != clamped)
+        {
+            _settings.QuickViewWidth = clamped;
+            _settings.Save();
+            _onChanged?.Invoke();
+        }
+        RefreshToolbarBudget();   // 宽度变了，标题栏预算随之变化
+    }
+
+    private void QuickViewWidth_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(QuickViewWidthInput.Text.Trim(), out var w)
+            || w < (int)QuickViewWindow.MinWidthLimit || w > (int)QuickViewWindow.MaxWidthLimit)
+            QuickViewWidthInput.Text = ((int)Math.Clamp(_settings.QuickViewWidth,
+                QuickViewWindow.MinWidthLimit, QuickViewWindow.MaxWidthLimit)).ToString();
+    }
+
+    private void QuickViewTopmost_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.QuickViewTopmost = QuickViewTopmostCheck.IsChecked == true;
+        _settings.Save();
+        _onChanged?.Invoke();
+    }
+
+    /// <summary>重建标题栏自定义编辑器：两个已启用列表 + 两个「可用功能」下拉 + 预算文字。</summary>
+    private void RebuildToolbarEditor()
+    {
+        var (left, right) = QuickViewToolbarCatalog.Sanitize(_settings.QuickViewToolbarLeft, _settings.QuickViewToolbarRight);
+
+        FillToolbarList(ToolbarLeftList, left);
+        FillToolbarList(ToolbarRightList, right);
+
+        FillToolbarCombo(ToolbarLeftAddCombo, left, right);
+        FillToolbarCombo(ToolbarRightAddCombo, left, right);
+        RefreshToolbarBudget();
+    }
+
+    private void FillToolbarList(ListBox list, List<string> ids)
+    {
+        var selectedId = (list.SelectedItem as ListBoxItem)?.Tag as string;
+        list.Items.Clear();
+        for (var i = 0; i < ids.Count; i++)
+        {
+            var def = QuickViewToolbarCatalog.Find(ids[i]);
+            if (def == null) continue;
+            list.Items.Add(new ListBoxItem
+            {
+                Content = $"{i + 1}. {def.Label}",
+                Tag = def.Id,
+                IsSelected = def.Id == selectedId,
+                Padding = new Thickness(6, 3, 6, 3),
+            });
+        }
+    }
+
+    /// <summary>「可用功能」下拉：只列两侧都未启用的功能；预算放不下的项禁用并注明。</summary>
+    private void FillToolbarCombo(ComboBox combo, List<string> left, List<string> right)
+    {
+        combo.Items.Clear();
+        foreach (var def in QuickViewToolbarCatalog.All)
+        {
+            if (left.Contains(def.Id) || right.Contains(def.Id)) continue;
+            var canAdd = QuickViewToolbarCatalog.CanAdd(_settings.QuickViewWidth, left, right, def.Id);
+            var item = new ComboBoxItem
+            {
+                Content = canAdd ? def.Label : $"{def.Label}（空间不足）",
+                Tag = def.Id,
+                IsEnabled = canAdd,
+            };
+            combo.Items.Add(item);
+        }
+        combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
+    }
+
+    /// <summary>预算文字：已用 / 可用像素；超出预算红字提示（宽度过低 + 按钮过多会标题栏重叠）。</summary>
+    private void RefreshToolbarBudget()
+    {
+        var (left, right) = QuickViewToolbarCatalog.Sanitize(_settings.QuickViewToolbarLeft, _settings.QuickViewToolbarRight);
+        var used = QuickViewToolbarCatalog.UsedBudget(left, right);
+        var avail = QuickViewToolbarCatalog.AvailableBudget(_settings.QuickViewWidth);
+        ToolbarBudgetText.Text = $"已用 {used:0} / 可用 {avail:0} px"
+            + (used > avail + 0.01 ? "（空间不足：标题栏按钮可能重叠，建议加宽面板或移除按钮）" : "");
+        ToolbarBudgetText.Foreground = used > avail + 0.01
+            ? new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35))
+            : new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+    }
+
+    /// <summary>编辑动作统一出口：写回设置并落盘、刷新编辑器、通知 MainWindow 让面板即时重建。</summary>
+    private void CommitToolbarConfig()
+    {
+        _settings.Save();
+        RebuildToolbarEditor();
+        _onChanged?.Invoke();
+    }
+
+    private static List<string> SideList(List<string> left, List<string> right, bool isLeft) => isLeft ? left : right;
+
+    private (List<string> left, List<string> right) WorkingLists()
+        => QuickViewToolbarCatalog.Sanitize(_settings.QuickViewToolbarLeft, _settings.QuickViewToolbarRight);
+
+    private void ToolbarAdd_Click(bool isLeft)
+    {
+        var combo = isLeft ? ToolbarLeftAddCombo : ToolbarRightAddCombo;
+        if (combo.SelectedItem is not ComboBoxItem { Tag: string id }) return;
+        var (left, right) = WorkingLists();
+        if (!QuickViewToolbarCatalog.CanAdd(_settings.QuickViewWidth, left, right, id)) return;
+        SideList(left, right, isLeft).Add(id);
+        _settings.QuickViewToolbarLeft = left;
+        _settings.QuickViewToolbarRight = right;
+        CommitToolbarConfig();
+    }
+
+    private void ToolbarMove_Click(bool isLeft, int delta)
+    {
+        var list = isLeft ? ToolbarLeftList : ToolbarRightList;
+        if (list.SelectedItem is not ListBoxItem { Tag: string id }) return;
+        var (left, right) = WorkingLists();
+        var ids = SideList(left, right, isLeft);
+        var idx = ids.IndexOf(id);
+        var next = idx + delta;
+        if (idx < 0 || next < 0 || next >= ids.Count) return;
+        (ids[idx], ids[next]) = (ids[next], ids[idx]);
+        _settings.QuickViewToolbarLeft = left;
+        _settings.QuickViewToolbarRight = right;
+        CommitToolbarConfig();
+        // 重建后按 id 恢复选中，支持连续点击上移/下移
+        SelectInList(isLeft ? ToolbarLeftList : ToolbarRightList, id);
+    }
+
+    private void ToolbarRemove_Click(bool isLeft)
+    {
+        var list = isLeft ? ToolbarLeftList : ToolbarRightList;
+        if (list.SelectedItem is not ListBoxItem { Tag: string id }) return;
+        var (left, right) = WorkingLists();
+        SideList(left, right, isLeft).Remove(id);
+        _settings.QuickViewToolbarLeft = left;
+        _settings.QuickViewToolbarRight = right;
+        CommitToolbarConfig();
+    }
+
+    private static void SelectInList(ListBox list, string id)
+    {
+        foreach (ListBoxItem item in list.Items)
+            if ((string)item.Tag == id) { item.IsSelected = true; return; }
+    }
+
+    private void ToolbarLeftAdd_Click(object sender, RoutedEventArgs e) => ToolbarAdd_Click(isLeft: true);
+    private void ToolbarLeftUp_Click(object sender, RoutedEventArgs e) => ToolbarMove_Click(isLeft: true, delta: -1);
+    private void ToolbarLeftDown_Click(object sender, RoutedEventArgs e) => ToolbarMove_Click(isLeft: true, delta: +1);
+    private void ToolbarLeftRemove_Click(object sender, RoutedEventArgs e) => ToolbarRemove_Click(isLeft: true);
+    private void ToolbarRightAdd_Click(object sender, RoutedEventArgs e) => ToolbarAdd_Click(isLeft: false);
+    private void ToolbarRightUp_Click(object sender, RoutedEventArgs e) => ToolbarMove_Click(isLeft: false, delta: -1);
+    private void ToolbarRightDown_Click(object sender, RoutedEventArgs e) => ToolbarMove_Click(isLeft: false, delta: +1);
+    private void ToolbarRightRemove_Click(object sender, RoutedEventArgs e) => ToolbarRemove_Click(isLeft: false);
+
+    private void BtnToolbarReset_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.QuickViewToolbarLeft = QuickViewToolbarCatalog.DefaultLeft.ToList();
+        _settings.QuickViewToolbarRight = QuickViewToolbarCatalog.DefaultRight.ToList();
+        CommitToolbarConfig();
     }
 
     private void AiBaseUrl_TextChanged(object sender, TextChangedEventArgs e)

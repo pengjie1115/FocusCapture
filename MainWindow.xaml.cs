@@ -283,6 +283,7 @@ public partial class MainWindow : Window
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
+                _quickViewWindow?.ApplySettings();   // v3.9：宽度/置顶/标题栏按钮即时生效
                 ApplyAssistantNameToAllEntries();
             }, _noteService, () => _syncEngine, RebuildSyncEngine, () => _chatSyncEngine);
             sw.Owner = this; sw.ShowDialog();

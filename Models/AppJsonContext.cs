@@ -19,6 +19,8 @@ namespace FocusCapture;
 [JsonSerializable(typeof(SyncNote))]
 [JsonSerializable(typeof(List<SyncNote>))]
 [JsonSerializable(typeof(SyncBucket))]
+// v3.9 标题栏可组装：AppSettings.QuickViewToolbarLeft/Right 为 List<string>，漏注册运行时抛 NotSupportedException。
+[JsonSerializable(typeof(List<string>))]
 internal partial class AppJsonContext : JsonSerializerContext
 {
 }

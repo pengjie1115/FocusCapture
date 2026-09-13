@@ -78,6 +78,15 @@ public class AppSettings
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 
+    // ── 灵感速览窗口壳（v3.9：宽度/置顶/标题栏可组装）──
+    // 唤出面板宽度（px，480–1280）；标题栏按钮区预算 = 宽度 - QuickViewToolbarCatalog.FixedTitleBarOverhead
+    public double QuickViewWidth { get; set; } = 620;
+    // 面板是否全局置顶（默认开；最小化/最大化按钮为固定铬区，不占自定义槽位）
+    public bool QuickViewTopmost { get; set; } = true;
+    // 标题栏可组装按钮（有序 id 列表，功能目录见 QuickViewToolbarCatalog；读取侧做清洗回退，见 Sanitize）
+    public List<string> QuickViewToolbarLeft { get; set; } = ["Calendar", "SyncUpload", "SyncDownload"];
+    public List<string> QuickViewToolbarRight { get; set; } = ["Search", "Refresh", "AiAsk", "Export", "GetNote"];
+
     // ── 灵感速览时间筛选（v3.8）──
     // 唤出行为：false = 每次唤出重置为当天笔记（默认）；true = 恢复上一次的时间筛选
     public bool QuickViewRestoreLastFilter { get; set; } = false;
