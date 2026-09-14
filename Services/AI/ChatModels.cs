@@ -5,12 +5,17 @@ namespace FocusCapture.Services.AI;
 /// - ToolCallsJson：assistant 消息携带的 tool_calls 原始 JSON（原样回传模型必需）
 /// - ToolCallId：role=tool 的结果消息对应的调用 id
 /// 普通问答路径两字段恒为 null，两参构造与历史会话 JSON 完全兼容。
+///
+/// Attachments（2026-09-14 新增）：用户消息可携带附件（图片走视觉、文档走本地抽文本）。
+/// 该字段随会话 JSON 序列化 —— 只存引用（见 <see cref="ChatAttachment"/>），绝不嵌 base64。
+/// 旧会话 JSON 无此字段 → 反序列化为 null，行为与改造前完全一致。
 /// </summary>
 public sealed record ChatMessage(
     string Role,
     string Content,
     string? ToolCallId = null,
-    string? ToolCallsJson = null);
+    string? ToolCallsJson = null,
+    List<ChatAttachment>? Attachments = null);
 
 public static class ChatRoles
 {

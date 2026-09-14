@@ -42,7 +42,7 @@ public class OpenAICompatibleProvider : IChatProvider
 
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(
-                $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}");
+                $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}{ImageHint(messages)}");
 
         try
         {
@@ -108,7 +108,7 @@ public class OpenAICompatibleProvider : IChatProvider
             var errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             AppLog.Error("AI", $"流式请求失败: HTTP {(int)response.StatusCode}，模型 {_model}，tools={tools?.Count ?? 0}，响应 {Truncate(errorBody, 300)}");
             throw new LlmRequestException(
-                $"LLM 流式请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(errorBody)}",
+                $"LLM 流式请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(errorBody)}{ImageHint(messages)}",
                 (int)response.StatusCode);
         }
 
@@ -265,7 +265,7 @@ public class OpenAICompatibleProvider : IChatProvider
         {
             AppLog.Error("AI", $"ChatWithTools 请求失败: HTTP {(int)response.StatusCode}，模型 {_model}，响应 {Truncate(body, 300)}");
             throw new LlmRequestException(
-                $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}",
+                $"LLM 请求失败: HTTP {(int)response.StatusCode} {response.StatusCode}\n{Truncate(body)}{ImageHint(messages)}",
                 (int)response.StatusCode);
         }
 
@@ -316,8 +316,21 @@ public class OpenAICompatibleProvider : IChatProvider
         }).ToArray<JsonNode?>());
     }
 
-    /// <summary>Agent 消息序列化：普通消息 {role,content}；assistant 带 tool_calls；tool 消息带 tool_call_id</summary>
-    private static JsonArray BuildMessagesArray(IReadOnlyList<ChatMessage> messages)    {
+    /// <summary>单次请求最多携带的图片数（「历史图片全量重发」策略下的兜底：防止长会话累积到几十张图）</summary>
+    private const int MaxImagesPerRequest = 10;
+
+    /// <summary>
+    /// 消息序列化 —— **流式 / 非流式 / 带工具三条路径共用这一处**。
+    /// （2026-09-14 改造：原先非流式走匿名对象、流式走 JsonObject，两套逻辑并存；
+    ///   加附件时必须同时改两处，漏一处会表现为「连接测试正常但实际发送丢附件」，故合并为一处。）
+    ///
+    /// 普通消息 {role, content:"文本"}；带附件的消息 content 为部件数组（text / image_url 按原顺序混排）；
+    /// assistant 带 tool_calls；tool 消息带 tool_call_id。
+    /// </summary>
+    private static JsonArray BuildMessagesArray(IReadOnlyList<ChatMessage> messages)
+    {
+        var imagesToDrop = PickImagesToDrop(messages);
+
         var array = new JsonArray();
         foreach (var m in messages)
         {
@@ -332,6 +345,10 @@ public class OpenAICompatibleProvider : IChatProvider
                 node["content"] = m.Content ?? "";
                 node["tool_call_id"] = m.ToolCallId ?? "";
             }
+            else if (m.Attachments is { Count: > 0 })
+            {
+                node["content"] = BuildContentParts(m, imagesToDrop);
+            }
             else
             {
                 node["content"] = m.Content ?? "";
@@ -341,29 +358,142 @@ public class OpenAICompatibleProvider : IChatProvider
         return array;
     }
 
+    /// <summary>
+    /// 选出需要降级为文字占位的图片：全局图片数超过上限时，**从最早的消息开始丢**（保留最近的）。
+    /// 用户拍板策略是「历史图片每次都重发」（保上下文，不省 token），本上限只防极端累积。
+    /// </summary>
+    private static HashSet<ChatAttachment> PickImagesToDrop(IReadOnlyList<ChatMessage> messages)
+    {
+        var drop = new HashSet<ChatAttachment>();
+        var total = messages.Sum(m => m.Attachments?.Count(a => a.Kind == ChatAttachmentKind.Image) ?? 0);
+        var excess = total - MaxImagesPerRequest;
+        if (excess <= 0) return drop;
+
+        foreach (var m in messages)
+        {
+            if (m.Attachments == null) continue;
+            foreach (var a in m.Attachments)
+            {
+                if (excess <= 0) return drop;
+                if (a.Kind != ChatAttachmentKind.Image) continue;
+                drop.Add(a);
+                excess--;
+            }
+        }
+        return drop;
+    }
+
+    /// <summary>
+    /// 组装单条消息的 content 部件数组：按附件的 <see cref="ChatAttachment.InsertOffset"/>
+    /// 把正文切开，让文字与图片原样交替（这就是"混排"在上行请求里的落地）。
+    /// 文档类不占部件位置，以纯文本拼入（不要求模型有视觉能力）。
+    /// </summary>
+    private static JsonArray BuildContentParts(ChatMessage m, HashSet<ChatAttachment> imagesToDrop)
+    {
+        var parts = new JsonArray();
+        var body = m.Content ?? "";
+        var cursor = 0;
+        var buffer = new StringBuilder();
+
+        void FlushText()
+        {
+            if (buffer.Length == 0) return;
+            parts.Add(new JsonObject { ["type"] = "text", ["text"] = buffer.ToString() });
+            buffer.Clear();
+        }
+
+        // InsertOffset 默认 int.MaxValue → 追加在正文之后；OrderBy 稳定排序保持同位置附件的原始顺序
+        foreach (var a in m.Attachments!.OrderBy(a => a.InsertOffset))
+        {
+            var offset = Math.Clamp(a.InsertOffset, 0, body.Length);
+            if (offset > cursor)
+            {
+                buffer.Append(body, cursor, offset - cursor);
+                cursor = offset;
+            }
+            FlushText();
+            AppendAttachmentPart(parts, a, imagesToDrop);
+        }
+
+        if (cursor < body.Length) buffer.Append(body, cursor, body.Length - cursor);
+        FlushText();
+
+        if (parts.Count == 0)
+            parts.Add(new JsonObject { ["type"] = "text", ["text"] = "" });
+        return parts;
+    }
+
+    /// <summary>追加一个附件的部件：图片走 image_url（base64 data URL），文档拼纯文本</summary>
+    private static void AppendAttachmentPart(JsonArray parts, ChatAttachment a, HashSet<ChatAttachment> imagesToDrop)
+    {
+        if (a.Kind == ChatAttachmentKind.Image)
+        {
+            var url = imagesToDrop.Contains(a) ? null : ChatAttachmentService.BuildImageDataUrl(a);
+            if (url != null)
+            {
+                parts.Add(new JsonObject
+                {
+                    ["type"] = "image_url",
+                    ["image_url"] = new JsonObject { ["url"] = url },
+                });
+                return;
+            }
+            AddTextPart(parts, $"[图片：{a.FileName}（本次未能携带，可能附件不在本机或已超出单次图片上限）]");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(a.ExtractedText))
+        {
+            AddTextPart(parts, $"[文件：{a.FileName}（内容未能提取）]");
+            return;
+        }
+
+        var note = string.IsNullOrEmpty(a.ExtractNote) ? "" : "\n" + a.ExtractNote;
+        AddTextPart(parts, $"【文件：{a.FileName}】\n{a.ExtractedText}{note}\n【文件结束】");
+    }
+
+    /// <summary>追加文本部件；若上一部件已是文本则合并（避免产出连续多个 text 部件）</summary>
+    private static void AddTextPart(JsonArray parts, string text)
+    {
+        if (parts.Count > 0 && parts[^1] is JsonObject last && last["type"]?.GetValue<string>() == "text")
+        {
+            last["text"] = (last["text"]?.GetValue<string>() ?? "") + "\n" + text;
+            return;
+        }
+        parts.Add(new JsonObject { ["type"] = "text", ["text"] = text });
+    }
+
+    /// <summary>非流式请求（CompleteAsync / TestConnectionAsync）。与流式共用 BuildMessagesArray，杜绝两套逻辑分叉</summary>
     private HttpRequestMessage BuildRequest(IReadOnlyList<ChatMessage> messages, bool stream, int? maxTokens = null)
     {
         if (string.IsNullOrWhiteSpace(_model))
             throw new InvalidOperationException("未配置模型名称，请在设置 → AI 模型中填写模型名称。");
 
-        var payload = new
+        var payload = new JsonObject
         {
-            model = _model,
-            messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
-            stream,
+            ["model"] = _model,
+            ["messages"] = BuildMessagesArray(messages),
+            ["stream"] = stream,
             // CompleteAsync 不传 → 用配置的 _maxTokens；TestConnectionAsync 显式传 1 → 用 1（最小请求测连通）
-            max_tokens = maxTokens ?? _maxTokens
+            ["max_tokens"] = maxTokens ?? _maxTokens,
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");
         if (!string.IsNullOrEmpty(_apiKey))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-        request.Content = new StringContent(
-            JsonSerializer.Serialize(payload),
-            Encoding.UTF8,
-            "application/json");
+        request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
         return request;
     }
+
+    /// <summary>请求是否含图片附件：用于 HTTP 400 时给出「模型不支持图片」的中文提示</summary>
+    private static bool ContainsImage(IReadOnlyList<ChatMessage> messages) =>
+        messages.Any(m => m.Attachments?.Any(a => a.Kind == ChatAttachmentKind.Image) == true);
+
+    /// <summary>面向用户的附件相关报错补充说明（把供应商的英文错误翻译成人话）</summary>
+    private static string ImageHint(IReadOnlyList<ChatMessage> messages) =>
+        ContainsImage(messages)
+            ? "\n\n提示：本次请求包含图片。如果当前模型不支持图片输入，请在「设置 → AI 模型」中换用支持视觉的模型（或关闭图片支持开关后重发纯文字）。"
+            : "";
 
     /// <summary>截断响应体，避免异常消息过长</summary>
     private static string Truncate(string text, int maxLength = 200)

@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using FocusCapture;
 using FocusCapture.Models;
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 using FocusCapture.Services.Sync;
 
 /// <summary>
@@ -21,6 +22,7 @@ using FocusCapture.Services.Sync;
 internal static class Program
 {
     private static int _failed;
+    private static string _sandbox = "";
 
     private static void Check(bool cond, string name)
     {
@@ -39,12 +41,14 @@ internal static class Program
         var sandbox = Path.Combine(Path.GetTempPath(), "fc-sync-sandbox-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(sandbox);
         FocusCapturePaths.RootOverride = sandbox;
+        _sandbox = sandbox;
         Console.WriteLine($"数据沙箱（测试结束后可手动删除）：{sandbox}");
         Console.WriteLine();
 
         try
         {
             TestUnit();
+            TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
             await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
@@ -512,6 +516,136 @@ internal static class Program
     }
 
     // 假云盘地址改由 TestWebDavServer 实例提供（端口由系统分配），不再使用固定常量（2026-09-11 修复端口冲突）。
+    // ══════════════ AI 附件检查点（2026-09-14：问答输入框支持图片与文档） ══════════════
+    // 为什么值得自动化：①会话 JSON 一旦嵌进 base64，云同步链路会被拖垮，而这个退化肉眼看不见
+    // ②孤儿附件清理做错了会静默吃掉用户文件 ③"压缩到档位长边"是成本契约，跑偏了就是悄悄多花钱。
+
+    private static void TestChatAttachments()
+    {
+        Console.WriteLine("[H] AI 附件（格式判定 / 抽文本 / 压缩档位 / 会话引用 / 孤儿清理）");
+
+        // H1 格式判定：PDF 本期明确不做，压缩包等二进制一律拒绝
+        Check(ChatAttachmentService.IsSupported("a.png") && ChatAttachmentService.IsSupported("a.docx")
+              && ChatAttachmentService.IsSupported("b.py") && !ChatAttachmentService.IsSupported("c.pdf")
+              && !ChatAttachmentService.IsSupported("d.zip") && !ChatAttachmentService.IsSupported("e.exe"),
+              "H1 格式判定：图片/文档/代码支持；PDF（本期不做）/压缩包/可执行文件拒绝");
+
+        // H2 Markdown 抽正文
+        var mdPath = Path.Combine(_sandbox, "sample.md");
+        File.WriteAllText(mdPath, "# 标题\n第一行正文\n第二行正文", new UTF8Encoding(false));
+        var (mdAtt, mdErr) = ChatAttachmentService.CreateFromFileAsync(mdPath, 1).GetAwaiter().GetResult();
+        Check(mdAtt?.ExtractedText?.Contains("第二行正文") == true && mdAtt.Kind == ChatAttachmentKind.Document,
+              $"H2 md 抽正文成功（错误：{mdErr ?? "无"}）");
+
+        // H3 docx 抽正文（零依赖解 zip）
+        var docxPath = Path.Combine(_sandbox, "sample.docx");
+        CreateMinimalDocx(docxPath, "Word 里的段落文字");
+        var (docxAtt, docxErr) = ChatAttachmentService.CreateFromFileAsync(docxPath, 1).GetAwaiter().GetResult();
+        Check(docxAtt?.ExtractedText?.Contains("Word 里的段落文字") == true,
+              $"H3 docx 抽正文成功（错误：{docxErr ?? "无"}）");
+
+        // H4 非 UTF-8 文本要明确报错，不能把乱码喂给模型
+        var gbkPath = Path.Combine(_sandbox, "gbk.txt");
+        File.WriteAllBytes(gbkPath, new byte[] { 0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4 });   // GBK「中文测试」
+        var (gbkAtt, gbkErr) = ChatAttachmentService.CreateFromFileAsync(gbkPath, 1).GetAwaiter().GetResult();
+        Check(gbkAtt == null && !string.IsNullOrEmpty(gbkErr),
+              $"H4 非 UTF-8 文本明确拒绝并给出原因（实际：{gbkErr ?? "却成功了"}）");
+
+        // H5 图片压缩到档位长边（省流档 = 768）
+        var bigPng = Path.Combine(_sandbox, "big.png");
+        CreateTestPng(bigPng, 3000, 2000);
+        var (imgAtt, imgErr) = ChatAttachmentService.CreateFromFileAsync(bigPng, 0).GetAwaiter().GetResult();
+        var imgLongest = imgAtt == null ? 0 : Math.Max(imgAtt.PixelWidth, imgAtt.PixelHeight);
+        Check(imgLongest == 768, $"H5 省流档把 3000×2000 压到长边 768（实际 {imgLongest}，错误：{imgErr ?? "无"}）");
+
+        // H6 标准档长边 1568
+        var (stdAtt, _) = ChatAttachmentService.CreateFromFileAsync(bigPng, 1).GetAwaiter().GetResult();
+        var stdLongest = stdAtt == null ? 0 : Math.Max(stdAtt.PixelWidth, stdAtt.PixelHeight);
+        Check(stdLongest == 1568, $"H6 标准档长边 1568（实际 {stdLongest}）");
+
+        // H7 上行形态是 base64 data URL
+        var dataUrl = imgAtt == null ? null : ChatAttachmentService.BuildImageDataUrl(imgAtt);
+        Check(dataUrl?.StartsWith("data:image/jpeg;base64,") == true,
+              "H7 上行形态为 base64 data URL（jpeg）");
+
+        // H8 ★核心契约★ 会话 JSON 只存引用，绝不嵌 base64
+        //   判据：一张 3000×2000 的图若被嵌进去，base64 后必然 >100KB；只存引用则整个会话文件才几 KB
+        var session = new ChatSessionService(ExplainMode.Ask);
+        var attachments = new List<ChatAttachment> { imgAtt! };
+        attachments[0].InsertOffset = 2;   // 模拟"先打两个字，再插图"
+        session.AddUser("看这张图", attachments);
+        session.AddAssistant("收到");
+        session.Save();
+
+        var savedFile = Path.Combine(_sandbox, "chat_history", session.SessionId + ".json");
+        var savedText = File.Exists(savedFile) ? File.ReadAllText(savedFile) : "";
+        Check(savedText.Length > 0 && savedText.Length < 20000 && !savedText.Contains("base64"),
+              $"H8 会话 JSON 只存附件引用、不嵌 base64（实际 {savedText.Length} 字符）");
+
+        // H9 会话往返：附件引用与混排偏移必须完整保留
+        var reloaded = ChatSessionService.Load(savedFile);
+        var reUser = reloaded?.Messages.FirstOrDefault(m => m.Role == ChatRoles.User);
+        Check(reUser?.Attachments is { Count: 1 }
+              && reUser.Attachments[0].StoredName == imgAtt!.StoredName
+              && reUser.Attachments[0].InsertOffset == 2,
+              "H9 会话存读往返：附件引用与 InsertOffset 完整保留");
+
+        // H10 旧会话兼容：没有 Attachments 字段的老 JSON 反序列化后必须为空，不得抛异常
+        var legacyFile = Path.Combine(_sandbox, "chat_history", "legacy.json");
+        File.WriteAllText(legacyFile, """
+        {
+          "Id": "legacy",
+          "Rev": 1,
+          "Mode": "Ask",
+          "SystemPrompt": "x",
+          "Messages": [ { "Role": "user", "Content": "老会话没有问题" } ],
+          "SavedAt": "2026-01-01T00:00:00"
+        }
+        """, new UTF8Encoding(false));
+        var legacy = ChatSessionService.Load(legacyFile);
+        Check(legacy?.Messages.Any(m => m.Role == ChatRoles.User && m.Attachments == null) == true,
+              "H10 旧会话 JSON（无附件字段）可正常读取，附件为空");
+
+        // H11 孤儿清理：无人引用的附件该删，被会话引用的必须留
+        var attDir = ChatAttachmentService.Dir;
+        Directory.CreateDirectory(attDir);
+        var orphan = Path.Combine(attDir, "orphan-no-ref.jpg");
+        File.WriteAllBytes(orphan, new byte[] { 1, 2, 3 });
+        File.SetLastWriteTime(orphan, DateTime.Now.AddHours(-3));   // 绕开"1 小时内新文件跳过"的保护窗
+        File.SetLastWriteTime(Path.Combine(attDir, imgAtt!.StoredName), DateTime.Now.AddHours(-3));
+
+        ChatAttachmentService.CleanupOrphans();
+
+        Check(!File.Exists(orphan) && File.Exists(Path.Combine(attDir, imgAtt.StoredName)),
+              "H11 孤儿附件被清理，被会话引用的附件必须保留");
+    }
+
+    /// <summary>造一个最小可解析的 .docx（zip 里塞 word/document.xml）</summary>
+    private static void CreateMinimalDocx(string path, string text)
+    {
+        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                  "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">" +
+                  "<w:body><w:p><w:r><w:t>" + text + "</w:t></w:r></w:p></w:body></w:document>";
+        using var zip = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create);
+        var entry = zip.CreateEntry("word/document.xml");
+        using var s = entry.Open();
+        var bytes = new UTF8Encoding(false).GetBytes(xml);
+        s.Write(bytes, 0, bytes.Length);
+    }
+
+    /// <summary>造一张指定尺寸的纯色 PNG（走 GDI+，避免在测试线程上碰 WPF 图像对象的线程亲和性）</summary>
+    private static void CreateTestPng(string path, int width, int height)
+    {
+        using var bmp = new System.Drawing.Bitmap(width, height);
+        using (var g = System.Drawing.Graphics.FromImage(bmp))
+        {
+            g.Clear(System.Drawing.Color.FromArgb(64, 128, 200));
+            using var brush = new System.Drawing.SolidBrush(System.Drawing.Color.White);
+            g.FillRectangle(brush, 20, 20, width - 40, 60);
+        }
+        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+
     private static readonly int[] Backoff = { 1, 1, 1 };   // 测试注入小退避（SyncEngine 构造参数）
 }
 

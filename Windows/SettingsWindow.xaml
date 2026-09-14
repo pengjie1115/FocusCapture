@@ -456,6 +456,22 @@
                     <TextBlock Text="回答长度上限（token 数，默认 4096；此前不传由供应商默认值决定，常致长回答被截断。不同模型输出上限不同，过大可能被供应商拒绝）"
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
 
+                    <!-- ── 附件（图片/文档）相关（2026-09-14） ── -->
+                    <DockPanel Margin="0,12">
+                        <TextBlock Text="图片清晰度" Width="130" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="AiImageQualityCombo" Style="{StaticResource DarkComboBox}"
+                                  SelectionChanged="AiImageQuality_SelectionChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="AI 问答中粘贴/选择图片时的压缩档位：省流（长边 768，最省 token）／标准（1568，小字截图仍可辨认）／高清（2048，最清晰但更耗 token 与流量）"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+
+                    <CheckBox x:Name="AiVisionEnabledCheck"
+                              Foreground="#E0E0E0" Margin="0,8,0,0"
+                              Checked="AiVisionEnabled_Changed" Unchecked="AiVisionEnabled_Changed">
+                        <TextBlock Text="允许发送图片（关闭后 AI 问答中粘贴图片会被拦下；当前模型不支持视觉输入时建议关闭，避免反复报错）"
+                                   TextWrapping="Wrap"/>
+                    </CheckBox>
+
                     <CheckBox x:Name="AgentEnabledCheck"
                               Foreground="#E0E0E0" Margin="0,12,0,0"
                               Checked="AgentEnabled_Changed" Unchecked="AgentEnabled_Changed">

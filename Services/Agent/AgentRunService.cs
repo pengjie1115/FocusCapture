@@ -39,11 +39,15 @@ public class AgentRunService
         _maxToolRounds = maxToolRounds > 0 ? maxToolRounds : 15;
     }
 
-    /// <summary>处理一条用户消息，返回最终答复文本（同时写入会话历史）。流式产出经 ContentDelta/ReasoningDelta 事件推送。</summary>
-    public async Task<string> RunAsync(string userMessage, CancellationToken ct = default)
+    /// <summary>
+    /// 处理一条用户消息（可带附件），返回最终答复文本（同时写入会话历史）。
+    /// 流式产出经 ContentDelta/ReasoningDelta 事件推送。
+    /// 注意：Agent 每次工具往返都会重发完整消息历史，带图消息的图片 token 会按往返次数重复计费。
+    /// </summary>
+    public async Task<string> RunAsync(string userMessage, List<ChatAttachment>? attachments = null, CancellationToken ct = default)
     {
         AppLog.Info("Agent", $"用户消息：{Trunc(userMessage, 200)}");
-        _session.AddUser(userMessage);
+        _session.AddUser(userMessage, attachments);
 
         for (var round = 0; round < _maxToolRounds; round++)
         {

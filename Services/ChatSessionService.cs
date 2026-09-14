@@ -61,9 +61,17 @@ public class ChatSessionService
         _messages[0] = _messages[0] with { Content = _messages[0].Content + "\n\n" + rules };
     }
 
-    public void AddUser(string content)
+    public void AddUser(string content) => AddUser(content, null);
+
+    /// <summary>
+    /// 带附件的用户消息（2026-09-14）。附件只存轻量引用对象，
+    /// 正文与附件的混排先后由各附件的 InsertOffset 表达（见 ChatAttachment）。
+    /// 无附件时（attachments 为 null/空）与旧行为完全一致。
+    /// </summary>
+    public void AddUser(string content, List<ChatAttachment>? attachments)
     {
-        _messages.Add(new ChatMessage(ChatRoles.User, content));
+        _messages.Add(new ChatMessage(ChatRoles.User, content,
+            Attachments: attachments is { Count: > 0 } ? attachments : null));
         Trim();
     }
 

@@ -111,6 +111,15 @@ internal static class UiSnapshot
                 w.NavList.SelectedIndex = 4;
                 return w;
             }, outDir, log);
+
+            // 带附件的 AI 对话（2026-09-14）：输入区的附件 chip 与气泡里的缩略图，
+            // 只在"真有附件"时才渲染，空会话快照（场景 10）覆盖不到这两个分支。
+            Capture("14-AI 对话（带附件）", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedAttachmentsForSnapshot();
+                return w;
+            }, outDir, log);
         }
         catch (Exception ex)
         {

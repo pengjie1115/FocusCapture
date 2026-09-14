@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Threading;
+using System.Windows.Documents;
+using System.Windows.Media.Imaging;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
@@ -9,6 +11,80 @@ using FocusCapture.Services.Destinations;
 using FocusCapture.Windows.Controls;
 
 namespace FocusCapture.Windows;
+
+/// <summary>
+/// 气泡里的单个附件展示项（2026-09-14）。
+/// 图片出缩略图，文档出文件名卡片；本体不在本机（跨端拉来的会话）时降级为文字占位，不显示裂图。
+/// </summary>
+public class ChatAttachmentViewModel
+{
+    /// <summary>对应的数据模型（点击查看/打开时用）</summary>
+    public ChatAttachment Model { get; }
+
+    /// <summary>展示名：类型 + 文件名 + 体积 + 图片尺寸</summary>
+    public string DisplayName { get; }
+
+    /// <summary>缩略图（仅图片且本机有本体时非空）</summary>
+    public ImageSource? Thumbnail { get; }
+    public bool HasThumbnail => Thumbnail != null;
+
+    /// <summary>副标题说明（附件不在本机 / 文档抽取说明）</summary>
+    public string MissingHint { get; } = "";
+    public bool HasMissingHint => MissingHint.Length > 0;
+
+    public ChatAttachmentViewModel(ChatAttachment model)
+    {
+        Model = model;
+
+        // 第一行只放文件名（放类型+体积会撑爆气泡宽度被截断），元信息挪到副标题行
+        DisplayName = model.FileName;
+
+        var path = ChatAttachmentService.ResolvePath(model);
+        if (!File.Exists(path))
+        {
+            MissingHint = "仅存于原设备，本机没有此附件";
+            return;
+        }
+
+        if (model.Kind == ChatAttachmentKind.Image)
+        {
+            Thumbnail = LoadThumbnail(path);
+            MissingHint = $"图片 · {FormatSize(model.SizeBytes)} · {model.PixelWidth}×{model.PixelHeight}";
+        }
+        else
+        {
+            MissingHint = string.IsNullOrEmpty(model.ExtractNote) ? "正文已随消息发送" : model.ExtractNote;
+        }
+    }
+
+    /// <summary>缩略图按需解码（限制解码宽度，避免大图全尺寸解码吃内存）；OnLoad + Freeze 免锁文件、可跨线程</summary>
+    private static ImageSource? LoadThumbnail(string path)
+    {
+        try
+        {
+            var bmp = new System.Windows.Media.Imaging.BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bmp.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+            bmp.UriSource = new Uri(path, UriKind.Absolute);
+            bmp.DecodePixelWidth = 360;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static string FormatSize(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KB",
+        _ => $"{bytes / 1024.0 / 1024.0:0.#} MB",
+    };
+}
 
 /// <summary>对话框消息气泡 ViewModel</summary>
 public class ChatBubbleViewModel : INotifyPropertyChanged
@@ -86,11 +162,18 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
 
     public bool HasToolSteps => _toolSteps.Length > 0;
 
-    public ChatBubbleViewModel(bool isUser, string content, bool isFillable = false)
+    /// <summary>消息携带的附件（仅用户消息会出现；无附件为 null）</summary>
+    public IReadOnlyList<ChatAttachmentViewModel>? Attachments { get; }
+
+    public bool HasAttachments => Attachments is { Count: > 0 };
+
+    public ChatBubbleViewModel(bool isUser, string content, bool isFillable = false,
+        IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
     {
         IsUser = isUser;
         Content = content;
         IsFillable = isFillable;
+        Attachments = attachments;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -123,6 +206,7 @@ public partial class AIDialogWindow : Window
         _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel, settings.AiMaxTokens);
         InitializeComponent();
         MessagesList.ItemsSource = _bubbles;
+        InitInputArea();
         HistoryPanel.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
         HistoryPanel.ItemAction += (item, action, context) => Dispatcher.BeginInvoke(new Action(() => HandleItemAction(item, action, context)));
         HistoryPanel.BatchAction += (action, items, context) => Dispatcher.BeginInvoke(new Action(() => HandleBatchAction(action, items, context)));
@@ -188,9 +272,10 @@ public partial class AIDialogWindow : Window
 
     private static string GetModeTitle(ExplainMode mode) => "AI " + AiModeText.Get(mode);
 
-    private void AddBubble(bool isUser, string content, bool isFillable = false)
+    private void AddBubble(bool isUser, string content, bool isFillable = false,
+        IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
     {
-        _bubbles.Add(new ChatBubbleViewModel(isUser, content, isFillable));
+        _bubbles.Add(new ChatBubbleViewModel(isUser, content, isFillable, attachments));
         ScrollAfterDelay();
     }
 
@@ -204,13 +289,86 @@ public partial class AIDialogWindow : Window
         MessagesScroll.ScrollToEnd();
     }
 
+    // ══════════════════ 输入区：富文本 + 附件混排（2026-09-14） ══════════════════
+    // 架构要点：输入区是 RichTextBox，附件是内联的原子块（InlineUIContainer）。
+    // 顺序信息存在每个附件的 InsertOffset 上，上行请求时据此把正文切开、还原"文字-图-文字"的原序。
+
+    /// <summary>输入区初始化：备好空段落 + 接管粘贴（剪贴板里的图片/文件要当附件，而不是纯文本）</summary>
+    private void InitInputArea()
+    {
+        ResetInput();
+        DataObject.AddPastingHandler(InputBox, OnInputPaste);
+    }
+
+    /// <summary>清空输入区并恢复一个空段落（RichTextBox 至少要有一个 Block，否则无法输入）</summary>
+    private void ResetInput()
+    {
+        var doc = InputBox.Document;
+        doc.Blocks.Clear();
+        doc.Blocks.Add(new Paragraph { Margin = new Thickness(0) });
+        InputBox.CaretPosition = doc.ContentStart;
+    }
+
+    /// <summary>把键盘焦点落到输入框。窗口是非模态弹出的，WPF 不会自动聚焦任何控件，必须显式调</summary>
+    internal void FocusInput()
+    {
+        InputBox.Focus();
+        Keyboard.Focus(InputBox);
+    }
+
+    /// <summary>
+    /// 从输入区取出（正文, 附件有序列表）。
+    /// 每个附件的 InsertOffset = 它插在正文第几个字符之后，这是"混排"顺序的唯一来源。
+    /// </summary>
+    private (string Text, List<ChatAttachment> Attachments) ExtractInput()
+    {
+        var attachments = new List<ChatAttachment>();
+        var sb = new StringBuilder();
+
+        foreach (var block in InputBox.Document.Blocks)
+        {
+            if (block is not Paragraph p) continue;
+            foreach (var inline in p.Inlines)
+            {
+                switch (inline)
+                {
+                    case Run run:
+                        sb.Append(run.Text);
+                        break;
+                    case LineBreak:
+                        sb.Append('\n');
+                        break;
+                    case InlineUIContainer uc when uc.Tag is ChatAttachment a:
+                        a.InsertOffset = sb.Length;
+                        attachments.Add(a);
+                        break;
+                }
+            }
+            sb.Append('\n');   // 段落之间补换行
+        }
+
+        var raw = sb.ToString();
+        var trimmed = raw.Trim();
+
+        // 正文首尾空白被剪掉后要同步修正附件偏移，否则图会落到错误位置
+        var startCut = raw.Length - raw.TrimStart().Length;
+        if (startCut > 0)
+            foreach (var a in attachments)
+                a.InsertOffset = Math.Max(0, a.InsertOffset - startCut);
+
+        return (trimmed, attachments);
+    }
+
+    private int AttachmentCountInInput() => InputBox.Document.Blocks
+        .OfType<Paragraph>()
+        .Sum(p => p.Inlines.OfType<InlineUIContainer>().Count());
+
     private void InputBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
-        {
-            e.Handled = true;
-            SendCurrentInput();
-        }
+        if (e.Key != Key.Enter) return;
+        if (Keyboard.Modifiers == ModifierKeys.Shift) return;   // Shift+回车 = 换行（保留默认行为）
+        e.Handled = true;
+        SendCurrentInput();
     }
 
     /// <summary>发送/停止一体按钮：回答中点击 = 停止生成，空闲时点击 = 发送</summary>
@@ -227,10 +385,378 @@ public partial class AIDialogWindow : Window
     private void SendCurrentInput()
     {
         if (_isStreaming) return; // 回答中 Enter 不发送也不清空输入框，防误触丢字
-        var text = InputBox.Text.Trim();
-        if (string.IsNullOrEmpty(text)) return;
-        InputBox.Text = "";
-        SendAsync(text);
+
+        var (text, attachments) = ExtractInput();
+        if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
+
+        // 双保险：设置里关了图片发送时，即使图片已贴在输入区也不上行。
+        // 提示后保留输入区内容，不擅自丢弃用户已经准备好的东西。
+        if (!_settings.AiVisionEnabled && attachments.Any(a => a.Kind == ChatAttachmentKind.Image))
+        {
+            ShowVisionDisabledTip();
+            return;
+        }
+
+        ResetInput();
+        SendAsync(text, attachments);
+    }
+
+    // ── 附件添加入口：加号 / 粘贴 / 拖拽 三处共用 ──
+
+    private void BtnAttach_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择图片或文档",
+            Filter = ChatAttachmentService.FileDialogFilter,
+            Multiselect = true,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        _ = AddFilesAsync(dlg.FileNames);
+    }
+
+    /// <summary>把一批本地文件加进输入区；不支持的格式逐个收集原因，最后一次性告知</summary>
+    private async Task AddFilesAsync(IEnumerable<string> paths)
+    {
+        var errors = new List<string>();
+        var accepted = 0;
+
+        foreach (var path in paths)
+        {
+            if (AttachmentCountInInput() >= ChatAttachmentService.MaxAttachmentsPerMessage)
+            {
+                errors.Add($"单条消息最多 {ChatAttachmentService.MaxAttachmentsPerMessage} 个附件");
+                break;
+            }
+            if (!ChatAttachmentService.IsSupported(path))
+            {
+                errors.Add($"{Path.GetFileName(path)}：不支持的格式");
+                continue;
+            }
+            if (ChatAttachmentService.IsSupportedImage(path) && !EnsureVisionAllowed()) return;
+
+            var (att, error) = await ChatAttachmentService.CreateFromFileAsync(path, _settings.AiImageQualityLevel);
+            if (att == null)
+            {
+                errors.Add($"{Path.GetFileName(path)}：{error}");
+                continue;
+            }
+            InsertAttachmentChip(att);
+            accepted++;
+        }
+
+        if (accepted > 0) FocusInput();
+        if (errors.Count > 0)
+            System.Windows.MessageBox.Show(this, string.Join("\n", errors), "部分附件未添加",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    /// <summary>把剪贴板位图加进输入区（截图粘贴）</summary>
+    private async Task AddBitmapAsync(BitmapSource source)
+    {
+        if (!EnsureVisionAllowed()) return;
+        if (AttachmentCountInInput() >= ChatAttachmentService.MaxAttachmentsPerMessage)
+        {
+            System.Windows.MessageBox.Show(this, $"单条消息最多 {ChatAttachmentService.MaxAttachmentsPerMessage} 个附件", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var name = $"截图-{DateTime.Now:yyyyMMdd-HHmmss}.png";
+        var att = await ChatAttachmentService.CreateFromBitmapAsync(source, name, _settings.AiImageQualityLevel);
+        if (att == null)
+        {
+            System.Windows.MessageBox.Show(this, "图片处理失败，请重试", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        InsertAttachmentChip(att);
+        FocusInput();
+    }
+
+    /// <summary>
+    /// 粘贴拦截：剪贴板有文件或图片时接管为附件，其余情况放行走默认文本粘贴。
+    ///
+    /// 关键规则：**同时含文字与位图时优先文字** —— Word / 网页复制文本时剪贴板里也会带位图，
+    /// 不加这个判断会把用户想粘的文字变成一张图。
+    /// </summary>
+    private void OnInputPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        // 1) 资源管理器里 Ctrl+C 复制的文件
+        if (e.DataObject.GetDataPresent(DataFormats.FileDrop))
+        {
+            if (e.DataObject.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } files)
+            {
+                e.CancelCommand();
+                _ = AddFilesAsync(files);
+                return;
+            }
+        }
+
+        // 2) 同时带文字 → 用户意图多半是粘文字（Word / 网页复制场景），放行默认粘贴
+        if (e.DataObject.GetDataPresent(DataFormats.UnicodeText)
+            && e.DataObject.GetData(DataFormats.UnicodeText) is string s && !string.IsNullOrEmpty(s))
+            return;
+
+        // 3) 只有位图 → 截图粘贴
+        if (e.DataObject.GetDataPresent(DataFormats.Bitmap))
+        {
+            BitmapSource? src = null;
+            try { src = e.DataObject.GetData(DataFormats.Bitmap) as BitmapSource; } catch { /* 取不到走退路 */ }
+            src ??= TryGetClipboardImage();
+            if (src != null)
+            {
+                e.CancelCommand();
+                _ = AddBitmapAsync(src);
+            }
+        }
+    }
+
+    private static BitmapSource? TryGetClipboardImage()
+    {
+        try { return WpfClipboard.GetImage(); }
+        catch { return null; }
+    }
+
+    private void InputArea_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void InputArea_Drop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } files)
+        {
+            e.Handled = true;
+            _ = AddFilesAsync(files);
+        }
+    }
+
+    private bool EnsureVisionAllowed()
+    {
+        if (_settings.AiVisionEnabled) return true;
+        ShowVisionDisabledTip();
+        return false;
+    }
+
+    private void ShowVisionDisabledTip()
+    {
+        System.Windows.MessageBox.Show(this,
+            "当前已关闭「允许发送图片」，图片不会被添加或发送。\n\n" +
+            "如果所用模型支持图片输入，请在「设置 → AI 模型」中打开该开关。",
+            "图片发送已关闭", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    // ── 附件块（InlineUIContainer）：原子节点，整块删除、光标跨不过去 ──
+
+    /// <summary>
+    /// 在光标处插入附件块。
+    /// 选富文本方案（而非"文字框 + 下方附件条"）的核心收益就在这里：
+    /// 附件是文档里的原子节点，删不掉一半、复制不乱序。
+    /// </summary>
+    private void InsertAttachmentChip(ChatAttachment att)
+    {
+        var pos = InputBox.CaretPosition;
+        var insertAt = pos.GetInsertionPosition(LogicalDirection.Forward) ?? pos;
+
+        var container = new InlineUIContainer(BuildAttachmentChip(att), insertAt) { Tag = att };
+
+        // 插完把光标移到块之后：否则光标可能仍停在块前，用户接着打字会插到附件之前
+        var after = container.ElementEnd?.GetInsertionPosition(LogicalDirection.Forward);
+        if (after != null) InputBox.CaretPosition = after;
+        InputBox.Focus();
+    }
+
+    private FrameworkElement BuildAttachmentChip(ChatAttachment att)
+    {
+        var isImage = att.Kind == ChatAttachmentKind.Image;
+        var label = att.FileName.Length > 16 ? att.FileName[..16] + "…" : att.FileName;
+
+        var text = new TextBlock
+        {
+            Text = (isImage ? "图片 " : "文件 ") + label,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var remove = new TextBlock
+        {
+            Text = "×",
+            FontSize = 13,
+            Margin = new Thickness(6, 0, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = Cursors.Hand,
+            ToolTip = "移除该附件",
+        };
+        remove.MouseLeftButtonUp += (_, _) => RemoveAttachmentChip(att);
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(text);
+        panel.Children.Add(remove);
+
+        return new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
+            BorderBrush = new SolidColorBrush(isImage
+                ? Color.FromRgb(0x37, 0x8A, 0xDD)
+                : Color.FromRgb(0x88, 0x87, 0x80)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 2, 6, 2),
+            Margin = new Thickness(2, 1, 2, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = panel,
+            ToolTip = BuildAttachmentTooltip(att),
+        };
+    }
+
+    /// <summary>悬停预览：图片直接出图（对齐 WorkBuddy 的交互），文档出文件信息</summary>
+    private static object BuildAttachmentTooltip(ChatAttachment att)
+    {
+        var panel = new StackPanel { MaxWidth = 340 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = att.FileName,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        var path = ChatAttachmentService.ResolvePath(att);
+        var thumb = att.Kind == ChatAttachmentKind.Image && File.Exists(path)
+            ? LoadBitmap(path, 480)
+            : null;
+
+        if (thumb != null)
+        {
+            panel.Children.Add(new Image
+            {
+                Source = thumb,
+                MaxWidth = 320,
+                MaxHeight = 240,
+                Stretch = Stretch.Uniform,
+                Margin = new Thickness(0, 6, 0, 0),
+            });
+        }
+        else
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = att.Kind == ChatAttachmentKind.Image
+                    ? "图片不在本机"
+                    : $"文件 · {ChatAttachmentViewModel.FormatSize(att.SizeBytes)}",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x90, 0x90, 0x90)),
+                Margin = new Thickness(0, 4, 0, 0),
+            });
+        }
+
+        return new ToolTip { Content = panel, Padding = new Thickness(8) };
+    }
+
+    /// <summary>按需解码位图（限制解码宽度省内存；OnLoad + Freeze 免锁文件、可跨线程）</summary>
+    private static BitmapSource? LoadBitmap(string path, int decodeWidth)
+    {
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            bmp.UriSource = new Uri(path, UriKind.Absolute);
+            bmp.DecodePixelWidth = decodeWidth;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RemoveAttachmentChip(ChatAttachment att)
+    {
+        foreach (var block in InputBox.Document.Blocks)
+        {
+            if (block is not Paragraph p) continue;
+            var target = p.Inlines.OfType<InlineUIContainer>().FirstOrDefault(c => ReferenceEquals(c.Tag, att));
+            if (target != null)
+            {
+                p.Inlines.Remove(target);
+                break;
+            }
+        }
+        FocusInput();
+    }
+
+    /// <summary>气泡里点附件：本机有本体就用系统默认程序打开（看图 / 看原文件都走这条）</summary>
+    private void AttachmentThumb_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not ChatAttachmentViewModel vm) return;
+
+        var path = ChatAttachmentService.ResolvePath(vm.Model);
+        if (!File.Exists(path))
+        {
+            System.Windows.MessageBox.Show(this, "这个附件只存在原设备上，本机没有拷贝。", "附件不在本机",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// 仅供 --snapshot 界面自检（2026-09-14）：在输入区放一个附件 chip、在消息区放一条带图的用户消息，
+    /// 用于核验这两处新界面的真实渲染 —— 空会话快照走不到这两个分支。
+    /// 正常启动路径（不带 --snapshot）永远不会调用它。
+    /// </summary>
+    internal void SeedAttachmentsForSnapshot()
+    {
+        try
+        {
+            var visual = new DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x2D, 0x6E, 0xB4)), null, new Rect(0, 0, 512, 288));
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xE8)), null, new Rect(32, 32, 448, 64));
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)), null, new Rect(32, 128, 200, 120));
+            }
+            var bmp = new RenderTargetBitmap(512, 288, 96, 96, PixelFormats.Pbgra32);
+            bmp.Render(visual);
+            bmp.Freeze();
+
+            var att = ChatAttachmentService
+                .CreateFromBitmapAsync(bmp, "快照示例.png", 1)
+                .GetAwaiter().GetResult();
+            if (att == null) return;
+
+            InsertAttachmentChip(att);
+            _bubbles.Add(new ChatBubbleViewModel(true, "这是带附件的消息示例", false,
+                BuildAttachmentVms(new List<ChatAttachment> { att })));
+        }
+        catch
+        {
+            // 快照是辅助手段，任一环节失败都不该阻断整轮快照
+        }
+    }
+
+    /// <summary>把消息附件转成气泡展示项（无附件返回 null，模板据此隐藏整块）</summary>
+    private static IReadOnlyList<ChatAttachmentViewModel>? BuildAttachmentVms(IReadOnlyList<ChatAttachment>? attachments)
+    {
+        if (attachments is not { Count: > 0 }) return null;
+        return attachments.Select(a => new ChatAttachmentViewModel(a)).ToList();
     }
 
     private void StopStreaming()
@@ -238,11 +764,11 @@ public partial class AIDialogWindow : Window
         try { _cts?.Cancel(); } catch (ObjectDisposedException) { /* 已释放即已结束 */ }
     }
 
-    /// <summary>发送一条消息并流式接收回复（普通/Agent 两路径统一：真流式 + 思考过程 + 可停止）</summary>
-    private async void SendAsync(string text)
+    /// <summary>发送一条消息（可带附件）并流式接收回复（普通/Agent 两路径统一：真流式 + 思考过程 + 可停止）</summary>
+    private async void SendAsync(string text, List<ChatAttachment>? attachments = null)
     {
         if (_session == null || _isStreaming) return;
-        if (string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text) && attachments is not { Count: > 0 }) return;
 
         var generation = _sessionGeneration;
         var cts = new CancellationTokenSource();
@@ -252,7 +778,7 @@ public partial class AIDialogWindow : Window
 
         try
         {
-            AddBubble(true, text);
+            AddBubble(true, text, attachments: BuildAttachmentVms(attachments));
             AddBubble(false, "", _targetNote != null && _mode != ExplainMode.Ask);
             var current = _bubbles[^1];
             current.Content = "思考中…"; // 首包到达前的等待占位
@@ -260,13 +786,13 @@ public partial class AIDialogWindow : Window
             if (_settings.AgentEnabled && _mode == ExplainMode.Ask)
             {
                 // Agent 路径：function calling 流式循环（RunAsync 内部负责把用户消息写入会话）
-                await SendViaAgentAsync(text, current, generation, cts);
+                await SendViaAgentAsync(text, attachments, current, generation, cts);
             }
             else
             {
                 // 普通问答路径：用户消息入会话 + 事件流式接收（正文/思考）
                 // （AddUser 不可省：请求体 messages 无 user 会导致 Agnes 400 "No user query" / DeepSeek 自说自话）
-                _session.AddUser(text);
+                _session.AddUser(text, attachments);
                 await StreamPlainReplyAsync(current, generation, cts);
             }
         }
@@ -348,7 +874,8 @@ public partial class AIDialogWindow : Window
     /// 写操作（非只读工具）执行前经 ConfirmHandler 弹窗确认。用户停止时不把部分内容写入会话
     /// （中断可能落在 assistant(tool_calls) 与 tool 结果配对之间，写入不完整配对会让后续请求 400）。
     /// </summary>
-    private async Task SendViaAgentAsync(string text, ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
+    private async Task SendViaAgentAsync(string text, List<ChatAttachment>? attachments,
+        ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
     {
         EnsureAgentRegistry();
         AppendAgentRulesOnce();
@@ -404,7 +931,7 @@ public partial class AIDialogWindow : Window
 
         try
         {
-            var reply = await agent.RunAsync(text, cts.Token);
+            var reply = await agent.RunAsync(text, attachments, cts.Token);
             if (generation != _sessionGeneration) return;
             lock (gate) finished = true;
             CollapseReasoning(current);
@@ -737,13 +1264,14 @@ public partial class AIDialogWindow : Window
         _bubbles.Clear();
         foreach (var m in _session.Messages)
         {
-            if (m.Role == ChatRoles.User) AddBubble(true, m.Content);
+            if (m.Role == ChatRoles.User) AddBubble(true, m.Content, attachments: BuildAttachmentVms(m.Attachments));
             else if (m.Role == ChatRoles.Assistant) AddBubble(false, m.Content);
             // tool / assistant(tool_calls) 中间消息不渲染为气泡
         }
 
         TitleText.Text = GetModeTitle(_mode);
         Title = GetModeTitle(_mode);
+        FocusInput();   // 切完历史会话把焦点还给输入框，省掉"再点一下才能打字"
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
@@ -983,5 +1511,9 @@ public static class AIDialogHelper
         if (_dialog.WindowState == WindowState.Minimized) _dialog.WindowState = WindowState.Normal;
         _dialog.Activate();
         _dialog.Focus();
+
+        // 2026-09-14 修复：输入框必须显式聚焦，且要等窗口显示并完成布局之后再聚焦。
+        // 此前只调了窗口级 Activate()/Focus()，用户看到的现象是"打开后打字没反应，得先用鼠标点一下输入框"。
+        _dialog.Dispatcher.BeginInvoke(new Action(_dialog.FocusInput), DispatcherPriority.Input);
     }
 }

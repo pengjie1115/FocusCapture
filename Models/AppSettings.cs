@@ -62,6 +62,14 @@ public class AppSettings
     public int AiMaxTokens { get; set; } = 4096;  // 回答长度上限（token）：此前不传由供应商默认值决定，常致长回答被 finish_reason=length 截断
     public int AiToolResultLimit { get; set; } = 8000;  // 工具结果喂回模型前的单条截断阈值（防超长结果撑爆上下文）
 
+    // ── AI 附件（2026-09-14：问答输入框支持图片与文档）──
+    // 图片清晰度档位：0=省流(长边768/质量70) 1=标准(1568/85) 2=高清(2048/90)
+    // 越高越清晰但 token 与流量越大；标准档是"小字截图仍可辨认"的平衡点
+    public int AiImageQualityLevel { get; set; } = 1;
+    // 是否允许向上行请求携带图片。默认开（功能开箱可用）；若当前模型不支持视觉，
+    // 可在设置中关闭——关闭后粘贴图片会被拦下并提示，避免反复撞 400。
+    public bool AiVisionEnabled { get; set; } = true;
+
     // ── Agent 工具（AI 动手能力）──
     public bool AgentEnabled { get; set; } = false;   // 默认关：关闭时 AI 对话行为与旧版完全一致
     public bool AgentWriteConfirmPopup { get; set; } = false; // 默认不弹窗：写操作靠系统提示词对话内确认 + 回收站 + 运行日志兜底

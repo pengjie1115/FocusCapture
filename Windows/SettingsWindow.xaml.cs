@@ -284,6 +284,12 @@ public partial class SettingsWindow : Window
             AiProviderCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
         AiProviderCombo.Items.Add(new ComboBoxItem { Content = AiProviders.Custom, Tag = null });
 
+        // 图片清晰度档位：索引即档位值（0 省流 / 1 标准 / 2 高清），与 ChatAttachmentService.QualitySpec 对应
+        AiImageQualityCombo.Items.Clear();
+        AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "省流（长边 768）" });
+        AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "标准（长边 1568）" });
+        AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "高清（长边 2048）" });
+
         AiBaseUrlInput.Text = _settings.AiBaseUrl;
         AiApiKeyInput.Password = _settings.AiApiKey;
         AiModelInput.Text = _settings.AiModel;
@@ -293,6 +299,8 @@ public partial class SettingsWindow : Window
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
         AgentMaxToolRoundsInput.Text = _settings.AgentMaxToolRounds.ToString();
         AiToolResultLimitInput.Text = _settings.AiToolResultLimit.ToString();
+        AiImageQualityCombo.SelectedIndex = Math.Clamp(_settings.AiImageQualityLevel, 0, 2);
+        AiVisionEnabledCheck.IsChecked = _settings.AiVisionEnabled;
         GetNoteKeyInput.Password = _settings.GetNoteApiKey;
         GetNoteClientIdInput.Text = _settings.GetNoteClientId;
         GetNoteTestResult.Text = "";
@@ -779,6 +787,24 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _settings.AgentEnabled = AgentEnabledCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    /// <summary>图片清晰度档位（下拉索引即档位值）</summary>
+    private void AiImageQuality_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var idx = AiImageQualityCombo.SelectedIndex;
+        if (idx < 0) return;
+        _settings.AiImageQualityLevel = idx;
+        _settings.Save();
+    }
+
+    /// <summary>允许发送图片总开关（关掉后问答窗口会拦下粘贴的图片并提示）</summary>
+    private void AiVisionEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AiVisionEnabled = AiVisionEnabledCheck.IsChecked == true;
         _settings.Save();
     }
 

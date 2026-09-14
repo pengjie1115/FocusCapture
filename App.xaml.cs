@@ -1,5 +1,6 @@
 using FocusCapture.Diagnostics;
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 
 namespace FocusCapture;
 
@@ -52,6 +53,18 @@ public partial class App : WpfApp
         }
 
         new MainWindow().Show();
+
+        // 附件孤儿清理（2026-09-14）：删掉没有任何会话引用的附件文件（会话被裁剪/删除/云端覆盖后留下的）。
+        // 放后台线程 + 失败静默 —— 纯清理动作，绝不能拖慢或影响启动。
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var removed = ChatAttachmentService.CleanupOrphans();
+                if (removed > 0) AppLog.Info("App", $"附件孤儿清理：删除 {removed} 个无引用文件");
+            }
+            catch { /* best effort */ }
+        });
     }
 
     private static void LogCrash(string source, Exception ex)
