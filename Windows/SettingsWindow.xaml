@@ -275,6 +275,7 @@
                     <ListBoxItem Content="输入框"/>
                     <ListBoxItem Content="云同步"/>
                     <ListBoxItem Content="待办与提醒"/>
+                    <ListBoxItem Content="文件与网盘"/>
                     <ListBoxItem Content="通用"/>
                 </ListBox>
 
@@ -827,6 +828,12 @@
                         <TextBlock Text="同步 AI 问答记录（随云同步一起上传/下载，端到端加密）" TextWrapping="Wrap"/>
                     </CheckBox>
 
+                    <CheckBox x:Name="ChatFilesCheck"
+                              Foreground="#E0E0E0" Margin="0,8,0,0"
+                              Checked="ChatFiles_Changed" Unchecked="ChatFiles_Changed">
+                        <TextBlock Text="同步网盘文件清单（几 KB，让另一台设备立刻看到有哪些文件；文件本体仍按需取回）" TextWrapping="Wrap"/>
+                    </CheckBox>
+
                     <TextBlock x:Name="SyncStatusText"
                                Text=""
                                Foreground="#CCCCCC" FontSize="12"
@@ -892,7 +899,126 @@
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="132,2,0,0"/>
                 </StackPanel>
 
-                <!-- ── 板块 8：通用 ── -->
+                <!-- ── 板块 8：文件与网盘（2026-09-16，方案 §2.4 + §6.2） ──
+                     注意：本板块内**不放独立分组标题**（导航面板的搜索索引会把非灰色独立 TextBlock
+                     当成「下一行的名称」，分组标题会把真正的设置项名称顶掉）。分组信息写进各行 label。 -->
+                <StackPanel x:Name="PanelFiles" Margin="24,18" Visibility="Collapsed">
+                    <DockPanel Margin="0,4">
+                        <TextBlock Text="网盘 AppKey" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="BaiduAppKeyInput" Style="{StaticResource DarkTextBox}"
+                                 LostFocus="BaiduAppKey_LostFocus"/>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="网盘 SecretKey" Width="150" VerticalAlignment="Center"/>
+                        <PasswordBox x:Name="BaiduSecretInput"
+                                     Background="#2D2D2D" Foreground="#E0E0E0"
+                                     BorderBrush="#555555" Padding="6,4"
+                                     VerticalAlignment="Center"
+                                     LostFocus="BaiduSecret_LostFocus"/>
+                    </DockPanel>
+                    <TextBlock Text="在百度网盘开放平台（pan.baidu.com/union）创建「个人使用」应用后获得。两个密钥都只保存在本机并加密，不会出现在日志或同步数据里；已保存过可留空沿用"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="网盘目录" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="BaiduNetRootInput" Style="{StaticResource DarkTextBox}"
+                                 LostFocus="BaiduNetRoot_LostFocus"/>
+                    </DockPanel>
+                    <TextBlock Text="第三方应用只能访问网盘「我的应用数据」里属于自己的那个目录，默认 /apps/FocusCapture"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <DockPanel Margin="0,12,0,0">
+                        <Button x:Name="BtnBaiduAuthorize" Content="开始授权"
+                                Width="100" Height="30" HorizontalAlignment="Left"
+                                Click="BtnBaiduAuthorize_Click"/>
+                        <Button x:Name="BtnBaiduTest" Content="测试连接"
+                                Width="90" Height="30" Margin="8,0,0,0"
+                                Click="BtnBaiduTest_Click"/>
+                        <Button x:Name="BtnBaiduRevoke" Content="取消授权"
+                                Width="90" Height="30" Margin="8,0,0,0"
+                                Click="BtnBaiduRevoke_Click"/>
+                    </DockPanel>
+                    <TextBlock x:Name="BaiduStatusText" Text="尚未授权"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+
+                    <DockPanel Margin="0,16,0,0">
+                        <TextBlock Text="本地容量上限（GB）" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="CacheMaxGbInput" Width="80" HorizontalAlignment="Left"
+                                 Style="{StaticResource DarkTextBox}"
+                                 LostFocus="CacheMaxGb_LostFocus"/>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="闲置天数" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="CacheIdleDaysInput" Width="80" HorizontalAlignment="Left"
+                                 Style="{StaticResource DarkTextBox}"
+                                 LostFocus="CacheIdleDays_LostFocus"/>
+                    </DockPanel>
+                    <TextBlock Text="超过上限或闲置超过该天数的本地副本会被释放（只删本机这份，网盘上的原文件不受影响，要用时再取回来）"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <DockPanel Margin="0,10,0,0">
+                        <TextBlock Text="自动清理" Width="150" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="CacheEvictCheck"
+                                  Foreground="#E0E0E0" VerticalAlignment="Center"
+                                  Checked="CacheEvict_Changed" Unchecked="CacheEvict_Changed">
+                            <TextBlock Text="按上面两条规则自动释放本地副本" TextWrapping="Wrap"/>
+                        </CheckBox>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,12,0,0">
+                        <Button x:Name="BtnCacheClean" Content="立即清理"
+                                Width="100" Height="30" HorizontalAlignment="Left"
+                                Click="BtnCacheClean_Click"/>
+                        <Button x:Name="BtnOpenFilesDir" Content="打开文件区"
+                                Width="100" Height="30" Margin="8,0,0,0"
+                                Click="BtnOpenFilesDir_Click"/>
+                    </DockPanel>
+                    <TextBlock x:Name="CacheStatusText"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+
+                    <DockPanel Margin="0,16,0,0">
+                        <TextBlock Text="对话附件上传" Width="150" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="AttachmentUploadCheck"
+                                  Foreground="#E0E0E0" VerticalAlignment="Center"
+                                  Checked="AttachmentUpload_Changed" Unchecked="AttachmentUpload_Changed">
+                            <TextBlock Text="把对话里的图片/文档也自动传到网盘（默认关：附件只存本机）" TextWrapping="Wrap"/>
+                        </CheckBox>
+                    </DockPanel>
+
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="附件云端保留" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="AttachmentRetentionInput" Width="80" HorizontalAlignment="Left"
+                                 Style="{StaticResource DarkTextBox}"
+                                 LostFocus="AttachmentRetention_LostFocus"/>
+                    </DockPanel>
+                    <TextBlock Text="单位天，0 = 永久保留。只作用于对话附件；AI 产出的文件和你主动上传的文件在云端永久保留"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <DockPanel Margin="0,16,0,0">
+                        <TextBlock Text="当前数据目录" Width="150" VerticalAlignment="Center"/>
+                        <TextBox x:Name="DataRootText" Style="{StaticResource DarkTextBox}" IsReadOnly="True"/>
+                    </DockPanel>
+                    <TextBlock Text="笔记、待办、对话、附件、文件区全都在这个目录下；默认在系统用户目录深处，可以改到更好找的位置"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
+                    <DockPanel Margin="0,10,0,0">
+                        <TextBlock Text="更改数据目录" Width="150" VerticalAlignment="Center"/>
+                        <Button x:Name="BtnChangeRoot" Content="选择新位置并迁移"
+                                Width="170" Height="30" HorizontalAlignment="Left"
+                                Click="BtnChangeRoot_Click"/>
+                        <Button x:Name="BtnOpenDataRoot" Content="打开当前目录"
+                                Width="110" Height="30" Margin="8,0,0,0"
+                                Click="BtnOpenDataRoot_Click"/>
+                    </DockPanel>
+                    <TextBlock Text="迁移只复制不移动：原目录内容一个字节都不会改也不会删，随时可以改回来。改完需要重启程序生效"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                    <TextBlock x:Name="DataRootStatusText"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                </StackPanel>
+
+                <!-- ── 板块 9：通用 ── -->
                 <StackPanel x:Name="PanelGeneral" Margin="24,18" Visibility="Collapsed">
                     <CheckBox x:Name="AutoStartCheck"
                               Content="开机自动启动"

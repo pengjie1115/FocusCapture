@@ -1,9 +1,12 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Baidu;
 using FocusCapture.Services.Destinations;
 using FocusCapture.Services.Destinations.GetNote;
+using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 using Microsoft.Win32;
+using System.Threading;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 
@@ -68,14 +71,14 @@ public partial class SettingsWindow : Window
     }
 
     private readonly List<SettingEntry> _searchIndex = new();
-    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "通用" };
+    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "文件与网盘", "通用" };
     private bool _navSuppress; // 程序化切换导航选中项时抑制事件
 
     /// <summary>板块面板列表，顺序与 _sectionNames / 左侧导航一一对应</summary>
     private StackPanel[] SectionPanels() => new[]
     {
         PanelHotkey, PanelAi, PanelAppearance, PanelDisplay, PanelQuickView,
-        PanelInput, PanelSync, PanelTodo, PanelGeneral
+        PanelInput, PanelSync, PanelTodo, PanelFiles, PanelGeneral
     };
 
     /*
@@ -312,6 +315,7 @@ public partial class SettingsWindow : Window
         SelectProviderByUrl(_settings.AiBaseUrl);
         UpdateIconUI();
         LoadSyncSettings();
+        LoadFileSettings();
         LoadTodoSettings();
         LoadInputSettings();
         _suppressEvents = false;
@@ -409,6 +413,10 @@ public partial class SettingsWindow : Window
         // 会话同步失败留痕持续可见（不允许无声丢失；成功/等待首配等状态也在此展示）
         if (!string.IsNullOrEmpty(_settings.Sync.ChatSyncResult))
             SyncStatusText.Text += $"\nAI 问答记录：{_settings.Sync.ChatSyncResult}";
+
+        ChatFilesCheck.IsChecked = _settings.Sync.FileSyncEnabled;
+        if (!string.IsNullOrEmpty(_settings.Sync.FileSyncResult))
+            SyncStatusText.Text += $"\n网盘文件清单：{_settings.Sync.FileSyncResult}";
     }
 
     private void StartCapture(Button btn, Action<Models.HotkeyBinding> done)
@@ -1345,6 +1353,404 @@ public partial class SettingsWindow : Window
         SyncStatusText.Text = "正在重置并全量重传…";
         var result = await engine.ResetSyncAsync();
         SyncStatusText.Text = result.Success ? "已重置并全量重传" : "重置失败：" + result.Error;
+    }
+
+    // ══════════════════ 文件与网盘（2026-09-16） ══════════════════
+
+    private CancellationTokenSource? _baiduAuthCts;
+
+    /// <summary>加载文件/网盘板块。</summary>
+    private void LoadFileSettings()
+    {
+        var creds = BaiduCredentialStore.LoadCredentials();
+        BaiduAppKeyInput.Text = creds?.AppKey ?? "";
+        // SecretKey 刻意不回显：留在输入框里会跟着截图/录屏一起泄露。留空 = 沿用已保存的那份。
+        BaiduSecretInput.Password = "";
+        BaiduNetRootInput.Text = _settings.BaiduNetRoot;
+
+        CacheMaxGbInput.Text = _settings.LocalCacheMaxGb.ToString("0.#");
+        CacheIdleDaysInput.Text = _settings.LocalCacheIdleDays.ToString();
+        CacheEvictCheck.IsChecked = _settings.LocalCacheEvictEnabled;
+
+        AttachmentUploadCheck.IsChecked = _settings.BaiduAttachmentUploadEnabled;
+        AttachmentRetentionInput.Text = _settings.BaiduAttachmentRetentionDays.ToString();
+
+        DataRootText.Text = FocusCapturePaths.Root;
+        DataRootStatusText.Text = FocusCapturePaths.IsCustomRootInEffect
+            ? "当前使用自定义目录；改回默认目录时把指针文件 data_root.txt 删掉即可。"
+            : "当前使用默认目录（%AppData%\\FocusCapture）。";
+
+        RefreshBaiduStatus();
+        RefreshCacheStatus();
+    }
+
+    private void RefreshBaiduStatus()
+    {
+        var creds = BaiduCredentialStore.LoadCredentials();
+        if (creds?.IsComplete != true)
+        {
+            BaiduStatusText.Text = "尚未配置应用凭据：请填写 AppKey 与 SecretKey（在百度网盘开放平台创建「个人使用」应用后获得）。";
+            return;
+        }
+
+        var token = BaiduCredentialStore.LoadToken();
+        var head = $"已配置应用（AppKey {BaiduCredentialStore.Mask(creds.AppKey)}）";
+        BaiduStatusText.Text = token == null
+            ? head + "，尚未授权。点「开始授权」按提示用手机扫码或输入授权码即可。"
+            : head + $"；授权令牌{(token.IsValid ? "有效" : "已过期，下次使用时会自动刷新")}。";
+    }
+
+    private void RefreshCacheStatus()
+    {
+        var (count, bytes, protectedCount) = CacheEvictor.Measure();
+        var text = count == 0
+            ? "本机暂无缓存的网盘文件"
+            : $"本机缓存 {count} 个文件，共 {RootMigrationService.FormatSize(bytes)}";
+        if (protectedCount > 0)
+            text += $"；其中 {protectedCount} 个尚未上传完成，不会被自动清理";
+
+        // 「一直传不上去」必须看得见：否则用户以为存成功了，直到某天想取回才发现云端根本没有
+        var stuck = FileRepository.StuckUploadCount(UploadQueue.MaxRetry);
+        if (stuck > 0)
+            text += $"；⚠ 有 {stuck} 个文件多次上传失败（检查网盘授权与网络后，重新「保存到网盘」即可再试）";
+
+        CacheStatusText.Text = text + "。";
+    }
+
+    // ── 应用凭据 ──
+
+    private void BaiduAppKey_LostFocus(object sender, RoutedEventArgs e) => SaveBaiduCredentials();
+
+    private void BaiduSecret_LostFocus(object sender, RoutedEventArgs e) => SaveBaiduCredentials();
+
+    /// <summary>
+    /// 保存应用凭据。两个输入框是配合关系（AppKey 明文可回显、SecretKey 一律不回显），
+    /// 所以只在「两个都填了」或「AppKey 变了且已存有 SecretKey」时才落盘，避免半截覆盖。
+    /// </summary>
+    private void SaveBaiduCredentials()
+    {
+        var appKey = BaiduAppKeyInput.Text.Trim();
+        var secret = BaiduSecretInput.Password.Trim();
+        var saved = BaiduCredentialStore.LoadCredentials();
+
+        if (appKey.Length == 0 && secret.Length == 0) return;
+        if (secret.Length == 0)
+        {
+            if (saved?.IsComplete == true && appKey.Length > 0 && appKey != saved.AppKey)
+            {
+                // 只改了 AppKey：保留原 SecretKey（用户没重填就代表沿用）
+                if (!BaiduCredentialStore.SaveCredentials(appKey, saved.SecretKey))
+                    AppLog.Warn("Settings", "应用凭据保存失败");
+                BaiduSecretInput.Password = "";
+                RefreshBaiduStatus();
+            }
+            return;
+        }
+        if (appKey.Length == 0)
+        {
+            System.Windows.MessageBox.Show(this, "请同时填写 AppKey。", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (appKey == saved?.AppKey && secret == saved.SecretKey) return;
+
+        if (!BaiduCredentialStore.SaveCredentials(appKey, secret))
+            System.Windows.MessageBox.Show(this, "凭据保存失败，请检查磁盘权限。", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        BaiduSecretInput.Password = "";   // 存完就清空输入框，屏幕上不留明文
+        RefreshBaiduStatus();
+    }
+
+    private void BaiduNetRoot_LostFocus(object sender, RoutedEventArgs e)
+    {
+        var v = BaiduNetdiskClient.NormalizeNetRoot(BaiduNetRootInput.Text);
+        BaiduNetRootInput.Text = v;
+        if (v == _settings.BaiduNetRoot) return;
+        _settings.BaiduNetRoot = v;
+        _settings.Save();
+        FileRepository.Cloud = new BaiduCloudStorage(v);   // 立即生效，不必重启
+    }
+
+    // ── 授权 ──
+
+    private async void BtnBaiduAuthorize_Click(object sender, RoutedEventArgs e)
+    {
+        if (_baiduAuthCts != null)
+        {
+            _baiduAuthCts.Cancel();
+            _baiduAuthCts = null;
+            return;   // 再点一次 = 取消正在进行的授权
+        }
+
+        SaveBaiduCredentials();
+        var creds = BaiduCredentialStore.LoadCredentials();
+        if (creds?.IsComplete != true)
+        {
+            System.Windows.MessageBox.Show(this,
+                "请先填写并保存 AppKey 与 SecretKey。\n\n" +
+                "获取方式：pan.baidu.com/union → 申请接入 → 实名认证 → 创建应用（用途选「个人使用」，类型选「软件」）。",
+                "缺少应用凭据", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _baiduAuthCts = cts;
+        BtnBaiduAuthorize.Content = "取消授权中…";
+        try
+        {
+            BaiduStatusText.Text = "正在获取授权码…";
+            var code = await BaiduNetdiskClient.RequestDeviceCodeAsync(creds.AppKey, cts.Token);
+
+            BaiduStatusText.Text =
+                $"已获取授权码：{code.UserCode}\n" +
+                $"请在浏览器打开 {code.VerificationUrl} 并输入上面的授权码（已尝试自动打开浏览器）。\n" +
+                "等待授权中…";
+
+            try { Process.Start(new ProcessStartInfo(code.VerificationUrl) { UseShellExecute = true }); }
+            catch { /* 打不开浏览器也不影响：用户可自行复制地址 */ }
+
+            var token = await BaiduNetdiskClient.PollDeviceTokenAsync(creds.AppKey, creds.SecretKey, code,
+                msg => Dispatcher.Invoke(() => BaiduStatusText.Text = "等待授权… " + msg), cts.Token);
+
+            // 授权令牌必须立刻落盘：它是本机专属凭据，丢了要重新走一遍流程
+            if (!BaiduCredentialStore.SaveToken(token))
+                AppLog.Warn("Settings", "授权令牌保存失败");
+
+            BaiduStatusText.Text = "授权成功。文件现在可以存到网盘了。";
+            FileRepository.Cloud = new BaiduCloudStorage(_settings.BaiduNetRoot);
+            UploadQueue.Kick();   // 把之前因未授权而滞留的待传文件补上
+        }
+        catch (OperationCanceledException)
+        {
+            BaiduStatusText.Text = "已取消授权。";
+        }
+        catch (Exception ex)
+        {
+            BaiduStatusText.Text = "授权失败：" + ex.Message;
+        }
+        finally
+        {
+            BtnBaiduAuthorize.Content = "开始授权";
+            _baiduAuthCts = null;
+            cts.Dispose();
+        }
+    }
+
+    private async void BtnBaiduTest_Click(object sender, RoutedEventArgs e)
+    {
+        BtnBaiduTest.IsEnabled = false;
+        BaiduStatusText.Text = "正在连接…";
+        try
+        {
+            var (ok, message) = await BaiduCloudStorage.TestAsync(_settings.BaiduNetRoot, CancellationToken.None);
+            BaiduStatusText.Text = (ok ? "✓ " : "✗ ") + message;
+        }
+        catch (Exception ex)
+        {
+            BaiduStatusText.Text = "✗ 连接失败：" + ex.Message;
+        }
+        finally
+        {
+            BtnBaiduTest.IsEnabled = true;
+        }
+    }
+
+    private void BtnBaiduRevoke_Click(object sender, RoutedEventArgs e)
+    {
+        if (System.Windows.MessageBox.Show(this,
+                "取消授权？\n\n本机保存的授权令牌会被清除，需要重新授权才能继续存取网盘文件。\n" +
+                "（网盘上已有的文件不受影响；应用凭据会保留）",
+                "取消授权", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+
+        BaiduCredentialStore.ClearToken();
+        RefreshBaiduStatus();
+    }
+
+    // ── 本地缓存 ──
+
+    private void CacheMaxGb_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (double.TryParse(CacheMaxGbInput.Text.Trim(), out var gb) && gb >= 0.5 && gb <= 1024)
+        {
+            _settings.LocalCacheMaxGb = gb;
+            _settings.Save();
+            CacheEvictor.MaxBytes = (long)(gb * 1024 * 1024 * 1024);
+        }
+        CacheMaxGbInput.Text = _settings.LocalCacheMaxGb.ToString("0.#");
+    }
+
+    private void CacheIdleDays_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (int.TryParse(CacheIdleDaysInput.Text.Trim(), out var days) && days is >= 1 and <= 3650)
+        {
+            _settings.LocalCacheIdleDays = days;
+            _settings.Save();
+            CacheEvictor.IdleDays = days;
+        }
+        CacheIdleDaysInput.Text = _settings.LocalCacheIdleDays.ToString();
+    }
+
+    private void CacheEvict_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.LocalCacheEvictEnabled = CacheEvictCheck.IsChecked == true;
+        _settings.Save();
+        CacheEvictor.Enabled = _settings.LocalCacheEvictEnabled;
+    }
+
+    private void BtnCacheClean_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var report = CacheEvictor.Run(force: true);
+            var tail = report.Removed == 0
+                ? "没有符合清理条件的本地副本（未上传完成的文件不会被清理）。"
+                : $"已释放 {report.Removed} 个本地副本，回收 {RootMigrationService.FormatSize(report.FreedBytes)}。";
+            RefreshCacheStatus();
+            CacheStatusText.Text = tail + " " + CacheStatusText.Text;
+        }
+        catch (Exception ex)
+        {
+            CacheStatusText.Text = "清理失败：" + ex.Message;
+        }
+    }
+
+    private void BtnOpenFilesDir_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(FileRepository.FilesDir);
+            Process.Start(new ProcessStartInfo(FileRepository.FilesDir) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    // ── 附件上传 ──
+
+    private void AttachmentUpload_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.BaiduAttachmentUploadEnabled = AttachmentUploadCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void AttachmentRetention_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (int.TryParse(AttachmentRetentionInput.Text.Trim(), out var days) && days is >= 0 and <= 3650)
+        {
+            _settings.BaiduAttachmentRetentionDays = days;
+            _settings.Save();
+            FileRepository.AttachmentRetentionDays = days;
+        }
+        AttachmentRetentionInput.Text = _settings.BaiduAttachmentRetentionDays.ToString();
+    }
+
+    private void ChatFiles_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.Sync.FileSyncEnabled = ChatFilesCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    // ── 数据目录迁移 ──
+
+    private void BtnOpenDataRoot_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(FocusCapturePaths.Root);
+            Process.Start(new ProcessStartInfo(FocusCapturePaths.Root) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void BtnChangeRoot_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择新的数据目录（建议新建一个空的、好找的文件夹）",
+            Multiselect = false,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        var target = dlg.FolderName;
+        var source = FocusCapturePaths.Root;
+
+        var validation = RootMigrationService.ValidateTarget(target, source);
+        if (!validation.Ok)
+        {
+            System.Windows.MessageBox.Show(this, validation.Message, "该位置不可用",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var copyData = validation.State != RootTargetState.NonEmpty;
+
+        if (!copyData)
+        {
+            if (System.Windows.MessageBox.Show(this,
+                    "这个目录里已经有内容。\n\n" +
+                    "为避免冲掉现有数据，切换后将**直接使用该目录里的现有内容**，不再复制当前数据。\n" +
+                    "如果你想搬一份过去，请选一个空的文件夹。\n\n继续切换？",
+                    "目录已有内容", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+        }
+        else
+        {
+            var (files, bytes) = RootMigrationService.Measure(source, applyExcludes: true);
+            if (System.Windows.MessageBox.Show(this,
+                    $"确定把数据目录改到：\n{target}\n\n" +
+                    $"现有数据会完整复制过去（{files} 个文件，{RootMigrationService.FormatSize(bytes)}）。\n" +
+                    "原目录不会被修改也不会被删除，随时可以改回来。\n" +
+                    "复制完成并校验通过后才会生效，改完需要重启程序。\n\n继续？",
+                    "更改数据目录", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+        }
+
+        BtnChangeRoot.IsEnabled = false;
+        DataRootStatusText.Text = "正在处理…";
+        try
+        {
+            var result = await Task.Run(() => RootMigrationService.Migrate(
+                source, target, copyData,
+                msg => Dispatcher.Invoke(() => DataRootStatusText.Text = msg)));
+
+            DataRootStatusText.Text = result.Message + (result.Ok ? "  请重启程序以使用新目录。" : "");
+            DataRootText.Text = FocusCapturePaths.Root;
+
+            if (result.Ok)
+                System.Windows.MessageBox.Show(this,
+                    "数据目录已切换。\n\n请关闭并重新打开 FocusCapture 让新目录生效。\n" +
+                    "原目录里的内容仍然保留，确认新位置一切正常后可以自行删除。",
+                    "需要重启", MessageBoxButton.OK, MessageBoxImage.Information);
+            else
+                System.Windows.MessageBox.Show(this, result.Message, "迁移未完成",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            DataRootStatusText.Text = "迁移失败：" + ex.Message;
+            System.Windows.MessageBox.Show(this, "迁移失败：" + ex.Message, "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            BtnChangeRoot.IsEnabled = true;
+        }
+    }
+
+    /// <summary>界面快照专用（诊断工具用，正常流程不调用）：滚到内容底部再出图。</summary>
+    internal void ScrollToEndForSnapshot()
+    {
+        try { ContentScroller.ScrollToEnd(); } catch { /* 快照辅助失败不影响主流程 */ }
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();

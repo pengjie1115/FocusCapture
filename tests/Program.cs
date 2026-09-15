@@ -147,6 +147,12 @@ Check(QuickViewToolbarCatalog.CanAdd(1280, QuickViewToolbarCatalog.DefaultLeft.T
           QuickViewToolbarCatalog.DefaultRight.ToList(), "AiAsk"),
       "面板拉宽到 1280 后加按钮必须放行（预算随宽度增长）");
 
+// ── [4] 文件仓库与文件句柄 ──
+// 说明（2026-09-16）：本组**放在慢层**（tests/sync/），不放这里。
+// 原因：本工程刻意不引用主项目（只链接少数无依赖的源文件，以保持秒级编译），
+//       而文件仓库必然依赖日志/设置/附件服务，链进来会把这层轻量结构毁掉。
+// 红线守卫（句柄不可伪造）与淘汰保护都在慢层，交付前必跑。
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

@@ -238,6 +238,50 @@
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
+                                            <!-- 云文件卡片（2026-09-16，方案 §6.4）：从网盘取回的文件落进对话，
+                                                 卡片上给三个动作。取回后文件已在本机，所以「打开 / 定位」几乎零成本。 -->
+                                            <ItemsControl x:Name="BubbleCloudFiles"
+                                                          ItemsSource="{Binding CloudFiles}"
+                                                          Margin="0,6,0,0"
+                                                          Visibility="{Binding HasCloudFiles, Converter={StaticResource BoolToVis}}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel Orientation="Horizontal"/>
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="#1E1E1E"
+                                                                BorderBrush="#C9A227"
+                                                                BorderThickness="1"
+                                                                CornerRadius="4"
+                                                                Padding="8,3"
+                                                                Margin="0,0,6,4"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                <TextBlock Text="{Binding Label}"
+                                                                           FontSize="12"
+                                                                           Foreground="#DDDDDD"
+                                                                           VerticalAlignment="Center"
+                                                                           Margin="0,0,8,0"/>
+                                                                <Button Content="打开"
+                                                                        FontSize="11" Height="22" Padding="8,0" Margin="0,0,4,0"
+                                                                        Background="#2D2D2D" Foreground="#4CAF50" BorderBrush="#4CAF50"
+                                                                        Tag="{Binding}" Click="CloudFile_Open_Click"/>
+                                                                <Button Content="定位"
+                                                                        FontSize="11" Height="22" Padding="8,0" Margin="0,0,4,0"
+                                                                        Background="#2D2D2D" Foreground="#AAAAAA" BorderBrush="#555555"
+                                                                        Tag="{Binding}" Click="CloudFile_Locate_Click"/>
+                                                                <Button Content="另存"
+                                                                        FontSize="11" Height="22" Padding="8,0"
+                                                                        Background="#2D2D2D" Foreground="#AAAAAA" BorderBrush="#555555"
+                                                                        Tag="{Binding}" Click="CloudFile_SaveAs_Click"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
                                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                                 <StackPanel.Style>
                                                     <Style TargetType="StackPanel">
@@ -304,21 +348,78 @@
             <Border Grid.Row="2" Background="#252525" CornerRadius="0,0,6,6" Padding="12,10"
                     AllowDrop="True" DragOver="InputArea_DragOver" Drop="InputArea_Drop">
                 <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 已选择的本地文件（2026-09-16，方案 §6.2 红线）：
+                         用户点「选择文件」后这里出现一张牌号卡片，AI 只能引用卡片上的牌号（file:yyyyMMdd-N）。
+                         路径永远不进模型 —— 模型编不出牌号，也就碰不到没被点过的文件。
+                         刻意与下方附件卡片区分配色（金黄描边）：附件是要发给模型的内容，这里是「AI 可操作的本机文件」。 -->
+                    <ItemsControl x:Name="HandleChips" Grid.Row="0" Margin="0,0,0,6"
+                                  Visibility="{Binding HasHandles, ElementName=Self_HandleHost, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#2A2A1E"
+                                        BorderBrush="#C9A227"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="6,2"
+                                        Margin="0,0,6,4"
+                                        VerticalAlignment="Center"
+                                        Cursor="Hand"
+                                        ToolTip="{Binding Path}"
+                                        MouseLeftButtonDown="HandleChip_MouseDown">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="本机文件"
+                                                   FontSize="10"
+                                                   Foreground="#C9A227"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,6,0"/>
+                                        <TextBlock Text="{Binding FileName}"
+                                                   FontSize="12"
+                                                   Foreground="#DDDDDD"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding Id}"
+                                                   FontSize="10"
+                                                   Foreground="#8A8A8A"
+                                                   VerticalAlignment="Center"
+                                                   Margin="6,0,0,0"/>
+                                        <TextBlock Text="×"
+                                                   FontSize="13"
+                                                   Foreground="#999999"
+                                                   Margin="6,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Cursor="Hand"
+                                                   ToolTip="取消选择该文件"
+                                                   Tag="{Binding Id}"
+                                                   MouseLeftButtonUp="HandleChipRemove_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,0" VerticalAlignment="Bottom">
                     <!-- 加号：打开文件选择框。Padding=0 必须显式设置——全局 Button 样式是 8,4，会挤偏图标。
                          图标用矢量 Path 而非 "+" 字符：字体里的加号字形在行框内本身不居中，
                          无论怎么调字号/内边距都消不掉那点偏差，矢量图形才能真居中。 -->
                     <Button x:Name="BtnAttach"
-                            Grid.Column="0"
                             Width="30" Height="30"
                             Padding="0"
-                            Margin="0,0,8,0"
-                            VerticalAlignment="Bottom"
                             Background="#1E1E1E"
                             Foreground="#AAAAAA"
                             BorderBrush="#555555"
@@ -332,6 +433,34 @@
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center"/>
                     </Button>
+
+                    <!-- 选择文件（2026-09-16）：只签发一个牌号让 AI 能引用，文件本身不发给模型、不复制。
+                         与「+」的区别：+ 是把文件当附件发给 AI 看，这里是让 AI 能对它动手（存到网盘）。 -->
+                    <Button x:Name="BtnPickFile"
+                            Width="30" Height="30"
+                            Padding="0"
+                            Margin="6,0,0,0"
+                            Background="#1E1E1E"
+                            Foreground="#AAAAAA"
+                            BorderBrush="#555555"
+                            ToolTip="选择本机文件交给 AI 操作（如「把这个文件存到网盘」）。AI 只能操作你选过的文件"
+                            Click="BtnPickFile_Click">
+                        <Grid>
+                            <Path Data="M3.5,1.5 H8.5 L12,5 V14 H3.5 Z"
+                                  Stroke="#BBBBBB"
+                                  StrokeThickness="1.3"
+                                  StrokeLineJoin="Round"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"/>
+                            <Path Data="M8.5,1.5 V5 H12"
+                                  Stroke="#BBBBBB"
+                                  StrokeThickness="1.3"
+                                  StrokeLineJoin="Round"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"/>
+                        </Grid>
+                    </Button>
+                    </StackPanel>
 
                     <!-- 富文本输入区：文字与附件块混排。
                          MaxHeight 放在外框上，内部 ScrollViewer 管滚动 —— 输入区随内容长高，到上限后内部滚动。
@@ -380,6 +509,7 @@
                             Foreground="#4CAF50"
                             BorderBrush="#4CAF50"
                             Click="BtnSend_Click"/>
+                </Grid>
                 </Grid>
             </Border>
         </Grid>

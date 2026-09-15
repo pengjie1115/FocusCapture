@@ -1,5 +1,7 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Baidu;
+using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
 using Microsoft.Win32;
@@ -15,6 +17,7 @@ public partial class MainWindow : Window
     private IChatProvider? _aiProvider;              // v3.5：共享 AI provider（面板编辑时间识别 LLM 兜底 + AI 对话框同源配置），设置变更后重建
     private SyncEngine? _syncEngine;            // QUEST-5：云端同步引擎（可插拔 Provider，配置完整才创建）
     private ChatSyncEngine? _chatSyncEngine;    // 2026-09：AI 会话同步引擎（搭 _syncEngine 周期，共享闸；随 CreateSyncEngine 一并创建/重建）
+    private FileStoreSync? _fileStoreSync;      // 2026-09-16：网盘文件清单同步（同周期搭车；只同步几 KB 元数据，文件本体按需取回）
     private FloatBall? _floatBall;
     private InputWindow? _inputWindow;
     private QuickViewWindow? _quickViewWindow;
@@ -56,6 +59,11 @@ public partial class MainWindow : Window
         {
             _noteService = new NoteService(_settings);
             AIDialogHelper.Initialize(_noteService, _settings, this);
+
+            // 文件仓库装配（2026-09-16）：接云仓库 + 起后台队列 + 跑一轮保养。
+            // 全部放后台线程，失败静默 —— 网盘不可用绝不能拖慢或影响启动。
+            try { InitializeFileStore(); }
+            catch (Exception ex) { AppLog.Error("Files", "文件仓库装配失败", ex); }
             _hotkeyService = new HotkeyService(_hwnd, _settings);
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
@@ -351,6 +359,88 @@ public partial class MainWindow : Window
 
     // ── QUEST-5：同步引擎生命周期 ──
 
+    // ── 文件仓库生命周期（2026-09-16） ──
+
+    /// <summary>
+    /// 装配文件仓库：
+    /// ① 接上云仓库（百度网盘；凭据不全 / 未授权时 <see cref="ICloudStorage.IsReady"/> 为 false，
+    ///    整个文件仓库自动降级为「只存本地」，不抛异常也不骚扰用户）
+    /// ② 把设置里的淘汰参数灌进淘汰器
+    /// ③ 起后台上传队列，并跑一轮保养（到期清理 → 淘汰 → 补传）
+    /// </summary>
+    private void InitializeFileStore()
+    {
+        FileRepository.Cloud = new BaiduCloudStorage(_settings.BaiduNetRoot);
+        FileRepository.AttachmentRetentionDays = Math.Clamp(_settings.BaiduAttachmentRetentionDays, 0, 3650);
+
+        CacheEvictor.Enabled = _settings.LocalCacheEvictEnabled;
+        CacheEvictor.MaxBytes = (long)(Math.Clamp(_settings.LocalCacheMaxGb, 0.5, 1024) * 1024 * 1024 * 1024);
+        CacheEvictor.IdleDays = Math.Clamp(_settings.LocalCacheIdleDays, 1, 3650);
+
+        UploadQueue.Start();
+
+        // 订阅前一律先解绑：本方法在引擎重建 / 设置变更时会再跑，重复 += 会导致同一动作执行多次。
+        ChatAttachmentService.Stored -= OnAttachmentStored;
+        ChatAttachmentService.Stored += OnAttachmentStored;
+        FileRepository.MetadataChanged -= OnFileMetadataChanged;
+        FileRepository.MetadataChanged += OnFileMetadataChanged;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await AttachmentExpiryService.RunAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) { AppLog.Warn("Files", "附件到期清理失败：" + ex.Message); }
+
+            try { CacheEvictor.Run(); }
+            catch (Exception ex) { AppLog.Warn("Files", "缓存淘汰失败：" + ex.Message); }
+
+            UploadQueue.Kick();   // 启动时把上次没传完的补上
+        });
+    }
+
+    /// <summary>
+    /// 附件落盘后的登记（2026-09-16）。**开关默认关**：不开就不登记、不上传，
+    /// 与改造前「附件只存本机」的行为完全一致。
+    ///
+    /// 注意这里只管「自动」：开关关着时用户显式说「把这张图存上去」，仍会由 Agent 工具走显式路径上传
+    /// （显式意图优先 —— 方案决策 15）。
+    /// </summary>
+    private void OnAttachmentStored(ChatAttachment attachment)
+    {
+        try
+        {
+            if (!_settings.BaiduAttachmentUploadEnabled) return;
+
+            var path = ChatAttachmentService.ResolvePath(attachment);
+            if (!File.Exists(path)) return;
+
+            var (meta, error) = FileRepository.RegisterLocalFile(
+                path, FileTypes.Attachment, attachment.FileName, attachExisting: true);
+            if (meta == null)
+            {
+                AppLog.Warn("Files", $"附件登记失败：{error}");
+                return;
+            }
+            UploadQueue.Kick();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Files", "附件登记异常：" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 文件登记/彻底删除后踢一脚：① 让新文件立刻进上传队列 ② 让元数据改动尽快同步出去。
+    /// 不这么做的话，「这台存完、那台要等半小时才看见」会让人以为功能坏了。
+    /// </summary>
+    private void OnFileMetadataChanged()
+    {
+        UploadQueue.Kick();
+        _syncEngine?.NotifyLocalChange();
+    }
+
     /// <summary>本机笔记变更 → 合并窗口推送（订阅一次，_syncEngine 字段实时指向当前引擎）。</summary>
     private void OnNotesChanged() => _syncEngine?.NotifyLocalChange();
 
@@ -372,6 +462,13 @@ public partial class MainWindow : Window
         _chatSyncEngine = new ChatSyncEngine(_settings, provider, engine.Gate);
         engine.CycleCompleted += () => _chatSyncEngine.RunOnceAsync().ContinueWith(_ =>
             Dispatcher.BeginInvoke(new Action(() => AIDialogHelper.RefreshOpenDrawer())));  // 会话同步完成后刷新展开中的抽屉（启动首拉/轮询/flush 全覆盖）
+
+        // 文件清单同步（2026-09-16）：同样搭车周期钩子 + 共享并发闸，只同步几 KB 元数据。
+        // 注意它**不是** SyncEngine 的桶：文件元数据是另一种结构、另一套合并规则，只共用通道与节拍。
+        _fileStoreSync = new FileStoreSync(_settings, provider, engine.Gate);
+        FileStoreSync.ResetInitialPull();   // 新引擎要重新拉一轮清单，这期间不做「文件不存在」的判断
+        engine.CycleCompleted += () => _fileStoreSync.RunOnceAsync().ContinueWith(_ =>
+            Dispatcher.BeginInvoke(new Action(AIDialogHelper.NotifyFileListChanged)));
         AIDialogHelper.SessionDeleted = id => _chatSyncEngine?.MarkDeleted(id);  // AI 对话删除 UI → MarkDeleted 闭环①（lambda 读字段，引擎重建后自动指向新实例）
         _chatSyncEngine.ConflictResolutionRequested += OnChatConflictResolution;  // 阶段二：Rev 冲突弹窗裁决（true=本地覆盖上传）
         ChatSessionService.SessionChanged -= OnChatSessionChanged;

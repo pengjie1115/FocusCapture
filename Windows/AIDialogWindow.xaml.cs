@@ -8,6 +8,7 @@ using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Agent;
 using FocusCapture.Services.Destinations;
+using FocusCapture.Services.Files;
 using FocusCapture.Windows.Controls;
 
 namespace FocusCapture.Windows;
@@ -56,6 +57,32 @@ public class ChatAttachmentViewModel
         < 1024 * 1024 => $"{bytes / 1024.0:0.#} KB",
         _ => $"{bytes / 1024.0 / 1024.0:0.#} MB",
     };
+}
+
+/// <summary>
+/// 对话里的云文件卡片（2026-09-16，方案 §6.4）。
+/// 与附件卡片是两套东西：附件是「要发给模型看的内容」，这里是「从网盘取回到本机的文件」，
+/// 所以独立成一个 VM，避免把两种语义混进同一个模板里。
+/// </summary>
+public class CloudFileCardViewModel
+{
+    public FileMetadata Model { get; }
+
+    /// <summary>卡片文案：云文件 名称 · 大小</summary>
+    public string Label { get; }
+
+    /// <summary>本机路径（取回后必有；为空表示还没落到本机）。</summary>
+    public string? LocalPath { get; }
+
+    public CloudFileCardViewModel(FileMetadata model)
+    {
+        Model = model;
+        var entry = FileRepository.FindCache(model.Id);
+        LocalPath = entry != null && File.Exists(entry.LocalPath) ? entry.LocalPath : null;
+
+        var name = model.Name.Length > 20 ? model.Name[..20] + "…" : model.Name;
+        Label = $"云文件 {name} · {ChatAttachmentViewModel.FormatSize(model.Size)}";
+    }
 }
 
 /// <summary>对话框消息气泡 ViewModel</summary>
@@ -139,6 +166,19 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
 
     public bool HasAttachments => Attachments is { Count: > 0 };
 
+    /// <summary>从网盘取回并交付给用户的文件卡片（工具执行过程中动态追加）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<CloudFileCardViewModel> CloudFiles { get; } = new();
+
+    public bool HasCloudFiles => CloudFiles.Count > 0;
+
+    /// <summary>追加一张云文件卡片（在 UI 线程调用）。</summary>
+    public void AddCloudFile(FileMetadata meta)
+    {
+        if (CloudFiles.Any(c => c.Model.Id == meta.Id)) return;   // 同一文件只给一张卡
+        CloudFiles.Add(new CloudFileCardViewModel(meta));
+        FirePropertyChanged(nameof(HasCloudFiles));
+    }
+
     public ChatBubbleViewModel(bool isUser, string content, bool isFillable = false,
         IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
     {
@@ -196,6 +236,14 @@ public partial class AIDialogWindow : Window
         HistoryPanel.CollapseRequested += () => Dispatcher.BeginInvoke(new Action(() => OpenDrawer(false))); // 抽屉内收起按钮：复用同一动画逻辑
         Deactivated += (_, _) => _preview.HoverLeave();   // 窗口失焦时鼠标可能已不在卡片上，预览要跟着收
         Closed += OnWindowClosed;
+
+        // 云文件交付（2026-09-16）：工具在后台线程取回文件后，把卡片挂到当前气泡上。
+        // 静态事件必须成对解绑（窗口会被 AIDialogHelper 重建），否则旧窗口实例泄漏。
+        FileDeliveryHub.Delivered += OnFileDelivered;
+        FileDeliveryHub.OpenRequested += OnFileOpenRequested;
+        FileDeliveryHub.LocateRequested += OnFileLocateRequested;
+
+        RefreshHandleChips();   // 句柄是进程级的，重开窗口时把仍有效的牌号摆回来
     }
 
     /// <summary>
@@ -684,6 +732,206 @@ public partial class AIDialogWindow : Window
         _ = AddFilesAsync(dlg.FileNames);
     }
 
+    // ── 选择文件：只签发牌号，不复制、不发给模型（2026-09-16，方案 §6.2） ──
+
+    /// <summary>
+    /// 「选择文件」入口。**只做一件事：给用户点过的文件签发一个牌号。**
+    /// 与旁边的「+」是两种语义：「+」是把文件当附件发给模型看，这里是让模型能对它动手（存网盘等）。
+    /// 由于牌号只在本机生成、模型无法编造，AI 的可达范围就被严格限定在用户亲手点过的文件上。
+    /// </summary>
+    private void BtnPickFile_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择要交给 AI 操作的文件",
+            Filter = "所有文件|*.*",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        foreach (var path in dlg.FileNames)
+        {
+            try { FileHandleStore.Register(path); }
+            catch (Exception ex) { AppLog.Warn("AI", "登记文件句柄失败：" + ex.Message); }
+        }
+        RefreshHandleChips();
+        FocusInput();
+    }
+
+    /// <summary>刷新已选文件卡片区（无内容时整块收起，不占高度）。</summary>
+    private void RefreshHandleChips()
+    {
+        var items = FileHandleStore.Snapshot();
+        HandleChips.ItemsSource = items;
+        HandleChips.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void HandleChip_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        // 双击 = 用系统默认程序打开（确认选对了文件）。单击不做事，避免误触。
+        if (e.ClickCount < 2) return;
+        if (sender is not FrameworkElement fe || fe.DataContext is not FileHandleInfo info) return;
+        e.Handled = true;
+        try { Process.Start(new ProcessStartInfo(info.Path) { UseShellExecute = true }); }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void HandleChipRemove_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is FrameworkElement fe && fe.Tag is string id)
+        {
+            FileHandleStore.Remove(id);
+            RefreshHandleChips();
+        }
+    }
+
+    // ── 云文件卡片的三个交付动作（2026-09-16，方案 §6.4） ──
+
+    private void CloudFile_Open_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is CloudFileCardViewModel card) OpenCloudFile(card);
+    }
+
+    private void CloudFile_Locate_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is CloudFileCardViewModel card) LocateCloudFile(card);
+    }
+
+    private void CloudFile_SaveAs_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is CloudFileCardViewModel card) SaveCloudFileAs(card);
+    }
+
+    private void OpenCloudFile(CloudFileCardViewModel card)
+    {
+        if (!EnsureCloudFileLocal(card, out var path)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void LocateCloudFile(CloudFileCardViewModel card)
+    {
+        if (!EnsureCloudFileLocal(card, out var path)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "定位失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void SaveCloudFileAs(CloudFileCardViewModel card)
+    {
+        if (!EnsureCloudFileLocal(card, out var path)) return;
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "另存为",
+            FileName = card.Model.Name,
+            Filter = "所有文件|*.*",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            File.Copy(path, dlg.FileName, overwrite: true);
+            System.Windows.MessageBox.Show(this, "已保存到：\n" + dlg.FileName, "另存为",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "保存失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private bool EnsureCloudFileLocal(CloudFileCardViewModel card, out string path)
+    {
+        path = card.LocalPath ?? "";
+        if (path.Length > 0 && File.Exists(path)) return true;
+        System.Windows.MessageBox.Show(this,
+            "这个文件还没取回到本机。\n\n可以让 AI 再取一次（说「把 XX 取回来」），或在「设置 → 文件与网盘」里查看记录。",
+            "文件不在本机", MessageBoxButton.OK, MessageBoxImage.Information);
+        return false;
+    }
+
+    // ── 工具交付回调（后台线程 → UI） ──
+
+    private void OnFileDelivered(FileMetadata meta) => Dispatcher.BeginInvoke(new Action(() =>
+    {
+        if (_closed) return;
+        var bubble = _bubbles.LastOrDefault(b => !b.IsUser) ?? _bubbles.LastOrDefault();
+        bubble?.AddCloudFile(meta);
+        ScrollAfterDelay();
+    }));
+
+    private void OnFileOpenRequested(FileMetadata meta) => Dispatcher.BeginInvoke(new Action(() =>
+    {
+        if (_closed) return;
+        var card = new CloudFileCardViewModel(meta);
+        if (card.LocalPath != null) OpenCloudFile(card);
+    }));
+
+    private void OnFileLocateRequested(FileMetadata meta) => Dispatcher.BeginInvoke(new Action(() =>
+    {
+        if (_closed) return;
+        var card = new CloudFileCardViewModel(meta);
+        if (card.LocalPath != null) LocateCloudFile(card);
+    }));
+
+    /// <summary>
+    /// 界面快照专用（诊断工具用，正常流程不调用）：造几张「已选择文件」卡片，
+    /// 让句柄卡片区在快照里能渲染出来。正常流程下这块只在用户真点过「选择文件」时才出现，
+    /// 而它正是本次红线（AI 只能引用牌号）的界面落点，值得一张图。
+    /// </summary>
+    internal void SeedHandleChipsForSnapshot()
+    {
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "fc-snapshot-handles");
+            Directory.CreateDirectory(dir);
+            foreach (var name in new[] { "季度报告.docx", "截图-20260916.png", "数据表.xlsx" })
+            {
+                var path = Path.Combine(dir, name);
+                if (!File.Exists(path)) File.WriteAllText(path, "snapshot");
+                FileHandleStore.Register(path);
+            }
+            RefreshHandleChips();
+        }
+        catch { /* 快照辅助失败不影响主流程 */ }
+    }
+
+    /// <summary>网盘清单同步完成后由 MainWindow 调用：刷新句柄卡片（可能有已过期的）。</summary>
+    internal void RefreshFileViews()
+    {
+        try { RefreshHandleChips(); } catch { /* 刷新失败不打断对话 */ }
+    }
+
+    /// <summary>当前会话出现过的全部附件（链路 B 的输入：工具只能引用其中之一，不能凭空指定路径）。</summary>
+    private IReadOnlyList<ChatAttachment> CurrentSessionAttachments()
+    {
+        var session = _session;
+        if (session == null) return Array.Empty<ChatAttachment>();
+        return session.Messages
+            .Where(m => m.Attachments is { Count: > 0 })
+            .SelectMany(m => m.Attachments!)
+            .ToList();
+    }
+
     /// <summary>把一批本地文件加进输入区；不支持的格式逐个收集原因，最后一次性告知</summary>
     private async Task AddFilesAsync(IEnumerable<string> paths)
     {
@@ -1152,6 +1400,13 @@ public partial class AIDialogWindow : Window
                 "AI 操作确认",
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
             WriteConfirmEnabled = _settings.AgentWriteConfirmPopup,
+            // 每轮把「用户当前选中的文件牌号」告诉模型。放这里而不是会话历史里：
+            // 它是随手会变的短期状态，写进历史既污染持久化数据，也会让翻旧会话时看到过期牌号。
+            ExtraSystemContext = () =>
+            {
+                var handleText = FileHandleStore.DescribeForModel();
+                return handleText.Length > 0 ? handleText : null;
+            },
         };
 
         var gate = new object(); // agentSb / finished 由事件线程与 UI 线程共同访问
@@ -1571,6 +1826,15 @@ public partial class AIDialogWindow : Window
         registry.Register(new ReopenTodoTool(_noteService));
         registry.Register(new DeleteNoteTool(_noteService));
 
+        // 文件类工具（2026-09-16，方案 §6.1 五条链路）：
+        // 这是本次更新的基座 —— 没有这几个工具，网盘接入就退化成一个需要手动操作的同步盘。
+        // 注意它们**没有路径参数**：链路的可达范围由用户点过的牌号（handle）与本地元数据编号（file_id）决定，
+        // 模型编不出这两样东西，因此拿不到没被授权过的本机文件。
+        registry.Register(new StoreFileToCloudTool(CurrentSessionAttachments));
+        registry.Register(new FindCloudFilesTool());
+        registry.Register(new FetchCloudFileTool());
+        registry.Register(new ReadCloudFileTool());
+
         var getNote = new GetNoteDestination(_settings);
         foreach (var capability in getNote.Capabilities)
             registry.Register(new OutboundTool(getNote, capability));
@@ -1663,6 +1927,9 @@ public partial class AIDialogWindow : Window
     {
         _closed = true;
         StopStreaming();
+        FileDeliveryHub.Delivered -= OnFileDelivered;
+        FileDeliveryHub.OpenRequested -= OnFileOpenRequested;
+        FileDeliveryHub.LocateRequested -= OnFileLocateRequested;
         try { _session?.Save(); } catch { /* best effort */ }
         try { _preview.Dispose(); } catch { /* 预览浮层释放失败不影响关闭 */ }
         AIDialogHelper.NotifyClosed();
@@ -1727,6 +1994,17 @@ public static class AIDialogHelper
         dialog.Dispatcher.BeginInvoke(new Action(() =>
         {
             if (!dialog.IsClosed) dialog.RefreshDrawerIfOpen();
+        }));
+    }
+
+    /// <summary>网盘文件清单同步完成后刷新打开中的对话框（句柄可能已过期、云文件卡片状态可能变化）</summary>
+    public static void NotifyFileListChanged()
+    {
+        var dialog = _dialog;
+        if (dialog == null) return;
+        dialog.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!dialog.IsClosed) dialog.RefreshFileViews();
         }));
     }
 

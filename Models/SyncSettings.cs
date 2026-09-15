@@ -66,6 +66,20 @@ public class SyncSettings
     /// <summary>会话同步上次时间（本地时间字符串，仅展示）。</summary>
     public string ChatSyncAt { get; set; } = "";
 
+    // ── 文件元数据同步（2026-09-16，搭同一个同步周期） ──
+
+    /// <summary>
+    /// 同步「网盘文件记录」开关（默认开）。元数据只有几 KB，同步它才能让另一台设备立刻看到完整文件列表
+    /// （文件本体仍按需取回，不自动下载）。关掉后本机仍可正常使用文件区，只是列表不跨设备。
+    /// </summary>
+    public bool FileSyncEnabled { get; set; } = true;
+
+    /// <summary>文件元数据同步上次结果（独立留痕，与会话/笔记互不覆盖）。</summary>
+    public string FileSyncResult { get; set; } = "";
+
+    /// <summary>文件元数据同步上次时间（本地时间字符串，仅展示）。</summary>
+    public string FileSyncAt { get; set; } = "";
+
     /// <summary>确保 DeviceId 存在（无则生成 GUID；调用方负责 Save 持久化）。</summary>
     public void EnsureDeviceId()
     {

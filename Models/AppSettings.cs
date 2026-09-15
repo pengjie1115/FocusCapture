@@ -83,6 +83,31 @@ public class AppSettings
     public string GetNoteDefaultTopicId { get; set; } = "";   // 默认上传知识库 id（知识库下拉选择后落盘；空 = 账号默认库）
     public string GetNoteDefaultTopicName { get; set; } = ""; // 默认知识库名称（仅下拉回显用，不参与请求）
 
+    // ── 文件与网盘（2026-09-16）──
+    // 说明：AppKey / SecretKey / 授权令牌**不在这里** —— 它们走 BaiduCredentialStore 的独立加密文件，
+    // 既避免授权令牌跟着 settings.json 同步到别的设备，也避免频繁滚动刷新 token 时反复重写主配置。
+
+    /// <summary>百度网盘沙箱内的工作目录（即开发者应用的目录名），默认 /apps/FocusCapture。</summary>
+    public string BaiduNetRoot { get; set; } = "/apps/FocusCapture";
+
+    /// <summary>
+    /// 对话附件是否自动上传到网盘（**默认关**，保持「只存本机」的既有行为）。
+    /// 注意这个开关只管「自动」：关着的时候用户显式说「把这张图存上去」照样会传（显式意图优先）。
+    /// </summary>
+    public bool BaiduAttachmentUploadEnabled { get; set; } = false;
+
+    /// <summary>对话附件在云端的保留天数（默认 30，0 = 不自动清理）。只作用于附件，产出与主动上传永久保留。</summary>
+    public int BaiduAttachmentRetentionDays { get; set; } = 30;
+
+    /// <summary>本地缓存容量上限（GB，默认 5）。超出后按最后使用时间从最旧开始释放本地副本（云端不动）。</summary>
+    public double LocalCacheMaxGb { get; set; } = 5;
+
+    /// <summary>本地缓存闲置多少天后可被淘汰（默认 30 天）。</summary>
+    public int LocalCacheIdleDays { get; set; } = 30;
+
+    /// <summary>是否启用本地缓存自动淘汰（默认开）。关掉后只能手动清理。</summary>
+    public bool LocalCacheEvictEnabled { get; set; } = true;
+
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 

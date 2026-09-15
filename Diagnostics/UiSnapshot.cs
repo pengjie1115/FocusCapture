@@ -120,6 +120,36 @@ internal static class UiSnapshot
                 w.SeedAttachmentsForSnapshot();
                 return w;
             }, outDir, log);
+
+            // 文件与网盘板块（2026-09-16）：设置页新增的一整块，含三个按钮行与多段说明文字。
+            // 8 = 「文件与网盘」（0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览 / 5 输入框 /
+            //                  6 云同步 / 7 待办与提醒 / 8 文件与网盘 / 9 通用）
+            Capture("15-设置-文件与网盘板块", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 8;
+                return w;
+            }, outDir, log);
+
+            // 已选择文件的卡片区（2026-09-16）：只在"用户真点过选择文件"时才渲染，
+            // 空会话快照（场景 10）覆盖不到这个分支 —— 而它正是本次红线（AI 只能引用牌号）的界面落点。
+            Capture("16-AI 对话（带已选择文件卡片）", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedHandleChipsForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 文件与网盘板块的**下半部分**（2026-09-16）：该板块最长，一屏装不下，
+            // 滚动到底才能看到「对话附件」与「数据目录」两组 —— 而"控件被挤出可视区"正是
+            // 静态代码查不出来、必须靠出图才能发现的问题类型。
+            Capture("17-设置-文件与网盘板块（下半部分）", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 8;
+                w.ScrollToEndForSnapshot();
+                return w;
+            }, outDir, log);
         }
         catch (Exception ex)
         {

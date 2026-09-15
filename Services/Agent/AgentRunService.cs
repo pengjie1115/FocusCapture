@@ -25,6 +25,13 @@ public class AgentRunService
     /// <summary>状态回调（如"正在调用工具: xxx"），UI 用于更新气泡提示</summary>
     public Action<string>? StatusCallback { get; set; }
 
+    /// <summary>
+    /// 本轮附加上下文（每轮发送前求值，作为一条额外 system 消息附在消息末尾，**不写入会话历史**）。
+    /// 用于「用户当前选中的文件牌号」这类短期状态：它随用户操作随时变化，
+    /// 写进会话历史既污染持久化数据，又会让历史会话里残留已经失效的牌号。
+    /// </summary>
+    public Func<string?>? ExtraSystemContext { get; set; }
+
     /// <summary>正文流式增量（打字机效果）。事件在后台线程触发，UI 端自行调度到 Dispatcher。</summary>
     public event Action<string>? ContentDelta;
 
@@ -55,7 +62,7 @@ public class AgentRunService
             IReadOnlyList<ToolCallItem>? toolCalls = null;
             try
             {
-                await foreach (var ev in _provider.StreamChatWithToolsAsync(_session.Messages, _registry.GetDefinitions(), ct).ConfigureAwait(false))
+                await foreach (var ev in _provider.StreamChatWithToolsAsync(BuildTurnMessages(), _registry.GetDefinitions(), ct).ConfigureAwait(false))
                 {
                     switch (ev)
                     {
@@ -150,12 +157,29 @@ public class AgentRunService
         }
     }
 
+    /// <summary>
+    /// 本轮实际发送的消息 = 会话历史 + 一条附加 system 上下文（见 <see cref="ExtraSystemContext"/>）。
+    /// 附加消息只存在于本次请求，不落会话文件。
+    /// </summary>
+    private IReadOnlyList<ChatMessage> BuildTurnMessages()
+    {
+        var extra = ExtraSystemContext?.Invoke();
+        if (string.IsNullOrWhiteSpace(extra)) return _session.Messages;
+
+        var list = new List<ChatMessage>(_session.Messages) { new(ChatRoles.System, extra) };
+        return list;
+    }
+
     /// <summary>降级/收尾：去掉 tools 与 tool 消息后普通补全一次（配对消息只存在于本回合上下文，过滤不影响历史）</summary>
     private async Task<string> FallbackPlainChatAsync(string notice, CancellationToken ct)
     {
         var plainMessages = _session.Messages
             .Where(m => m.Role != ChatRoles.Tool && m.ToolCallsJson == null)
             .ToList();
+
+        var extra = ExtraSystemContext?.Invoke();
+        if (!string.IsNullOrWhiteSpace(extra))
+            plainMessages.Add(new ChatMessage(ChatRoles.System, extra));
 
         string content;
         try

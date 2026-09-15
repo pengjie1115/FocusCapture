@@ -36,6 +36,15 @@ public static class ChatAttachmentService
     /// <summary>附件目录（chat_history/attachments）。同步引擎只扫该目录外层的 *.json，附件不会被误上传</summary>
     public static string Dir => FocusCapturePaths.Combine("chat_history", "attachments");
 
+    /// <summary>
+    /// 附件落盘后的通知（2026-09-16）。由装配处（MainWindow）订阅，用于把附件登记进文件仓库、
+    /// 并在「附件上传网盘」开关打开时排队上传。
+    ///
+    /// 用事件而不是直接调用文件仓库，是为了让本类对「网盘」这件事零依赖：
+    /// 附件服务只管把文件变成能发给模型的形态，要不要上云由上层决定。开关默认关 = 行为与改造前完全一致。
+    /// </summary>
+    public static event Action<ChatAttachment>? Stored;
+
     /// <summary>清晰度档位 →（长边像素, JPEG 质量）</summary>
     public static (int MaxEdge, int Quality) QualitySpec(int level) => level switch
     {
@@ -116,7 +125,7 @@ public static class ChatAttachmentService
 
                     var processed = CompressImageFile(sourcePath, qualityLevel);
                     var stored = WriteWithHash(processed.Data, ".jpg");
-                    return (new ChatAttachment
+                    var image = new ChatAttachment
                     {
                         StoredName = stored,
                         FileName = Path.GetFileName(sourcePath),
@@ -124,7 +133,9 @@ public static class ChatAttachmentService
                         SizeBytes = processed.Data.Length,
                         PixelWidth = processed.Width,
                         PixelHeight = processed.Height,
-                    }, (string?)null);
+                    };
+                    NotifyStored(image);
+                    return (image, (string?)null);
                 }
 
                 if (IsSupportedDocument(sourcePath))
@@ -140,7 +151,7 @@ public static class ChatAttachmentService
                     var raw = File.ReadAllBytes(sourcePath);
                     var stored = WriteWithHash(raw, ext);
 
-                    return (new ChatAttachment
+                    var document = new ChatAttachment
                     {
                         StoredName = stored,
                         FileName = Path.GetFileName(sourcePath),
@@ -148,7 +159,9 @@ public static class ChatAttachmentService
                         SizeBytes = raw.Length,
                         ExtractedText = text,
                         ExtractNote = note,
-                    }, (string?)null);
+                    };
+                    NotifyStored(document);
+                    return (document, (string?)null);
                 }
 
                 return ((ChatAttachment?)null, $"不支持的格式：{ext}");
@@ -199,6 +212,13 @@ public static class ChatAttachmentService
                 return null;
             }
         });
+    }
+
+    /// <summary>通知订阅者（附件已落盘）。订阅者异常绝不能影响附件本身的创建流程。</summary>
+    private static void NotifyStored(ChatAttachment attachment)
+    {
+        try { Stored?.Invoke(attachment); }
+        catch { /* 网盘相关的问题不该让「粘贴一张图」失败 */ }
     }
 
     // ── 上行取用 ──

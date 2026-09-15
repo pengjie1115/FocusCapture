@@ -8,6 +8,10 @@ public partial class App : WpfApp
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        // 数据根定位（2026-09-16）：必须排在所有落盘动作之前 —— AppLog 自己也住在数据根下。
+        // 读的是默认根里的指针文件；自定义根不可用时只出提示，绝不偷换回默认根（防数据分裂成两套）。
+        var rootWarning = FocusCapturePaths.LoadCustomRoot();
+
         AppLog.Info("App", $"FocusCapture 启动（{typeof(App).Assembly.GetName().Version}）");
 
         // 全局异常兜底：防止静默崩溃，确保用户能看到错误信息。
@@ -53,6 +57,14 @@ public partial class App : WpfApp
         }
 
         new MainWindow().Show();
+
+        // 自定义数据根不可用：主窗口起来后再提示（启动期弹窗会挡住托盘/悬浮球的初始化）
+        if (rootWarning != null)
+        {
+            AppLog.Warn("App", "自定义数据目录不可用：" + FocusCapturePaths.Root);
+            Dispatcher.BeginInvoke(new Action(() =>
+                MessageBox.Show(rootWarning, "数据目录不可用", MessageBoxButton.OK, MessageBoxImage.Warning)));
+        }
 
         // 附件孤儿清理（2026-09-14）：删掉没有任何会话引用的附件文件（会话被裁剪/删除/云端覆盖后留下的）。
         // 放后台线程 + 失败静默 —— 纯清理动作，绝不能拖慢或影响启动。

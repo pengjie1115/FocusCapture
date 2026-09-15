@@ -11,6 +11,7 @@ using FocusCapture;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 
 /// <summary>
@@ -24,10 +25,14 @@ internal static class Program
     private static int _failed;
     private static string _sandbox = "";
 
-    private static void Check(bool cond, string name)
+    private static void Check(bool cond, string name, string? detail = null)
     {
         Console.WriteLine((cond ? "  PASS  " : "  FAIL  ") + name);
-        if (!cond) _failed++;
+        if (!cond)
+        {
+            _failed++;
+            if (!string.IsNullOrEmpty(detail)) Console.WriteLine("        说明：" + detail);
+        }
     }
 
     private static async Task<int> Main()
@@ -49,6 +54,7 @@ internal static class Program
         {
             TestUnit();
             TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
+            TestFileRepository();        // 网盘文件仓库：句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
             await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
@@ -65,6 +71,138 @@ internal static class Program
         }
         Console.WriteLine(_failed == 0 ? "\n===== ALL TESTS PASSED =====" : $"\n===== {_failed} TEST(S) FAILED =====");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ══════════════════ 网盘文件仓库（2026-09-16） ══════════════════
+    //
+    // 本组守护三件最容易出大事的东西：
+    //   ① 红线：AI 不能凭空构造牌号去读没被用户选过的文件（方案 §6.2）
+    //   ② 合并：多设备合并规则（元数据近似只增不改，所以规则能这么简单，方案 §4.3）
+    //   ③ 保护：还没传上去的文件绝不能被本地淘汰清掉 —— 那是真丢数据（方案 §5.4）
+    // 全程跑在主流程已建好的临时沙箱里（RootOverride），绝不触碰真实数据目录。
+
+    private static void TestFileRepository()
+    {
+        Console.WriteLine("[文件仓库] 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验");
+
+        FileMetadata MakeMeta(string id, string name, DateTime created, DateTime updated, bool deleted = false) => new()
+        {
+            Id = id, Name = name, NetPath = "/apps/FocusCapture/files/" + name, Size = 100, Md5 = "md5-" + id,
+            Type = FileTypes.Upload, CreatedAt = created, UpdatedAt = updated, Deleted = deleted,
+        };
+
+        // ── ① 红线：牌号只能由用户选择产生，模型编不出来 ──
+        FileHandleStore.Clear();
+
+        Check(!FileHandleStore.TryResolve("file:20260101-99", out _, out _),
+              "凭空编造的牌号必须解析失败（AI 无法借此读到没被选过的文件）");
+
+        Check(!FileHandleStore.TryResolve(@"C:\Windows\win.ini", out _, out _),
+              "把本机路径直接当牌号传进来必须被拒绝（路径不是牌号）");
+
+        Check(!FileHandleStore.TryResolve("", out _, out _),
+              "空牌号必须被拒绝并给出「请让用户点选择文件」的指引");
+
+        var sampleFile = Path.Combine(_sandbox, "用户选过的文件.txt");
+        File.WriteAllText(sampleFile, "hello");
+        var handle = FileHandleStore.Register(sampleFile);
+
+        Check(handle.Id.StartsWith("file:", StringComparison.Ordinal) && handle.Id.Contains('-'),
+              "牌号格式必须是 file:yyyyMMdd-N", $"实际「{handle.Id}」");
+
+        Check(FileHandleStore.TryResolve(handle.Id, out var resolved, out _) && resolved == sampleFile,
+              "用户注册过的牌号必须能解析回原路径");
+
+        FileHandleStore.Remove(handle.Id);
+        Check(!FileHandleStore.TryResolve(handle.Id, out _, out _),
+              "被移除的牌号必须立即失效");
+
+        // ── ② 多设备合并规则 ──
+        var t0 = new DateTime(2026, 9, 16, 10, 0, 0);
+
+        var oldVersion = MakeMeta("id-a", "旧名字", t0.AddDays(-1), t0);
+        var newVersion = MakeMeta("id-a", "新名字", t0.AddDays(-1), t0.AddHours(1));
+        var m1 = FileStoreSync.Merge(new[] { oldVersion }, new[] { newVersion });
+        Check(m1.Count == 1 && m1[0].Name == "新名字",
+              "同一 id 两侧都有时取 UpdatedAt 较新的那条（重命名/改标签场景）");
+
+        var m2 = FileStoreSync.Merge(new[] { oldVersion }, new[] { MakeMeta("id-b", "另一台加的", t0, t0) });
+        Check(m2.Count == 2, "两台设备各加新记录 → 按 id 求并集，不产生冲突");
+
+        var liveAfterTagEdit = MakeMeta("id-c", "只是改了标签", t0.AddDays(-1), t0);
+        var tombstone = MakeMeta("id-c", "被删了", t0.AddDays(-1), t0.AddMinutes(30), deleted: true);
+        var m3 = FileStoreSync.Merge(new[] { liveAfterTagEdit }, new[] { tombstone });
+        Check(m3[0].Deleted, "一边删、一边只是小改动 → 必须以删除墓碑为准（防止被小改动复活）");
+
+        var reuploaded = MakeMeta("id-c", "删除后重新上传", t0.AddHours(2), t0.AddHours(2));
+        var m4 = FileStoreSync.Merge(new[] { tombstone }, new[] { reuploaded });
+        Check(!m4[0].Deleted, "删除之后重新登记的文件必须能覆盖旧墓碑（否则重传永远不生效）");
+
+        // ── ③ 淘汰保护：未上传完成的文件是禁区 ──
+        var pendingFile = Path.Combine(_sandbox, "还没传上去的文件.txt");
+        File.WriteAllText(pendingFile, new string('x', 4096));
+        var (pendingMeta, pendingError) = FileRepository.RegisterLocalFile(pendingFile, FileTypes.Upload);
+        Check(pendingMeta != null, "登记本地文件必须成功", pendingError ?? "");
+
+        if (pendingMeta != null)
+        {
+            Check(FileRepository.PendingUploadIds().Contains(pendingMeta.Id),
+                  "刚登记的本地文件必须进入待上传队列");
+
+            CacheEvictor.Enabled = true;
+            CacheEvictor.MaxBytes = 1;      // 强制「超容量」
+            CacheEvictor.IdleDays = 1;      // 且「已超期」
+
+            var protectReport = CacheEvictor.Run(force: true);
+            Check(protectReport.Removed == 0,
+                  "尚未上传完成的文件绝不能被淘汰（云端没有副本，删掉就是真丢数据）",
+                  $"却清理了 {protectReport.Removed} 个");
+
+            // 标为已上传 → 才允许释放
+            FileRepository.RecordUploadResult(pendingMeta.Id, true, null);
+            var storedPath = FileRepository.FindCache(pendingMeta.Id)?.LocalPath ?? "";
+
+            var evictReport = CacheEvictor.Run(force: true);
+            Check(evictReport.Removed == 1, "已上传完成的文件在超限时必须被释放", $"实际 {evictReport.Removed} 个");
+            Check(!File.Exists(storedPath), "淘汰必须真的删掉本地副本文件");
+            Check(FileRepository.FindMetadata(pendingMeta.Id) != null,
+                  "淘汰只删本地副本，元数据必须保留（云端仍然是权威副本）");
+
+            // 还原默认，别影响后面可能用到淘汰器的场景
+            CacheEvictor.MaxBytes = CacheEvictor.DefaultMaxBytes;
+            CacheEvictor.IdleDays = CacheEvictor.DefaultIdleDays;
+        }
+
+        // ── ④ 数据目录校验 ──
+        Check(!RootMigrationService.ValidateTarget(@"D:\", _sandbox).Ok,
+              "盘符根目录不能被选作数据目录");
+
+        Check(!RootMigrationService.ValidateTarget(@"\\server\share", _sandbox).Ok,
+              "网络路径不能被选作数据目录");
+
+        Check(!RootMigrationService.ValidateTarget(Path.Combine(_sandbox, "sub"), _sandbox).Ok,
+              "当前数据目录的子目录必须被拒绝（否则复制会自我递归）");
+
+        var parentDir = Directory.GetParent(_sandbox)?.FullName ?? _sandbox;
+        Check(!RootMigrationService.ValidateTarget(parentDir, _sandbox).Ok,
+              "当前数据目录的上级目录必须被拒绝（同样会自我递归）");
+
+        // 注意：合法目标不能放在数据根**内部**（那是上一条刚验过的拒绝场景）。
+        // 用沙箱之外的一个全新临时目录 —— 校验过程会创建目录并写探针文件，跑完清掉。
+        var outsideBase = Path.Combine(Path.GetTempPath(), "fc-val-" + Guid.NewGuid().ToString("N"));
+        var goodTarget = Path.Combine(outsideBase, "新位置");
+        try
+        {
+            var goodValidation = RootMigrationService.ValidateTarget(goodTarget, _sandbox);
+            Check(goodValidation.Ok && goodValidation.State == RootTargetState.NotExist,
+                  "合法的全新目录必须通过校验并识别为「不存在」", goodValidation.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(outsideBase, true); } catch { /* 清理失败不影响结论 */ }
+        }
+
+        Console.WriteLine();
     }
 
     // ── 单测（验收 F：确定性 ID / 加密往返 / 恢复码 / 强度校验） ──
