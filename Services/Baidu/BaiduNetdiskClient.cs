@@ -69,7 +69,24 @@ public class BaiduNetdiskClient
     private const string OAuthTokenUrl = "https://openapi.baidu.com/oauth/2.0/token";
     private const string XpanFileUrl = "https://pan.baidu.com/rest/2.0/xpan/file";
     private const string XpanMultimediaUrl = "https://pan.baidu.com/rest/2.0/xpan/multimedia";
-    private const string SuperFile2Url = "https://pan.baidu.com/rest/2.0/pcs/superfile2";
+
+    /// <summary>取上传域名的接口。官方明文：**传文件数据之前必须先调这个**。</summary>
+    private const string LocateUploadUrl = "https://d.pcs.baidu.com/rest/2.0/pcs/file";
+
+    /// <summary>
+    /// 分片上传的路径。注意**域名不是固定的** —— 必须先向 <see cref="LocateUploadUrl"/> 要，
+    /// 见 <see cref="LocateUploadHostAsync"/>。早先这里写死了 pan.baidu.com，分片全部吃 403。
+    /// </summary>
+    private const string SuperFile2Path = "/rest/2.0/pcs/superfile2";
+
+    /// <summary>locateupload 固定要求的应用 ID（官方请求示例值，不是我们的 AppKey）。</summary>
+    private const string LocateAppId = "250528";
+
+    /// <summary>
+    /// 取上传域名失败时的兜底地址。**不是猜的**：官方文档示例、Rust SDK 默认值、
+    /// baiduyun_api 的端点表三处独立来源都用它。
+    /// </summary>
+    private const string FallbackUploadHost = "https://d.pcs.baidu.com";
 
     /// <summary>第三方应用唯一能访问的顶层目录。</summary>
     public const string SandboxPrefix = "/apps";
@@ -487,6 +504,9 @@ public class BaiduNetdiskClient
             if (uploadId.Length == 0)
                 throw new BaiduApiException(2, "上传登记未返回 uploadid，无法继续。");
 
+            // 传数据之前先要域名（官方硬性要求），否则分片一律 403
+            var uploadHost = await LocateUploadHostAsync(netPath, uploadId, ct).ConfigureAwait(false);
+
             using var fs = File.OpenRead(localPath);
             long sent = 0;
             for (var seq = 0; seq < blockList.Count; seq++)
@@ -501,7 +521,7 @@ public class BaiduNetdiskClient
                 // 理由：只有本机保证"每一片都传过"，create 提交时带的 block_list 才能与云端完全对上；
                 // 若改成"只传列表里的那几片"，等于又把成败押在一个外部字段的完整性上 —— 刚被咬过两轮。
                 // 将来若要做「按列表精确补传」（省流量的断点续传），必须先实测确认该列表的完整性再开。
-                await UploadSliceAsync(token, netPath, uploadId, seq, slice, ct).ConfigureAwait(false);
+                await UploadSliceAsync(uploadHost, token, netPath, uploadId, seq, slice, ct).ConfigureAwait(false);
 
                 sent += size;
                 if (info.Length > 0) progress?.Report((double)sent / info.Length);
@@ -577,10 +597,82 @@ public class BaiduNetdiskClient
         return (true, slices);
     }
 
-    /// <summary>上传单分片：superfile2 的 access_token 在 query 上，文件走 multipart body。</summary>
-    private async Task UploadSliceAsync(string token, string netPath, string uploadId, int partSeq, byte[] slice, CancellationToken ct)
+    /// <summary>
+    /// 取上传域名。官方明文：「**上传文件数据时，需要先通过此接口获取上传域名**。
+    /// 可使用返回结果 servers 字段中的 https 协议的任意一个域名。」
+    ///
+    /// 2026-09-16 第四次事故：分片一直用硬编码的 pan.baidu.com 传，服务端直接回 **403**；
+    /// Alist 的相关记录也写明「传统静态域名上传方式已无法满足当前服务架构」。
+    ///
+    /// 每次上传取一次、同一次上传的所有分片共用 —— **刻意不做跨文件缓存**：
+    /// 该域名带有效期，缓存过期反而会引出「大文件传到一半失败、小文件没事」这类难查的问题。
+    /// 取不到就走兜底域名（三份独立来源都证明它可用）并留 WARN，不因"要域名"这一步失败而整单失败。
+    /// </summary>
+    private async Task<string> LocateUploadHostAsync(string netPath, string uploadId, CancellationToken ct)
     {
-        var url = $"{SuperFile2Url}?method=upload&access_token={Uri.EscapeDataString(token)}" +
+        try
+        {
+            var token = await EnsureAccessTokenAsync(ct).ConfigureAwait(false);
+            var url = $"{LocateUploadUrl}?method=locateupload&appid={LocateAppId}" +
+                      $"&access_token={Uri.EscapeDataString(token)}" +
+                      $"&path={Uri.EscapeDataString(netPath)}" +
+                      $"&uploadid={Uri.EscapeDataString(uploadId)}" +
+                      "&upload_version=2.0";
+            var json = await GetJsonAsync(url, ct).ConfigureAwait(false);
+
+            // 这个接口的错误字段叫 error_code（不是其它接口的 errno）—— 按官方返回结构读
+            var errorCode = IntOr(json, "error_code");
+            if (errorCode != 0)
+            {
+                AppLog.Warn("Baidu",
+                    $"获取上传域名失败（error_code={errorCode}），改用默认域名 {FallbackUploadHost}");
+                return FallbackUploadHost;
+            }
+
+            var host = PickUploadHost(json);
+            if (host != null) return host;
+
+            AppLog.Warn("Baidu", $"获取上传域名：返回里没有可用的 https 域名，改用默认域名 {FallbackUploadHost}");
+            return FallbackUploadHost;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Baidu", "获取上传域名异常，改用默认域名：" + ex.Message);
+            return FallbackUploadHost;
+        }
+    }
+
+    /// <summary>
+    /// 从 locateupload 响应里挑一个可用的 https 上传域名；挑不到返回 null（调用方退兜底域名）。
+    ///
+    /// 抽成纯函数是为了让检查点能直接钉住它 —— 域名挑错在真机上只表现为"分片 403"，
+    /// 从现象反查回这一行要绕很远（2026-09-16 实测）。
+    /// 契约同其它解析函数：**任何形状都不抛异常**（非字符串元素直接跳过）。
+    /// </summary>
+    public static string? PickUploadHost(JsonElement response)
+    {
+        if (response.ValueKind != JsonValueKind.Object) return null;
+        if (!response.TryGetProperty("servers", out var servers)) return null;
+        if (servers.ValueKind != JsonValueKind.Array) return null;
+
+        foreach (var item in servers.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String) continue;
+            var host = item.GetString();
+            if (!string.IsNullOrWhiteSpace(host) &&
+                host.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return host.TrimEnd('/');
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 上传单分片：域名由 <see cref="LocateUploadHostAsync"/> 提供（官方要求），
+    /// access_token 在 query 上，文件走 multipart body。
+    /// </summary>
+    private async Task UploadSliceAsync(string host, string token, string netPath, string uploadId, int partSeq, byte[] slice, CancellationToken ct)
+    {
+        var url = $"{host}{SuperFile2Path}?method=upload&access_token={Uri.EscapeDataString(token)}" +
                   "&type=tmpfile" +
                   $"&path={Uri.EscapeDataString(netPath)}" +
                   $"&uploadid={Uri.EscapeDataString(uploadId)}" +
@@ -606,7 +698,15 @@ public class BaiduNetdiskClient
             var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = TryParse(body);
             if (doc == null)
+            {
+                // HTTP 层失败（403/404/502…）常常返回空体或 HTML —— 必须把状态码和域名一起报出来。
+                // 2026-09-16 的 403 根因是"上传域名不对"，当时只报"无法解析的内容"，白绕了一圈。
+                if (!resp.IsSuccessStatusCode)
+                    throw new BaiduApiException(2,
+                        $"分片 {partSeq + 1} 上传被拒：HTTP {(int)resp.StatusCode}（上传域名 {host}）。" +
+                        "403 通常表示上传域名不对 —— 需先调 locateupload 取域名。");
                 throw new BaiduApiException(2, $"分片 {partSeq + 1} 上传返回了无法解析的内容（HTTP {(int)resp.StatusCode}）。");
+            }
 
             var errno = IntOr(doc.RootElement, "errno", 0);
             if (errno != 0)
@@ -762,6 +862,8 @@ public class BaiduNetdiskClient
         31066 => "文件不存在",
         31069 => "文件正在上传中",
         31299 or 31364 or 31365 => "上传分片参数不符合平台要求（分片大小或数量）",
+        31355 => "上传参数无效（分片与登记信息不一致）",
+        31500 => "创建文件失败：uploadid 无效或分片未传完",
         31023 => "分片数量超过上限",
         31326 => "下载被拒绝（防盗链校验未通过）",
         20012 => "请求超出配额上限，稍后会自动重试",

@@ -279,6 +279,31 @@ internal static class Program
         Check(returnTypeTrap.HasField && returnTypeTrap.Slices.Count == 4,
               "return_type=1 且分片列表非空时，判据必须落在「需要上传」（曾误判成秒传 → 所有文件 31500）");
 
+        // 分片上传域名（locateupload）—— 2026-09-16 第四次事故：域名写死 pan.baidu.com → 分片全部 403。
+        // 官方要求"传数据前先要域名"，挑错域名在真机上只表现为 403，从现象反查很远，所以在这里钉死。
+        static string? PickHost(string json)
+        {
+            using var doc = JsonDocument.Parse(json);
+            return BaiduNetdiskClient.PickUploadHost(doc.RootElement);
+        }
+
+        Check(PickHost("""{"error_code":0,"servers":["https://c3.pcs.baidu.com","https://d.pcs.baidu.com"]}""")
+                  == "https://c3.pcs.baidu.com",
+              "必须取 servers 里第一个 https 域名（官方说按就近与速度排序，第一个是推荐值）");
+
+        Check(PickHost("""{"error_code":0,"servers":["http://a.pcs.baidu.com","https://b.pcs.baidu.com"]}""")
+                  == "https://b.pcs.baidu.com",
+              "只接受 https 域名（官方明确说用 servers 里 https 协议的任意一个）");
+
+        Check(PickHost("""{"error_code":0,"servers":[null,123,{"a":1}]}""") == null,
+              "servers 里没有字符串元素时必须返回 null（调用方退兜底域名），不许抛异常");
+
+        Check(PickHost("""{"error_code":0}""") == null && PickHost("""{"error_code":0,"servers":"x"}""") == null,
+              "字段缺失或类型不对时必须返回 null，不许抛异常");
+
+        Check(PickHost("""{"error_code":0,"servers":["https://c3.pcs.baidu.com/"]}""") == "https://c3.pcs.baidu.com",
+              "域名末尾的斜杠必须被吃掉（否则拼出来是双斜杠的 URL）");
+
         // ── ⑦ 工具输出必须体现真实上传状态（AI 谎报"已上传成功"的正面回归） ──
         // 事故原貌：账本里 5 个文件全是 failed，模型却对用户说"两个文件都已经上传成功，网盘上都能看到了"。
         // 根因不在模型 —— **输出里压根没有"传没传上去"这个信息**，它只能拿「本机已有」去脑补。
