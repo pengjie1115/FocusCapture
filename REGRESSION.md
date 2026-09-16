@@ -395,6 +395,25 @@
 >    而那一刻**分片其实已经传出去了**，却因为"读不出响应体"把整单判成失败。
 >    修法：新增 `ReadBodyAsync` —— 一律按字节读、自己用 UTF-8 解码，**不信服务端声明的 charset**（三处调用点全改）。
 > 教训：**"外部声明"和"外部字段"一样不能当事实** —— 连响应头里的字符集都可能骗人。
+>
+> **2026-09-16 真实响应样本（用本机令牌把整条链路跑通后拿到的，别再靠推测）**：
+> ```
+> precreate    → {"errno":0,"return_type":1,"block_list":[0],"uploadid":"N1-…","path":"/apps/…"}
+> locateupload → {"error_code":0,"expire":60,"host":"c.pcs.baidu.com","prov":"chongqing","isp":"cnc",
+>                 "servers":[{"server":"https://c5.pcs.baidu.com"},{"server":"http://c5.pcs.baidu.com"},…]}
+> superfile2   → {"md5":"0f343b…","request_id":…}                    ← 分片真的传出去了
+> create       → {"errno":0,"fs_id":221478819339325,"size":1024,…}   ← 文件真的建出来了
+> list         → {"errno":0,"list":[{"server_filename":"…","size":1024,"md5":"…"}]}
+> ```
+> 三个由此**确证**（不再是指断）的事实：
+> ① `block_list` 是「**待上传**分片序号」（返回 `[0]` 即"第 0 片还没传"），`return_type=1` 是常规值、**不是秒传信号**；
+> ② `servers` 的元素是**对象** `{"server":"url"}` —— 早先只认字符串元素，于是每次都挑不到域名、只能退兜底；
+> ③ 域名的 `expire` 只有 **60 秒**，所以"不跨文件缓存域名"是对的。
+>
+> **同批实测发现的待解决问题**：`method=filemanager&opera=delete` 在本沙箱里**一律返回 `errno=2`**
+> （三种写法都试过：`async=0` / 无 `async` / `async=1`，`filelist` 均按官方要求传 JSON 数组）。
+> 若平台确实不允许第三方应用删除沙箱内文件，则「彻底删除文件」这条功能需要在界面上给用户明确交代
+> （引导去网盘手动删），**不能静默失败**。【判断】—— 只测了这三种参数组合，未穷尽，待再验。
 
 ### B-7 Agent 工具（Services/Agent/ + Services/Destinations/ + AI 对话 Agent 路径，2026-09-06 新增）
 
