@@ -255,7 +255,14 @@ public static class FileRepository
                     var storedPath = attachExisting ? localPath : CopyIntoArea(localPath, fileName, type);
                     if (storedPath == null) return (null, "复制到文件区失败。");
 
-                    UpsertLedgerLocked(existing.Id, storedPath, CacheOrigins.Local, markUploaded: CloudReady);
+                    // ⚠️ 这里曾经传 markUploaded: CloudReady —— 那是错的。
+                    // CloudReady 只说明「配了凭据 + 本机有令牌」，跟云端到底有没有这个文件毫无关系。
+                    // 后果：从没传上去的文件被记成「已上传」→ 队列再也不碰它 → 网盘空的、本机显示已上传
+                    // （2026-09-16 实测踩到）。传 false = 保留原有状态；而用户重新选了同一个文件，
+                    // 本身就是「再传一次」的明确意图，顺带把重试计数清零。
+                    UpsertLedgerLocked(existing.Id, storedPath, CacheOrigins.Local, markUploaded: false);
+                    var entry = _ledger!.FirstOrDefault(x => x.Id == existing.Id);
+                    if (entry != null && entry.UploadState != UploadStates.Uploaded) entry.UploadRetry = 0;
                     PersistLedgerLocked();
                     AppLog.Info("Files", $"MD5 命中已有记录，仅登记本地副本：{existing.Name}");
                     return (existing.Clone(), null);
@@ -608,6 +615,37 @@ public static class FileRepository
         {
             EnsureLoaded();
             return _ledger!.Count(e => e.UploadState == UploadStates.Failed && e.UploadRetry >= maxRetry);
+        }
+    }
+
+    /// <summary>
+    /// 把「失败待重传」的清零重试计数、放回队列，返回被重置的条数。
+    ///
+    /// <b>为什么必须有这个出口</b>：重试有上限是为了不无限骚扰平台，但一旦撞上上限，
+    /// 文件就永远躺在失败态 —— 用户后来把配置改对了，它也不会自己再试。而「永久卡死」
+    /// 没有任何可见出口，比「反复重试」更难排查。所以把这个动作挂在**用户修配置成功**
+    /// 的节点上（测试连接通过 / 重新授权），让修复动作自动带来重试。
+    /// 删除、清空这类破坏性动作则不在此列 —— 那不给 AI，也不自动做。
+    /// </summary>
+    public static int ResetFailedUploads()
+    {
+        lock (Gate)
+        {
+            EnsureLoaded();
+            var n = 0;
+            foreach (var e in _ledger!)
+            {
+                if (e.UploadState != UploadStates.Failed) continue;
+                e.UploadState = UploadStates.Pending;
+                e.UploadRetry = 0;
+                n++;
+            }
+            if (n > 0)
+            {
+                PersistLedgerLocked();
+                AppLog.Info("Files", $"已把 {n} 个失败的上传放回队列重试");
+            }
+            return n;
         }
     }
 

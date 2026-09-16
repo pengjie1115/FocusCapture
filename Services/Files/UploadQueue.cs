@@ -93,6 +93,16 @@ public static class UploadQueue
                     // 没活干：睡到自然醒或被 Kick 叫醒
                     await Signal.WaitAsync(IdlePoll, ct).ConfigureAwait(false);
                 }
+                else if (result.Failed > 0)
+                {
+                    // 失败必须退避。
+                    // 早期版本这里不等待，于是「失败→立刻重跑」在一瞬间循环 —— 实测 78 毫秒内
+                    // 把 5 次重试机会全部烧光，日志连刷 5 行「上传失败」，用户看到的是「多次上传失败」，
+                    // 实际上一次有意义的等待都没有。更糟的是：那一刻的错误如果是「配置没填对」，
+                    // 用户根本来不及去改，配额就耗尽了。
+                    var backoff = TimeSpan.FromSeconds(Math.Min(60, 10 * result.Failed));
+                    await Signal.WaitAsync(backoff, ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException)
             {

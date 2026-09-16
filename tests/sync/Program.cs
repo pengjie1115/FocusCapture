@@ -11,6 +11,7 @@ using FocusCapture;
 using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Baidu;
 using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 
@@ -202,7 +203,60 @@ internal static class Program
             try { Directory.Delete(outsideBase, true); } catch { /* 清理失败不影响结论 */ }
         }
 
+        // ── ⑤ 网盘沙箱守卫（2026-09-16 事故回归，必须守住） ──
+        // 事故原貌：守卫一律要求 "/apps/" 前缀，于是「列 /apps」这种合法只读请求也被拒；
+        // 而建目录时逐级探测父目录**必然要列一次 /apps** → 测试连接报错、
+        // 每个文件 78 毫秒内失败 5 次、网盘永远是空的。下面几条把这个边界钉死。
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed(null!)),
+              "空路径必须被拒绝");
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/")),
+              "网盘根目录必须被拒绝");
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/我的文档/a.md")),
+              "沙箱以外的路径必须被拒绝（这是「AI 只能碰用户给的文件」的最后一道兜底）");
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/appsFake/a.md")),
+              "前缀相似但不是沙箱的路径必须被拒绝（/appsFake 不是 /apps）");
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/apps/../etc/passwd")),
+              "含 .. 的路径必须被拒绝");
+
+        Check(!ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/apps/FocusCapture")),
+              "应用目录本身必须放行");
+        Check(!ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/apps/FocusCapture/files/a.md")),
+              "应用目录下的文件必须放行");
+
+        Check(ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/apps")),
+              "默认语义（写操作）不许把 /apps 本身当目标路径");
+        Check(!ThrowsSandbox(() => BaiduNetdiskClient.EnsureSandboxed("/apps", allowSandboxRoot: true)),
+              "列目录场景必须放行 /apps 本身（本次事故的正面回归：它一挂，建目录与自检整条挂掉）");
+
+        Check(BaiduNetdiskClient.NormalizeNetRoot("/我的文档") == BaiduNetdiskClient.DefaultNetRoot,
+              "越界的网盘目录配置必须回退默认值，不能带进运行时");
+        Check(BaiduNetdiskClient.NormalizeNetRoot("apps/FocusCapture") == "/apps/FocusCapture",
+              "缺前导斜杠的网盘目录配置必须被纠正");
+
+        // ── ⑥ 重试上限必须留有出口 ──
+        // 撞上限后永久卡死、用户改对配置也等不到重传 —— 那是比反复重试更难排查的状态。
+        var retryCheck = FileRepository.RegisterText("重试出口检查", "retry-check.txt", FileTypes.Artifact);
+        Check(retryCheck.Meta != null, "登记用于重试检查的文件", retryCheck.Error);
+        if (retryCheck.Meta != null)
+        {
+            for (var i = 0; i < UploadQueue.MaxRetry; i++)
+                FileRepository.RecordUploadResult(retryCheck.Meta.Id, false, "模拟失败");
+            Check(FileRepository.StuckUploadCount(UploadQueue.MaxRetry) >= 1,
+                  "连续失败达到上限后必须被计为「卡住」（界面靠它把问题暴露给用户）");
+
+            FileRepository.ResetFailedUploads();
+            Check(FileRepository.StuckUploadCount(UploadQueue.MaxRetry) == 0,
+                  "重置后必须不再卡住（配置修好后要能自动重传）");
+        }
+
         Console.WriteLine();
+    }
+
+    /// <summary>该路径是否被网盘沙箱守卫拒绝。</summary>
+    private static bool ThrowsSandbox(Action act)
+    {
+        try { act(); return false; }
+        catch (BaiduApiException) { return true; }
     }
 
     // ── 单测（验收 F：确定性 ID / 加密往返 / 恢复码 / 强度校验） ──

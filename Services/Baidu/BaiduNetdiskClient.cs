@@ -248,7 +248,8 @@ public class BaiduNetdiskClient
     /// <summary>列出沙箱内某目录下的条目（只返回直属子项）。</summary>
     public async Task<List<BaiduFileEntry>> ListAsync(string netDir, CancellationToken ct)
     {
-        EnsureSandboxed(netDir);
+        // 列目录是只读，放行 /apps 本身（否则「列应用目录」这种正常请求会被自己的守卫拦下）
+        EnsureSandboxed(netDir, allowSandboxRoot: true);
         var token = await EnsureAccessTokenAsync(ct).ConfigureAwait(false);
 
         var url = $"{XpanFileUrl}?method=list&access_token={Uri.EscapeDataString(token)}" +
@@ -282,7 +283,13 @@ public class BaiduNetdiskClient
         return list;
     }
 
-    /// <summary>按名字在父目录里找条目（不缓存 fsid —— 官方文档未承诺 fsid 跨会话稳定，现场查最稳）。</summary>
+    /// <summary>
+    /// 按名字在父目录里找条目（不缓存 fsid —— 官方文档未承诺 fsid 跨会话稳定，现场查最稳）。
+    ///
+    /// <b>用途限定</b>：给「已知完整路径、要拿它的 fsid / size / md5」的场景用。
+    /// **不要拿它探测目录是否存在** —— 那会列一次父目录，而父目录很可能就是 `/apps`，
+    /// 第三方应用能不能列 `/apps` 官方从未承诺。目录一律交给 <see cref="EnsureDirectoryAsync"/>。
+    /// </summary>
     public async Task<BaiduFileEntry?> FindAsync(string netPath, CancellationToken ct)
     {
         var parent = ParentOf(netPath);
@@ -291,7 +298,19 @@ public class BaiduNetdiskClient
         return entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.Ordinal));
     }
 
-    /// <summary>逐级确保目录存在（/apps 已由平台保证存在，从它的下一级开始建）。</summary>
+    /// <summary>本进程内已确保过的目录（建目录幂等，重复建纯属浪费请求与频控额度）。</summary>
+    private static readonly HashSet<string> EnsuredDirs = new(StringComparer.Ordinal);
+    private static readonly object EnsuredDirsGate = new();
+
+    /// <summary>
+    /// 逐级确保目录存在（/apps 已由平台保证存在，从它的下一级开始建）。
+    ///
+    /// <b>实现要点（2026-09-16 改）</b>：直接 create，把 -8「已存在」当成功 ——
+    /// 不再先 list 父目录探测。原因：探测「/apps/FocusCapture 在不在」必须列 /apps，
+    /// 而第三方应用能不能列 /apps 官方从未承诺。一旦列不动，整条上传链路就死在这一步
+    /// （当时现象：测试连接报错、每个文件 78 毫秒内失败 5 次、网盘永远空）。
+    /// 少一次请求、少一个外部依赖，行为还更确定。
+    /// </summary>
     public async Task EnsureDirectoryAsync(string netDir, CancellationToken ct)
     {
         EnsureSandboxed(netDir);
@@ -301,14 +320,15 @@ public class BaiduNetdiskClient
         {
             current += "/" + part;
             if (current == SandboxPrefix) continue;   // /apps 平台自带，不能也不需要创建
-            var existing = await FindAsync(current, ct).ConfigureAwait(false);
-            if (existing != null)
+
+            lock (EnsuredDirsGate)
             {
-                if (!existing.IsDir)
-                    throw new BaiduApiException(-7, $"网盘上 {current} 是一个文件，无法作为目录使用，请到设置里换一个位置。");
-                continue;
+                if (EnsuredDirs.Contains(current)) continue;
             }
+
             await CreateDirectoryAsync(current, ct).ConfigureAwait(false);
+
+            lock (EnsuredDirsGate) EnsuredDirs.Add(current);
         }
     }
 
@@ -610,11 +630,21 @@ public class BaiduNetdiskClient
     /// 沙箱守卫：任何路径都必须落在 /apps 之下。
     /// 这不是"防手滑"，而是把「AI 只能引用用户点过的文件」这条红线的最后一道兜底 ——
     /// 即使上游漏了校验，这里也不会让请求打到用户网盘的其他位置。
+    ///
+    /// <paramref name="allowSandboxRoot"/>：是否放行 <c>/apps</c> 本身。
+    /// <b>只有只读的列目录该传 true</b> —— 写操作的目标永远是具体路径，不会等于 /apps。
     /// </summary>
-    public static void EnsureSandboxed(string? netPath)
+    /// <remarks>
+    /// 2026-09-16 事故：早期版本一律要求 <c>/apps/</c> 前缀，于是「列 /apps」这种合法只读请求
+    /// 也被拒，而 <see cref="EnsureDirectoryAsync"/> 逐级建目录时**必然要列一次 /apps** ——
+    /// 结果测试连接报「拒绝访问沙箱以外的路径（/apps）」，上传 100% 失败。
+    /// 教训：守卫的检查粒度要跟操作的语义对齐，别拿一把尺子量所有请求。
+    /// </remarks>
+    public static void EnsureSandboxed(string? netPath, bool allowSandboxRoot = false)
     {
         if (string.IsNullOrWhiteSpace(netPath))
             throw new BaiduApiException(2, "网盘路径不能为空。");
+        if (allowSandboxRoot && netPath.TrimEnd('/') == SandboxPrefix && netPath.Length > 0) return;
         if (!netPath.StartsWith(SandboxPrefix + "/", StringComparison.Ordinal))
             throw new BaiduApiException(-7,
                 $"拒绝访问沙箱以外的路径（{netPath}）。本应用只能读写自己的应用目录 {SandboxPrefix}/{{应用名}}。");

@@ -70,17 +70,11 @@ public sealed class BaiduCloudStorage : ICloudStorage
 
     // ── 供设置面板使用的授权动作（不走 ICloudStorage，属初始化流程） ──
 
-    /// <summary>列出 /apps 下已存在的目录名，供用户挑选应用目录。</summary>
-    public static async Task<List<string>> ListAppDirsAsync(CancellationToken ct)
-    {
-        var creds = BaiduCredentialStore.LoadCredentials()
-                    ?? throw new BaiduAuthRequiredException("尚未配置应用凭据。");
-        var client = new BaiduNetdiskClient(creds);
-        var entries = await client.ListAsync(BaiduNetdiskClient.SandboxPrefix, ct).ConfigureAwait(false);
-        return entries.Where(e => e.IsDir).Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
-    }
-
-    /// <summary>连通性自检：授权是否真的能用（列一次应用目录）。</summary>
+    /// <summary>
+    /// 连通性自检：授权是否真的能用（建目录 + 列目录，两层都验）。
+    ///
+    /// 特意把「建目录」放进自检：**能不能写**才是用户关心的，只测列目录会给出假绿。
+    /// </summary>
     public static async Task<(bool Ok, string Message)> TestAsync(string netRoot, CancellationToken ct)
     {
         try
@@ -89,9 +83,24 @@ public sealed class BaiduCloudStorage : ICloudStorage
             if (creds?.IsComplete != true) return (false, "请先填写 AppKey 与 SecretKey。");
 
             var client = new BaiduNetdiskClient(creds, netRoot);
-            await client.EnsureDirectoryAsync(client.NetRoot, ct).ConfigureAwait(false);
+
+            try
+            {
+                await client.EnsureDirectoryAsync(client.NetRoot, ct).ConfigureAwait(false);
+            }
+            catch (BaiduApiException ex) when (ex.ErrNo is -6 or 111 or 112)
+            {
+                return (false, "授权无效或已过期，请重新点「开始授权」。");
+            }
+            catch (BaiduApiException ex)
+            {
+                return (false, $"{ex.Message}\n" +
+                               $"请到百度网盘开放平台核对应用的名称，本机填的网盘目录必须与它一致" +
+                               $"（当前填的是 {client.NetRoot}）。");
+            }
+
             var entries = await client.ListAsync(client.NetRoot, ct).ConfigureAwait(false);
-            return (true, $"连接成功，目录 {client.NetRoot} 下现有 {entries.Count} 个条目。");
+            return (true, $"连接成功：已能读写 {client.NetRoot}（现有 {entries.Count} 个条目）。");
         }
         catch (BaiduAuthRequiredException ex)
         {

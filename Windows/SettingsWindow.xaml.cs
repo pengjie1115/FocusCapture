@@ -1412,7 +1412,8 @@ public partial class SettingsWindow : Window
         // 「一直传不上去」必须看得见：否则用户以为存成功了，直到某天想取回才发现云端根本没有
         var stuck = FileRepository.StuckUploadCount(UploadQueue.MaxRetry);
         if (stuck > 0)
-            text += $"；⚠ 有 {stuck} 个文件多次上传失败（检查网盘授权与网络后，重新「保存到网盘」即可再试）";
+            text += $"；⚠ 有 {stuck} 个文件多次上传失败（多半是授权或网盘目录没配好。" +
+                    "修好后点上面的「测试连接」，通过时会自动重试）";
 
         CacheStatusText.Text = text + "。";
     }
@@ -1518,7 +1519,15 @@ public partial class SettingsWindow : Window
 
             BaiduStatusText.Text = "授权成功。文件现在可以存到网盘了。";
             FileRepository.Cloud = new BaiduCloudStorage(_settings.BaiduNetRoot);
+
+            // 「未授权」是失败重试的主要成因之一。授权刚成功，之前撞上限卡住的文件
+            // 正是最该立刻重传的，顺手放回队列（否则它们会永远躺在失败态）。
+            var requeued = FileRepository.ResetFailedUploads();
+            if (requeued > 0)
+                BaiduStatusText.Text += $"\n已把 {requeued} 个此前失败的文件放回上传队列，正在重传。";
+
             UploadQueue.Kick();   // 把之前因未授权而滞留的待传文件补上
+            RefreshCacheStatus();
         }
         catch (OperationCanceledException)
         {
@@ -1543,6 +1552,20 @@ public partial class SettingsWindow : Window
         try
         {
             var (ok, message) = await BaiduCloudStorage.TestAsync(_settings.BaiduNetRoot, CancellationToken.None);
+
+            // 测试通过 = 配置确实修好了 → 顺手把之前撞到重试上限、永久卡住的失败文件放回队列。
+            // 「重试有上限」是为了不无限骚扰平台，但如果没有这个出口，用户改对了配置也永远等不到重传。
+            if (ok)
+            {
+                var requeued = FileRepository.ResetFailedUploads();
+                if (requeued > 0)
+                {
+                    UploadQueue.Kick();
+                    message += $"\n已把 {requeued} 个此前失败的文件放回上传队列，正在重传。";
+                }
+                RefreshCacheStatus();
+            }
+
             BaiduStatusText.Text = (ok ? "✓ " : "✗ ") + message;
         }
         catch (Exception ex)

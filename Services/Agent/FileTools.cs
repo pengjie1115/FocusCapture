@@ -109,7 +109,10 @@ public class StoreFileToCloudTool : AgentTool
         "2) 用户说「把那张图/那个文件存上去」，且对话框里已经显示了「已选择文件」卡片 → 用 handle 参数原样引用卡片上的牌号（形如 file:20260916-1）。\n" +
         "3) 用户说「把刚才那张图存到网盘」→ 用 attachment_name 参数传当前对话附件里的文件名。\n" +
         "⚠️ 本工具没有也没有任何路径参数：你无法指定本机文件路径，也无法编造牌号。若用户想要的文件还没被选过，" +
-        "请明确请他点对话框里的「选择文件」按钮，不要猜测或杜撰路径。";
+        "请明确请他点对话框里的「选择文件」按钮，不要猜测或杜撰路径。\n" +
+        "⚠️ 汇报纪律：上传是**后台异步**的，本工具返回时文件通常还没到网盘。除非返回值明确说「网盘上已有」，" +
+        "否则**绝不许**对用户说「已上传成功」「已保存到网盘」—— 说错了用户会去网盘核对，然后发现是空的。" +
+        "按返回值原意说「已存入本机、正在后台上传，网盘上要等传完才出现」即可。";
 
     public override string ParametersJson =>
         """{"type":"object","properties":{"content":{"type":"string","description":"要保存的文本内容（用法 1，AI 生成的内容）"},"file_name":{"type":"string","description":"文件名，需带扩展名，如 周报.md。与 content 搭配使用"},"handle":{"type":"string","description":"用户在对话框里选择的文件牌号，形如 file:20260916-1。必须原样引用界面上显示的值，不可自行构造"},"attachment_name":{"type":"string","description":"当前对话中已附件的文件名（用法 3）"},"tags":{"type":"string","description":"可选，逗号分隔的标签，如：周报,2026Q3"},"type":{"type":"string","description":"可选，artifact=AI产出 / upload=用户上传 / attachment=对话附件，默认自动判断"}},"required":[]}""";
@@ -150,12 +153,12 @@ public class StoreFileToCloudTool : AgentTool
         {
             if (!FileHandleStore.TryResolve(handle, out var path, out var error))
                 return "错误：" + error;
+            var sourceName = Path.GetFileName(path);
             var (meta, err) = FileRepository.RegisterLocalFile(
-                path, explicitType ?? FileTypes.Upload, Path.GetFileName(path), attachExisting: false, tags);
+                path, explicitType ?? FileTypes.Upload, sourceName, attachExisting: false, tags);
             if (meta == null) return "错误：" + err;
             NotifyUpload();
-            return $"已保存到网盘：{meta.Name}（{RootMigrationService.FormatSize(meta.Size)}，编号 {FileToolSupport.ShortRef(meta.Id)}）。"
-                   + UploadNote();
+            return DescribeSaved(meta, sourceName);
         }
 
         // ② 当前对话附件（链路 B）
@@ -183,7 +186,7 @@ public class StoreFileToCloudTool : AgentTool
                 path, explicitType ?? FileTypes.Attachment, hit.FileName, attachExisting: true, tags);
             if (meta == null) return "错误：" + err;
             NotifyUpload();
-            return $"已把对话附件「{meta.Name}」保存到网盘（编号 {FileToolSupport.ShortRef(meta.Id)}）。" + UploadNote();
+            return DescribeSaved(meta, hit.FileName);
         }
 
         // ③ AI 生成的内容（链路 A）
@@ -196,8 +199,7 @@ public class StoreFileToCloudTool : AgentTool
                 explicitType ?? FileTypes.Artifact, tags);
             if (meta == null) return "错误：" + err;
             NotifyUpload();
-            return $"已保存到网盘：{meta.Name}（{RootMigrationService.FormatSize(meta.Size)}，编号 {FileToolSupport.ShortRef(meta.Id)}）。"
-                   + UploadNote();
+            return DescribeSaved(meta, fileName.Trim());
         }
 
         return "错误：没有可保存的来源。请在 content（你生成的内容 + file_name）、handle（用户已选择的文件牌号）、" +
@@ -207,9 +209,44 @@ public class StoreFileToCloudTool : AgentTool
 
     private static void NotifyUpload() => UploadQueue.Kick();
 
-    private static string UploadNote() => FileRepository.CloudReady
-        ? "文件已在本机就位，正在后台上传到网盘。"
-        : "（提示：尚未完成百度网盘授权，文件暂存在本机，授权后会自动补传。）";
+    /// <summary>
+    /// 如实描述「文件现在到底走到了哪一步」。
+    ///
+    /// ⚠️ 这里曾经一律说「已保存到网盘」，而上传其实还没开始、且随时可能失败 ——
+    /// 用户去网盘一看是空的，整条链路当场失去信任（2026-09-16 实机复现）。
+    /// 规矩：登记成功 ≠ 上传成功。宁可把话说慢，不能说错。
+    /// </summary>
+    private static string DescribeSaved(FileMetadata meta, string? sourceName)
+    {
+        var size = RootMigrationService.FormatSize(meta.Size);
+        var id = FileToolSupport.ShortRef(meta.Id);
+        var onCloud = FileRepository.FindCache(meta.Id)?.UploadState == UploadStates.Uploaded;
+
+        // 名字被换掉 = 命中了内容去重，返回的是已有那条记录
+        var merged = sourceName != null && !string.Equals(meta.Name, sourceName, StringComparison.Ordinal);
+        if (merged)
+        {
+            return onCloud
+                ? $"「{sourceName}」的内容和网盘上已有的「{meta.Name}」（编号 {id}）完全相同，已合并为同一个文件，不重复上传。"
+                : $"「{sourceName}」的内容和本机已登记的「{meta.Name}」（编号 {id}）完全相同，已合并，不重复占用空间。" +
+                  PendingNote();
+        }
+
+        if (onCloud)
+            return $"「{meta.Name}」（{size}，编号 {id}）网盘上已有相同内容，不需要重复上传，随时可取回。";
+
+        if (!FileRepository.CloudReady)
+            return $"已存入本机文件区：「{meta.Name}」（{size}，编号 {id}）。" +
+                   "尚未完成百度网盘授权，文件暂存在本机，授权后会自动补传。";
+
+        return $"已存入本机文件区：「{meta.Name}」（{size}，编号 {id}）。正在后台上传 —— " +
+               "**网盘上要等传完才会出现，现在去看还是空的**。传完后网盘上就能看到；" +
+               "如果一直没出现，打开「设置 → 文件与网盘」能看到失败原因。";
+    }
+
+    private static string PendingNote() => FileRepository.CloudReady
+        ? "正在后台上传，网盘上要等传完才会出现。"
+        : "尚未完成百度网盘授权，授权后会自动补传。";
 }
 
 /// <summary>
@@ -261,7 +298,25 @@ public class FindCloudFilesTool : AgentTool
 
         var lines = hits.Select(FileToolSupport.Describe);
         return Task.FromResult($"共 {hits.Count} 个文件：\n" + string.Join("\n", lines)
-            + "\n\n（要取回某个文件给用户，用 fetch_cloud_file 传它的编号；要读内容自己用，用 read_cloud_file。）");
+            + "\n\n（要取回某个文件给用户，用 fetch_cloud_file 传它的编号；要读内容自己用，用 read_cloud_file。）"
+            + CloudLocationNote());
+    }
+
+    /// <summary>
+    /// 给模型一份「文件到底存在哪儿」的准确说法。
+    /// 用户问过「上传到网盘哪个目录了」，而检索结果里本来不含路径 —— 不给这句，
+    /// 模型就只能自己编一个目录名出来（2026-09-16 实测：它答了，答得毫无依据）。
+    /// </summary>
+    private static string CloudLocationNote() => FileRepository.CloudReady
+        ? $"\n（若用户问「存到哪个目录了」：都在他网盘的「我的应用数据 / {AppName()}」里 —— " +
+          "普通文件在 files 子目录、对话附件在 attachments 子目录。照这个答，不要编别的路径。）"
+        : "";
+
+    private static string AppName()
+    {
+        var root = FileRepository.NetFilesDir;                       // 形如 /apps/FocusCapture/files
+        var parts = root.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? parts[1] : "应用目录";
     }
 }
 
