@@ -83,6 +83,25 @@ public static class FileRepository
 
     public static string NetAttachmentsDir => $"{Cloud?.NetRoot ?? "/apps/FocusCapture"}/attachments";
 
+    /// <summary>
+    /// 附件在云端的**月份子目录**：`…/attachments/2026-09`（2026-09-16 新增）。
+    ///
+    /// 为什么按月分：到期清理要删云端那份，而删除是逐文件的。分月之后，人工兜底路径变成
+    /// **「网盘里一个月点一次删除文件夹」** —— 从逐文件勾选降到点一下，人工方案才真的可用。
+    /// 已有文件的 NetPath 存在元数据里、不会因规则变更而失联（规则只影响新登记的附件）。
+    /// </summary>
+    public static string AttachmentMonthDir(DateTime when) => $"{NetAttachmentsDir}/{when:yyyy-MM}";
+
+    /// <summary>
+    /// 取一个网盘路径的父目录。建目录/取回时一律用它，别再到处拼 <see cref="NetFilesDir"/> /
+    /// <see cref="NetAttachmentsDir"/> —— 那样路径规则一变就得改好几处（附件分月就是这么漏掉的坑）。
+    /// </summary>
+    public static string NetDirOf(string netPath)
+    {
+        var idx = netPath.LastIndexOf('/');
+        return idx > 0 ? netPath[..idx] : netPath;
+    }
+
     // ══════════════════ 读写（内存缓存 + 变更即落盘） ══════════════════
 
     public static List<FileMetadata> AllMetadata(bool includeDeleted = false)
@@ -414,8 +433,8 @@ public static class FileRepository
             Directory.CreateDirectory(dir);
             var target = UniquePath(dir, SafeFileName(meta.Name));
 
-            await Cloud!.EnsureDirectoryAsync(meta.Type == FileTypes.Attachment ? NetAttachmentsDir : NetFilesDir, ct)
-                .ConfigureAwait(false);
+            // 云端目录以**元数据里记的 NetPath 为准**，不按类型现拼（附件分月后，拼目录会建错位置）
+            await Cloud!.EnsureDirectoryAsync(NetDirOf(meta.NetPath), ct).ConfigureAwait(false);
 
             var ok = await Cloud.DownloadAsync(meta.NetPath, target, progress, ct).ConfigureAwait(false);
             if (!ok) return (null, $"云端没有找到「{meta.Name}」，可能已被清理（对话附件默认保留 30 天）。");
@@ -547,7 +566,12 @@ public static class FileRepository
         }
     }
 
-    /// <summary>已到期的对话附件（云端清理器的输入）。</summary>
+    /// <summary>
+    /// 已到期、且**云端那份还没清掉**的对话附件（云端清理器的输入）。
+    ///
+    /// 为什么排除 <see cref="CloudStates.Expired"/>：清理成功就是终态，不会再变回去；
+    /// 排除掉它们，重试才只作用于真的还没清干净的那些（不再每轮拿一整批去撞平台）。
+    /// </summary>
     public static List<FileMetadata> ExpiredAttachments(DateTime now)
     {
         lock (Gate)
@@ -555,10 +579,62 @@ public static class FileRepository
             EnsureLoaded();
             return _metadata!
                 .Where(m => !m.Deleted && m.Type == FileTypes.Attachment
-                            && m.ExpireAt.HasValue && m.ExpireAt.Value <= now)
+                            && m.ExpireAt.HasValue && m.ExpireAt.Value <= now
+                            && m.CloudState != CloudStates.Expired)
                 .Select(m => m.Clone())
                 .ToList();
         }
+    }
+
+    /// <summary>
+    /// 云端还等着清理的记录数（设置页提示用 —— 「有东西没清干净」必须看得见）。
+    /// **刻意包含已打墓碑的**：用户显式删过、但云端那次删除失败的那些，比附件到期更需要能补删。
+    /// 「云端有没有这份文件」跟"本机记录还在不在"是两码事。
+    /// </summary>
+    public static int CleanupPendingCount()
+    {
+        lock (Gate)
+        {
+            EnsureLoaded();
+            return _metadata!.Count(m => m.CloudState == CloudStates.CleanupPending);
+        }
+    }
+
+    /// <summary>待云端清理的清单（含已打墓碑的，理由见 <see cref="CleanupPendingCount"/>）。</summary>
+    public static List<FileMetadata> CleanupPendingItems()
+    {
+        lock (Gate)
+        {
+            EnsureLoaded();
+            return _metadata!
+                .Where(m => m.CloudState == CloudStates.CleanupPending)
+                .Select(m => m.Clone())
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// 标记「云端已到期清理」：云端那份确实删掉了。
+    /// **刻意不打墓碑** —— 记录留着，用户才看得到「它去哪了」（打墓碑等于让文件在列表里凭空消失）。
+    /// </summary>
+    public static void MarkCloudExpired(string id) => SetCloudState(id, CloudStates.Expired);
+
+    /// <summary>标记「云端待清理」：已到期但云端那份还在（删除失败 / 没联网 / 未授权）。</summary>
+    public static void MarkCleanupPending(string id) => SetCloudState(id, CloudStates.CleanupPending);
+
+    private static void SetCloudState(string id, string state)
+    {
+        lock (Gate)
+        {
+            EnsureLoaded();
+            var m = _metadata!.FirstOrDefault(x => x.Id == id);
+            if (m == null || m.CloudState == state) return;
+            m.CloudState = state;
+            // 必须更新 UpdatedAt：合并规则与「是否需要推送」都靠它看出这条记录变了
+            m.UpdatedAt = DateTime.Now;
+            PersistMetadataLocked();
+        }
+        RaiseMetadataChanged();
     }
 
     /// <summary>打墓碑（云端那份已经没了 / 用户显式彻底删除）。</summary>
@@ -665,22 +741,26 @@ public static class FileRepository
         if (meta == null) return (false, "找不到这个文件记录。");
 
         var cloudNote = "";
+        var cloudDeleted = false;
         if (CloudReady)
         {
             try
             {
                 await Cloud!.DeleteAsync(new[] { meta.NetPath }, ct).ConfigureAwait(false);
+                cloudDeleted = true;
                 cloudNote = "云端已删除（可在网盘回收站找回）";
             }
             catch (Exception ex)
             {
-                cloudNote = $"云端删除失败：{ex.Message}；已仅在本机记账，稍后可重试";
+                // 措辞必须让用户看清"云端那份还在" —— 否则"已删除"会被读成"网盘也没了"
+                cloudNote = $"但云端删除失败（{ex.Message}），网盘上那份还在：" +
+                            "可在「设置 → 文件与网盘」点「重试云端清理」，或到网盘手动删除";
                 AppLog.Warn("Files", "云端删除失败：" + ex.Message);
             }
         }
         else
         {
-            cloudNote = "未连接网盘，仅在本机记账";
+            cloudNote = "当前未连接网盘，云端那份还在：联网后会自动补删";
         }
 
         lock (Gate)
@@ -690,6 +770,8 @@ public static class FileRepository
             if (m != null)
             {
                 m.Deleted = true;
+                // 云端没删掉就如实标注：本机删了 ≠ 云端删了。设置页会按这个状态提示用户补删。
+                if (!cloudDeleted) m.CloudState = CloudStates.CleanupPending;
                 m.UpdatedAt = DateTime.Now;
             }
             var e = _ledger!.FirstOrDefault(x => x.Id == id);
@@ -704,7 +786,7 @@ public static class FileRepository
 
         AppLog.Info("Files", $"已彻底删除：{meta.Name}（{cloudNote}）");
         RaiseMetadataChanged();
-        return (true, $"已删除「{meta.Name}」。{cloudNote}。");
+        return (true, $"已从本机删除「{meta.Name}」。{cloudNote}。");
     }
 
     /// <summary>清本地副本（= 淘汰动作），元数据与云端都保留。</summary>
@@ -784,7 +866,8 @@ public static class FileRepository
 
     private static string BuildNetPath(string displayName, string type)
     {
-        var dir = type == FileTypes.Attachment ? NetAttachmentsDir : NetFilesDir;
+        // 附件走月份子目录（见 AttachmentMonthDir 的说明）；正式文件平铺在 files/ 下。
+        var dir = type == FileTypes.Attachment ? AttachmentMonthDir(DateTime.Now) : NetFilesDir;
         var name = SafeFileName(displayName);
         // 云端同名会被覆盖：加上 id 前 8 位做后缀，保证「同内容同 id → 同路径」（去重），
         // 而不同内容即使同名也不会互相冲掉。

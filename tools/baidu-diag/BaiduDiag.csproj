@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>FocusCapture.BaiduDiag</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 引用主项目是为了**复用同一套实现**（BaiduNetdiskClient / BaiduCredentialStore / Dpapi），
+         而不是另写一份 HTTP 逻辑 —— 只有同栈验证才能说明"应用里到底能不能跑通"。
+         用途：真机联调诊断（接口参数穷举、上传/删除全链路自测），不属于检查点，故不放在 tests/ 下。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\FocusCapture.csproj" />
+  </ItemGroup>
+
+</Project>

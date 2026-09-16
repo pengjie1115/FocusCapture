@@ -150,6 +150,15 @@ internal static class UiSnapshot
                 w.ScrollToEndForSnapshot();
                 return w;
             }, outDir, log);
+
+            // 云文件卡片的四个动作按钮（2026-09-16）：卡片只在"AI 真把文件取回并交付"时渲染，
+            // 其它场景覆盖不到。加「彻底删除」后一行从三个按钮变四个 —— 正是"被挤出可视区"的高危形态。
+            Capture("18-AI 对话（带云文件卡片）", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedCloudFileCardsForSnapshot();
+                return w;
+            }, outDir, log);
         }
         catch (Exception ex)
         {

@@ -382,27 +382,46 @@ public class BaiduNetdiskClient
         }
     }
 
-    /// <summary>删除（沙箱内，可批量）。走官方 filemanager 的 delete 动作。</summary>
+    /// <summary>
+    /// 删除（沙箱内，可批量）。**走旧式 `method=delete`，不用 `method=filemanager&amp;opera=delete`**。
+    ///
+    /// 为什么（2026-09-16 实测，见 `tools/baidu-diag` 的 probe-delete）：
+    /// `filemanager&amp;opera=delete` 穷举了 12 种参数形态（async 取 0/1/2/不带、filelist 传
+    /// path 字符串数组 / 对象数组 / fs_id、form body / json body / 全 query、再叠加参数）
+    /// **一律返回 errno=2（请求参数有误）**；而 `method=delete&amp;path=&lt;完整路径&gt;` 一次即成功。
+    /// 两次独立验证都以「重新列目录看文件是否还在」为准 —— 返回值不算数，终态才算数。
+    ///
+    /// 三条必须记住的实测契约：
+    /// 1. <b>成功响应里没有 errno</b> —— 只返回 <c>{"request_id":…}</c>。所以**不能靠 errno 判成败**，
+    ///    只能判「没有 error_code」。这是本方法不复用上传那套判定的原因。
+    /// 2. <b>只接单个 path，不认 filelist</b> —— 传 filelist 得 HTTP 400 + error_code=31023。
+    ///    因此批量只能逐个发；删除是轻操作，这点成本换行为确定，值。
+    /// 3. <b>失败形态</b>：404 + 31066（文件本就不存在 → 按幂等成功处理）、403 + 31064（越权，
+    ///    平台自己也会拦沙箱外的路径）。
+    ///
+    /// ⚠️ 目录也能删（实测删净了两个本应用建目录 bug 造出的空目录），但返回码是 403/404
+    /// 与「确实消失了」互相矛盾 → **目录删除的返回语义未定性**，本方法不依赖它。
+    /// </summary>
     public async Task DeleteAsync(IEnumerable<string> netPaths, CancellationToken ct)
     {
-        var paths = netPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p =>
-        {
-            EnsureSandboxed(p);
-            return p;
-        }).ToList();
+        var paths = netPaths.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
         if (paths.Count == 0) return;
 
         var token = await EnsureAccessTokenAsync(ct).ConfigureAwait(false);
-        var form = new Dictionary<string, string>
+        foreach (var p in paths)
         {
-            ["opera"] = "delete",
-            ["async"] = "0",
-            ["filelist"] = JsonSerializer.Serialize(paths, BaiduJsonContext.Default.ListString),
-        };
-        var json = await PostFormAsync($"{XpanFileUrl}?method=filemanager&access_token={Uri.EscapeDataString(token)}", form, ct)
-            .ConfigureAwait(false);
-        var errno = IntOr(json, "errno", 0);
-        if (errno != 0) throw new BaiduApiException(errno, $"删除失败：{DescribeErrNo(errno)}");
+            ct.ThrowIfCancellationRequested();
+            EnsureSandboxed(p);
+
+            var url = $"{XpanFileUrl}?method=delete&access_token={Uri.EscapeDataString(token)}" +
+                      $"&path={Uri.EscapeDataString(p)}";
+            var json = await PostEmptyAsync(url, ct).ConfigureAwait(false);
+
+            var errorCode = IntOr(json, "error_code");
+            // 31066 = 云端本来就没有这个文件 → 删除的期望状态已达成，不当失败（幂等）
+            if (errorCode == 0 || errorCode == 31066) continue;
+            throw new BaiduApiException(errorCode, $"删除失败：{DescribeErrNo(errorCode)}");
+        }
     }
 
     /// <summary>重命名（沙箱内）。</summary>
@@ -911,6 +930,7 @@ public class BaiduNetdiskClient
         111 => "当前用户未授权",
         112 => "授权已过期，请重新授权",
         31061 => "同名文件已存在",
+        31064 => "没有权限操作该文件或目录（可能不在本应用目录内）",
         31066 => "文件不存在",
         31069 => "文件正在上传中",
         31299 or 31364 or 31365 => "上传分片参数不符合平台要求（分片大小或数量）",
@@ -956,6 +976,22 @@ public class BaiduNetdiskClient
     private static async Task<JsonElement> PostFormAsync(string url, Dictionary<string, string> form, CancellationToken ct)
     {
         using var content = new FormUrlEncodedContent(form);
+        using var resp = await Http.PostAsync(url, content, ct).ConfigureAwait(false);
+        var body = await ReadBodyAsync(resp.Content, ct).ConfigureAwait(false);
+        using var doc = TryParse(body);
+        if (doc == null)
+            throw new BaiduApiException(2, $"接口返回了无法解析的内容（HTTP {(int)resp.StatusCode}）。");
+        return doc.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// POST 空 body（参数全在 query 上）。专供旧式端点使用 —— 例如 `method=delete` 只认
+    /// query 里的 path；服务端对 404/403 仍返回合法 JSON（含 error_code），所以这里照常解析，
+    /// 由调用方按 error_code 判成败。
+    /// </summary>
+    private static async Task<JsonElement> PostEmptyAsync(string url, CancellationToken ct)
+    {
+        using var content = new StringContent("");
         using var resp = await Http.PostAsync(url, content, ct).ConfigureAwait(false);
         var body = await ReadBodyAsync(resp.Content, ct).ConfigureAwait(false);
         using var doc = TryParse(body);

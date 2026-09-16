@@ -138,8 +138,11 @@ public class FileStoreSync
         foreach (var x in a)
         {
             if (!map.TryGetValue(x.Id, out var y)) return false;
+            // CloudState 必须参与比较（2026-09-16）：它是"云端到底有没有这份文件"的客观事实，
+            // 漏了它就意味着标注永远同步不出去 —— 他端还在以为文件好好躺在网盘里。
             if (x.Name != y.Name || x.UpdatedAt != y.UpdatedAt || x.Deleted != y.Deleted
-                || x.NetPath != y.NetPath || x.Size != y.Size || x.Type != y.Type) return false;
+                || x.NetPath != y.NetPath || x.Size != y.Size || x.Type != y.Type
+                || x.CloudState != y.CloudState) return false;
         }
         return true;
     }

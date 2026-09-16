@@ -1415,6 +1415,13 @@ public partial class SettingsWindow : Window
             text += $"；⚠ 有 {stuck} 个文件多次上传失败（多半是授权或网盘目录没配好。" +
                     "修好后点上面的「测试连接」，通过时会自动重试）";
 
+        // 「云端还有东西没清掉」同样必须看得见（2026-09-16）：否则用户以为清理功能坏了，
+        // 或者更糟 —— 以为已经清干净了。清理失败的记录会在设置页一直挂着，直到真的清掉。
+        var pendingCleanup = FileRepository.CleanupPendingCount();
+        if (pendingCleanup > 0)
+            text += $"；⚠ 有 {pendingCleanup} 个文件的云端副本尚未清理（附件到期或删除失败）。" +
+                    "点「重试云端清理」；若仍失败，可用「复制网盘路径」到网盘里手动删除";
+
         CacheStatusText.Text = text + "。";
     }
 
@@ -1648,6 +1655,52 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show(this, "打开失败：" + ex.Message, "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// 重试云端清理（2026-09-16）：把「云端待清理」的记录再删一轮。
+    /// 这是用户把网络/授权修好之后**唯一**的出口 —— 否则记录会永远躺在「待清理」不动，
+    /// 而"永久卡死且没有出口"比"反复重试"更难排查（同款出口在上传那边叫「测试连接」）。
+    /// </summary>
+    private async void BtnRetryCloudCleanup_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var (done, left) = await AttachmentExpiryService.RetryPendingAsync();
+            var tail = done == 0 && left == 0
+                ? "没有需要清理的云端文件。"
+                : left == 0
+                    ? $"已清理 {done} 个云端文件。"
+                    : $"已清理 {done} 个，仍有 {left} 个未清掉（可稍后再试，或用「复制网盘路径」到网盘手动删除）。";
+            RefreshCacheStatus();
+            CacheStatusText.Text = tail + " " + CacheStatusText.Text;
+        }
+        catch (Exception ex)
+        {
+            CacheStatusText.Text = "重试云端清理失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 复制网盘附件目录路径（2026-09-16）。人工兜底路径必须是"最低成本动作"：
+    /// 附件按月分子目录，用户复制路径后进网盘删掉月份文件夹就完事，不必逐文件勾选。
+    /// </summary>
+    private void BtnCopyCloudPath_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var path = FileRepository.NetAttachmentsDir;
+            System.Windows.Clipboard.SetText(path);
+            System.Windows.MessageBox.Show(this,
+                $"已复制网盘路径：\n{path}\n\n在百度网盘里进入这个目录即可统一清理" +
+                "（附件按月分子目录，删掉对应月份文件夹就算清完）。",
+                "已复制", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "复制失败：" + ex.Message, "提示",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }

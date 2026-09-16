@@ -58,6 +58,7 @@ internal static class Program
             TestUnit();
             TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
             TestFileRepository();        // 网盘文件仓库：句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
+            await TestAttachmentCleanup();  // 附件到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
             await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
@@ -373,6 +374,182 @@ internal static class Program
         => set.Count == expected.Length && expected.All(set.Contains);
 
     // ── 单测（验收 F：确定性 ID / 加密往返 / 恢复码 / 强度校验） ──
+
+    // ══════════════════ 附件到期清理 / 彻底删除（2026-09-16 重构）══════════════════
+    //
+    // 这一组守护的是**顺序**：本地状态推进必须无条件，云端删除只影响标注。
+    // 旧实现把两者绑在一起（云端删成功 → 才打墓碑 + 贴淘汰标记），删除接口一坏就整条链卡死：
+    // 云端没删、本地没清、还每 30 分钟整批重试。回归时最该盯的就是这个顺序被"顺手优化"回去。
+
+    /// <summary>造一批元数据 + 空账本并重载，让每条检查点从已知状态开始。</summary>
+    private static void SeedFileMeta(params (string Id, string NetPath, string Type, DateTime? ExpireAt, bool Deleted)[] items)
+    {
+        var list = items.Select(i => (object)new Dictionary<string, object?>
+        {
+            ["Id"] = i.Id,
+            ["Name"] = i.Id + ".txt",
+            ["NetPath"] = i.NetPath,
+            ["Size"] = 1024L,
+            ["Md5"] = "chk",
+            ["Type"] = i.Type,
+            ["Tags"] = Array.Empty<string>(),
+            ["CreatedAt"] = DateTime.Now.AddDays(-40),
+            ["UpdatedAt"] = DateTime.Now.AddDays(-40),
+            ["ExpireAt"] = i.ExpireAt,
+            ["Deleted"] = i.Deleted,
+            ["CloudState"] = CloudStates.Ok,
+        }).ToArray();
+
+        File.WriteAllText(FileRepository.MetaPath,
+            JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }),
+            new UTF8Encoding(false));
+        File.WriteAllText(FileRepository.LedgerPath, "[]", new UTF8Encoding(false));
+        FileRepository.Reload();
+    }
+
+    /// <summary>往账本里放一条本机副本记录（UploadState 必须是 uploaded，否则淘汰器保护它）。</summary>
+    private static void SeedLedger(string id, string localPath)
+    {
+        var entry = new object[]
+        {
+            new Dictionary<string, object?>
+            {
+                ["Id"] = id,
+                ["LocalPath"] = localPath,
+                ["CachedAt"] = DateTime.Now.AddDays(-40),
+                ["LastAccess"] = DateTime.Now.AddDays(-40),
+                ["Origin"] = CacheOrigins.Local,
+                ["UploadState"] = UploadStates.Uploaded,
+                ["UploadRetry"] = 0,
+                ["PendingEvict"] = false,
+            },
+        };
+        File.WriteAllText(FileRepository.LedgerPath,
+            JsonSerializer.Serialize(entry, new JsonSerializerOptions { WriteIndented = true }),
+            new UTF8Encoding(false));
+        FileRepository.Reload();
+    }
+
+    private static async Task TestAttachmentCleanup()
+    {
+        Console.WriteLine("[附件到期清理] 本地先推进 / 云端尽力而为 / 失败退避 / 手动重试 / 彻底删除");
+
+        // ── 路径规则：附件按月分子目录（人工兜底路径的前提：能整目录删）──
+        Check(FileRepository.AttachmentMonthDir(new DateTime(2026, 9, 16)).EndsWith("/attachments/2026-09", StringComparison.Ordinal),
+            "附件云端路径按月分目录（…/attachments/2026-09）");
+        Check(FileRepository.NetDirOf("/apps/A/files/a.md") == "/apps/A/files",
+            "NetDirOf 取父目录（建目录/取回统一走它，避免按类型现拼拼错位置）");
+
+        var goodId = "chk-good";
+        var badId = "chk-bad";
+        var goodNet = FileRepository.NetAttachmentsDir + "/2026-09/chk-good.txt";
+        var badNet = FileRepository.NetAttachmentsDir + "/2026-09/chk-bad.txt";
+        var localGood = Path.Combine(_sandbox, "files", "chk-good.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(localGood)!);
+        File.WriteAllText(localGood, "本地副本");
+
+        SeedFileMeta(
+            (goodId, goodNet, FileTypes.Attachment, DateTime.Now.AddDays(-1), false),
+            (badId, badNet, FileTypes.Attachment, DateTime.Now.AddDays(-1), false));
+        SeedLedger(goodId, localGood);
+
+        var cloud = new FakeCloud();
+        cloud.FailFor.Add(badNet);          // 这条必然删不掉
+        FileRepository.Cloud = cloud;
+
+        // ── 第一轮：一条能删、一条删不掉 ──
+        var done = await AttachmentExpiryService.RunAsync();
+        var good = FileRepository.FindMetadata(goodId)!;
+        var bad = FileRepository.FindMetadata(badId)!;
+
+        Check(done == 1, "云端能删的那条清理成功 1 条", $"实际 {done}");
+        Check(cloud.Deleted.Contains(goodNet), "删除请求确实打到了那一条");
+        Check(good.CloudState == CloudStates.Expired, "成功那条标为「已到期清理」", good.CloudState);
+        Check(bad.CloudState == CloudStates.CleanupPending, "失败那条标为「待清理」（绝不假装清掉了）", bad.CloudState);
+        Check(!good.Deleted && !bad.Deleted, "两条都**没打墓碑** —— 记录留着，用户才看得见它们去哪了");
+        Check(FileRepository.FindCache(goodId)?.PendingEvict == true,
+            "本地副本已贴「优先淘汰」——本地推进不依赖云端结果");
+        Check(FileRepository.CleanupPendingCount() == 1, "待清理计数 = 1（设置页靠它把问题暴露给用户）");
+
+        // ── 第二轮：退避期内不许再撞平台 ──
+        var callsBefore = cloud.DeleteCalls;
+        var done2 = await AttachmentExpiryService.RunAsync();
+        Check(done2 == 0, "第二轮无新增成功（那条已清掉、失败那条在退避）");
+        Check(cloud.DeleteCalls == callsBefore, "退避期内**没有**再发删除请求（旧版每轮整批重试就是在这里烧配额）");
+        Check(AttachmentExpiryService.IsSkipping(badId), "失败那条确实处于退避状态");
+
+        // ── 还没连网盘时：本地照样推进，云端只标注 ──
+        SeedFileMeta((goodId, goodNet, FileTypes.Attachment, DateTime.Now.AddDays(-1), false));
+        SeedLedger(goodId, localGood);
+        FileRepository.Cloud = new FakeCloud { IsReady = false };
+        var doneOffline = await AttachmentExpiryService.RunAsync();
+        var offlineMeta = FileRepository.FindMetadata(goodId)!;
+        Check(doneOffline == 0, "未连接网盘时不谎报清理成功");
+        Check(offlineMeta.CloudState == CloudStates.CleanupPending, "未连接网盘时标为「待清理」，等联网补删");
+        Check(FileRepository.FindCache(goodId)?.PendingEvict == true, "未连接网盘时本地副本照样贴淘汰标记（本地不卡在网盘上）");
+
+        // ── 用户手动重试：唯一的"修好环境再试一次"出口 ──
+        // 先把状态重置成「只有 badId 待清理、且它删不掉」：上一步的 SeedFileMeta 已经换掉了元数据内容，
+        // 不重置就测不到"重试仍失败"这条（检查点自己状态没铺对，最容易伪装成代码 bug）。
+        SeedFileMeta((badId, badNet, FileTypes.Attachment, DateTime.Now.AddDays(-1), false));
+        FileRepository.MarkCleanupPending(badId);
+        FileRepository.Cloud = cloud;
+        var (retryDone, retryLeft) = await AttachmentExpiryService.RetryPendingAsync();
+        Check(!AttachmentExpiryService.IsSkipping(badId), "手动重试清空了退避（用户改好环境后能立刻再试）");
+        Check(retryDone == 0 && retryLeft == 1, "手动重试仍失败时保持「待清理」、不静默丢失", $"成功{retryDone}/剩{retryLeft}");
+
+        // ── 彻底删除：云端失败必须如实交代 ──
+        SeedFileMeta((badId, badNet, FileTypes.Upload, null, false));
+        FileRepository.Cloud = cloud;
+        var (ok, message) = await FileRepository.DeletePermanentlyAsync(badId);
+        var afterDelete = FileRepository.FindMetadata(badId)!;
+        Check(ok && afterDelete.Deleted, "彻底删除：本机记账成功（墓碑已打）");
+        Check(afterDelete.CloudState == CloudStates.CleanupPending, "云端删不掉时标为「待清理」");
+        Check(message.Contains("云端删除失败") && message.Contains("还在"),
+            "提示必须让用户看清「云端那份还在」，不能只说「已删除」", message);
+        Check(message.Contains("重试云端清理"), "提示里给出下一步动作（否则用户只能干瞪眼）");
+
+        // ── 合并：CloudState 变化必须能被识别（否则标注永远同步不出去）──
+        var a = new FileMetadata { Id = "x", CloudState = CloudStates.Ok, UpdatedAt = DateTime.Now };
+        var b = new FileMetadata { Id = "x", CloudState = CloudStates.CleanupPending, UpdatedAt = DateTime.Now };
+        Check(!FileStoreSync.MetadataEquals(new[] { a }, new[] { b }),
+            "CloudState 变化被 MetadataEquals 识别（否则清单不会重新上传，他端永远看不到真实状态）");
+        Check(FileRepository.CleanupPendingCount() == 1, "待清理计数包含已打墓碑的记录（用户删过但云端没删掉的更要能补删）");
+
+        // 收尾：还原全局状态，别影响后续检查点
+        FileRepository.Cloud = null;
+        SeedFileMeta();
+    }
+
+    /// <summary>内存假云仓库：可指定"哪条删不掉"，并记录真实发过的删除请求。</summary>
+    private sealed class FakeCloud : ICloudStorage
+    {
+        public string NetRoot => "/apps/Test";
+        public bool IsReady { get; set; } = true;
+        public int DeleteCalls { get; private set; }
+        public List<string> Deleted { get; } = new();
+        public HashSet<string> FailFor { get; } = new(StringComparer.Ordinal);
+
+        public Task UploadAsync(string localPath, string netPath, IProgress<double>? progress, CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task<bool> DownloadAsync(string netPath, string localPath, IProgress<double>? progress, CancellationToken ct)
+            => Task.FromResult(false);
+
+        public Task EnsureDirectoryAsync(string netDir, CancellationToken ct) => Task.CompletedTask;
+
+        public Task DeleteAsync(IEnumerable<string> netPaths, CancellationToken ct)
+        {
+            foreach (var p in netPaths)
+            {
+                DeleteCalls++;
+                if (FailFor.Contains(p))
+                    throw new BaiduApiException(31064, "检查点桩：这条删不掉");
+                Deleted.Add(p);
+            }
+            return Task.CompletedTask;
+        }
+    }
 
     private static void TestUnit()
     {

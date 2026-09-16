@@ -179,6 +179,9 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         FirePropertyChanged(nameof(HasCloudFiles));
     }
 
+    /// <summary>卡片被移除后刷新「是否有云文件卡片」（添加走 AddCloudFile，移除走这里）。</summary>
+    public void NotifyCloudFilesChanged() => FirePropertyChanged(nameof(HasCloudFiles));
+
     public ChatBubbleViewModel(bool isUser, string content, bool isFillable = false,
         IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
     {
@@ -808,6 +811,53 @@ public partial class AIDialogWindow : Window
         if (sender is FrameworkElement fe && fe.Tag is CloudFileCardViewModel card) SaveCloudFileAs(card);
     }
 
+    /// <summary>
+    /// 云文件卡片的第四个动作：彻底删除（2026-09-16）。
+    ///
+    /// <b>刻意只给用户、不给 AI</b>：破坏性动作不上工具，这是项目红线。理由很具体，不是洁癖 ——
+    /// AI 手上只有牌号、看不见文件内容也看不见你的上下文，"把上周那三个没用的删了"这种话它只会自己挑，
+    /// 而你无从察觉挑错；网盘删除又只进网盘回收站，恢复得自己去网盘客户端。
+    /// AI 可以**引导**用户点这个按钮（说「请点卡片上的彻底删除」），但不能自己执行。
+    /// </summary>
+    private async void CloudFile_Delete_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not CloudFileCardViewModel card) return;
+
+        var confirm = System.Windows.MessageBox.Show(this,
+            $"彻底删除「{card.Model.Name}」？\n\n" +
+            "· 本机这份会被删除，这张卡片随即失效\n" +
+            "· 网盘上那份会一并删除（网盘回收站可找回）\n" +
+            "· 在本应用内不可撤销",
+            "彻底删除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            var (ok, message) = await FileRepository.DeletePermanentlyAsync(card.Model.Id);
+            // 云端删不掉时 message 里已如实写明（含去哪补删），照原样交给用户，不做美化
+            System.Windows.MessageBox.Show(this, message, ok ? "彻底删除" : "删除失败",
+                MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            if (ok) RemoveCloudFileCard(card);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, "删除失败：" + ex.Message, "彻底删除",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>摘掉同一文件的所有卡片（同 id 可能挂在多个气泡上），并刷新「是否有云文件卡片」。</summary>
+    private void RemoveCloudFileCard(CloudFileCardViewModel card)
+    {
+        foreach (var b in _bubbles.ToList())
+        {
+            var hit = b.CloudFiles.FirstOrDefault(c => c.Model.Id == card.Model.Id);
+            if (hit == null) continue;
+            b.CloudFiles.Remove(hit);
+            b.NotifyCloudFilesChanged();
+        }
+    }
+
     private void OpenCloudFile(CloudFileCardViewModel card)
     {
         if (!EnsureCloudFileLocal(card, out var path)) return;
@@ -919,6 +969,43 @@ public partial class AIDialogWindow : Window
     internal void RefreshFileViews()
     {
         try { RefreshHandleChips(); } catch { /* 刷新失败不打断对话 */ }
+    }
+
+    /// <summary>
+    /// 界面快照专用（诊断工具用，正常流程不调用）：造两张「云文件」卡片。
+    ///
+    /// 云文件卡片只在 AI 真把文件取回并交付时才渲染，其它快照场景覆盖不到它。
+    /// 2026-09-16 给卡片加了第四个按钮（彻底删除）—— 一行四个按钮正是"被控件挤出可视区"的高危形态，
+    /// 静态读 XAML 看不出来，只能出图。这里刻意不走 OnFileDelivered（它经 Dispatcher 异步排队，
+    /// 快照可能在渲染前就完成了），直接同步挂卡片。
+    /// </summary>
+    internal void SeedCloudFileCardsForSnapshot()
+    {
+        try
+        {
+            AddBubble(false, "两份文件都取回来了：可以直接打开、在文件夹中定位、另存，确认不要了也能彻底删除。");
+            var bubble = _bubbles.LastOrDefault(b => !b.IsUser);
+            if (bubble == null) return;
+
+            foreach (var (name, size) in new[]
+                     {
+                         ("2026中国OPC白皮书.pdf", 16103185L),
+                         ("灵感_2026-09-16.md", 1737L),
+                     })
+            {
+                bubble.AddCloudFile(new FileMetadata
+                {
+                    Id = "snap-cloud-" + name,
+                    Name = name,
+                    NetPath = "/apps/FocusCapture/files/" + name,
+                    Size = size,
+                    Type = FileTypes.Upload,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now,
+                });
+            }
+        }
+        catch { /* 快照辅助失败不影响主流程 */ }
     }
 
     /// <summary>当前会话出现过的全部附件（链路 B 的输入：工具只能引用其中之一，不能凭空指定路径）。</summary>

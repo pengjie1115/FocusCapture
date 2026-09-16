@@ -54,15 +54,9 @@ public sealed class BaiduCloudStorage : ICloudStorage
     {
         var list = netPaths.ToList();
         if (list.Count == 0) return;
-        try
-        {
-            await Client().DeleteAsync(list, ct).ConfigureAwait(false);
-        }
-        catch (BaiduApiException ex) when (ex.ErrNo is -9 or 31066)
-        {
-            // 云端本来就没有 = 删除的期望状态已达成，不当作失败（幂等）
-            AppLog.Info("Baidu", "删除时云端已不存在该文件，视为成功");
-        }
+        // 幂等（「云端本来就没有」按成功处理）已在客户端层做掉，这里不再重复兜一道 ——
+        // 同一语义在两处实现早晚会分叉（改一处忘另一处）。
+        await Client().DeleteAsync(list, ct).ConfigureAwait(false);
     }
 
     public async Task EnsureDirectoryAsync(string netDir, CancellationToken ct)

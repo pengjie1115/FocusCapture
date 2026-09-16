@@ -231,8 +231,8 @@ public static class UploadQueue
         if (cloud == null) return (false, "未连接网盘");
         if (!cloud.IsReady) return (false, "百度网盘未授权");
 
-        var netDir = meta.Type == FileTypes.Attachment ? FileRepository.NetAttachmentsDir : FileRepository.NetFilesDir;
-        await cloud.EnsureDirectoryAsync(netDir, ct).ConfigureAwait(false);
+        // 云端目录以元数据里的 NetPath 为准（附件按月分目录后，按类型现拼会建到错的位置）
+        await cloud.EnsureDirectoryAsync(FileRepository.NetDirOf(meta.NetPath), ct).ConfigureAwait(false);
         await cloud.UploadAsync(entry.LocalPath, meta.NetPath, null, ct).ConfigureAwait(false);
         return (true, null);
     }

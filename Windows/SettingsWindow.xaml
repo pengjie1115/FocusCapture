@@ -967,13 +967,23 @@
                         </CheckBox>
                     </DockPanel>
 
-                    <DockPanel Margin="0,12,0,0">
+                                    <DockPanel Margin="0,12,0,0">
                         <Button x:Name="BtnCacheClean" Content="立即清理"
                                 Width="100" Height="30" HorizontalAlignment="Left"
                                 Click="BtnCacheClean_Click"/>
                         <Button x:Name="BtnOpenFilesDir" Content="打开文件区"
                                 Width="100" Height="30" Margin="8,0,0,0"
                                 Click="BtnOpenFilesDir_Click"/>
+                    </DockPanel>
+                    <DockPanel Margin="0,8,0,0">
+                        <Button x:Name="BtnRetryCloudCleanup" Content="重试云端清理"
+                                Width="110" Height="30" HorizontalAlignment="Left"
+                                ToolTip="把「云端待清理」的文件再删一轮（网络或授权修好后点这里）"
+                                Click="BtnRetryCloudCleanup_Click"/>
+                        <Button x:Name="BtnCopyCloudPath" Content="复制网盘路径"
+                                Width="110" Height="30" Margin="8,0,0,0"
+                                ToolTip="复制网盘附件目录路径，粘到百度网盘里手动清理（附件按月分子目录）"
+                                Click="BtnCopyCloudPath_Click"/>
                     </DockPanel>
                     <TextBlock x:Name="CacheStatusText"
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>

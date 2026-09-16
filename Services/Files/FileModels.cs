@@ -35,6 +35,35 @@ public static class FileTypes
 }
 
 /// <summary>
+/// 云端状态（2026-09-16 新增）。
+///
+/// 为什么放在**元数据**（上云）而不是本机账本：它记的是「云端到底有没有这份文件」这个**客观事实**，
+/// 多设备看到必须是同一个真相。会变的设备级状态（有没有本地副本、传到哪一步）仍然只在账本里。
+///
+/// 为什么不打墓碑：到期清理如果把记录打成墓碑，用户看到的就是"文件凭空消失"。
+/// 保留记录 + 如实标注，用户才知道「它去哪了、要去哪里找回来」。
+/// </summary>
+public static class CloudStates
+{
+    /// <summary>正常：云端有这份文件。</summary>
+    public const string Ok = "";
+
+    /// <summary>已到期清理：云端那份已删掉（网盘回收站可找回）。</summary>
+    public const string Expired = "expired";
+
+    /// <summary>待清理：已到期，但云端那份**还在**（删除失败 / 没联网 / 未授权）。需要补删。</summary>
+    public const string CleanupPending = "cleanup-pending";
+
+    /// <summary>翻成人话（空状态返回空串，调用方自己决定要不要显示）。</summary>
+    public static string Label(string? state) => state switch
+    {
+        Expired => "云端已到期清理",
+        CleanupPending => "云端待清理",
+        _ => "",
+    };
+}
+
+/// <summary>
 /// 文件元数据（方案 §4.1）。**只记客观事实，不记任何设备状态** —— 这是整个设计的地基：
 /// 元数据近似只增不改，多设备合并才降级成「按 id 求并集」这么简单。
 /// 会变的状态（有没有本地副本、传到哪一步了）一律放 CacheEntry，那边只存本机、绝不上云。
@@ -72,8 +101,12 @@ public sealed class FileMetadata
     /// <summary>
     /// 彻底删除墓碑：本地删了不算删，这里为 true 才代表「用户显式不要这份文件了」。
     /// 云端删除已入回收站，这是防旧记录复活的那道闸。
+    /// 注意：**到期自动清理不打墓碑**（走 <see cref="CloudState"/>），只有用户显式彻底删除才打。
     /// </summary>
     public bool Deleted { get; set; }
+
+    /// <summary>见 <see cref="CloudStates"/>。空 = 云端正常。</summary>
+    public string CloudState { get; set; } = "";
 
     /// <summary>文件扩展名（小写，不含点）。</summary>
     [JsonIgnore]
@@ -90,7 +123,7 @@ public sealed class FileMetadata
     {
         Id = Id, Name = Name, NetPath = NetPath, Size = Size, Md5 = Md5, Type = Type,
         Tags = new List<string>(Tags), CreatedAt = CreatedAt, UpdatedAt = UpdatedAt,
-        ExpireAt = ExpireAt, Deleted = Deleted,
+        ExpireAt = ExpireAt, Deleted = Deleted, CloudState = CloudState,
     };
 }
 

@@ -9,8 +9,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <!-- 测试相关目录必须从默认编译项排除，否则 WPF 的 **/*.cs glob 会吞掉测试 Program.cs 导致 CS0579 重复定义：
          ① docs/fc-sync-test-archive/ —— QUEST-5 同步验收测试归档（2026-08-27）
-         ② tests/ —— 常态化自动化检查点工程（2026-09-11 建立，独立 csproj，不参与主程序编译） -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);docs\fc-sync-test-archive\**;tests\**</DefaultItemExcludes>
+         ② tests/ —— 常态化自动化检查点工程（2026-09-11 建立，独立 csproj，不参与主程序编译）
+         ③ tools/baidu-diag/ —— 百度网盘真机联调诊断（2026-09-16 建立，引用主项目做同栈接口验证） -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);docs\fc-sync-test-archive\**;tests\**;tools\**</DefaultItemExcludes>
     <!-- QUEST-4：exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <!-- 无外网环境：禁用包漏洞审计（NuGetAudit 每次构建尝试连 nuget.org 报 NU1900，破坏验收 A 的 0 警告） -->
@@ -47,6 +48,9 @@
     <!-- 慢层检查点工程要直接断言 internal 成员的输出（如 FileToolSupport.Describe 里必须体现真实上传状态 ——
          它是「AI 谎报已上传成功」这条事故的防线，只能靠断言输出守住）。2026-09-16 加入。 -->
     <InternalsVisibleTo Include="FocusCapture.SyncTests" />
+    <!-- 真机联调诊断工程（tools/baidu-diag）：要断言 internal 契约（如 AttachmentExpiryService.IsSkipping
+         的退避状态、FileRepository 的克隆语义），并复用内部沙箱开关做数据隔离。2026-09-16 加入。 -->
+    <InternalsVisibleTo Include="FocusCapture.BaiduDiag" />
   </ItemGroup>
 
 </Project>
