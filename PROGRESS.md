@@ -18,6 +18,22 @@
 | 3 | 悬浮球拖放接入（AllowDrop + 四事件 + 判定 + 展开 + 闪绿） | 编译 0/0；慢层「拖放保存组」46 条断言判定顺序与取值口径 |
 | 4 | 四个动作接线（存笔记 / 存网盘 / AI 问答 / 得到大脑）+ Open 附件参数扩展 | 编译 0/0；动作链路全部复用现有服务，未新增外发机制 |
 | 5 | 回归 | 快层 **21/21**、慢层 **212/212（0 失败，基线 166 未退）**、快照 24 张、编译 0 警告 0 错误 |
+| 6 | **首测修复**（用户实机发现，commit `cc1db09`） | 点任一动作时白弹「界面错误」框 → `DropActionCard.Dismiss()` 二次 Close。已修（幂等 + `OnClosing` 上锁 + 摘监听），`DropActionStrip` 同类加固。编译 0/0；快层 21/21、慢层 212/212 复跑无退 |
+
+## 首测修复详情（2026-09-16 23:4x，commit `cc1db09`）
+
+**症状**：拖文件到球 → 点「AI 问答」或「存到网盘」→ 先弹「FocusCapture 遇到一个界面错误：在窗口关闭期间…」，
+点掉之后功能照旧可用。crash.log 于 23:33~23:38 连报 7 次。
+
+**根因**：`DropActionCard` 关闭入口五个（三按钮 / 点外面 / Esc / 兜底超时）互相踩 ——
+按钮路径「先 Dismiss() 再抛事件开 AI 窗」，AI 窗一激活本窗就 `Deactivated`，`_armed` 早已 true
+→ 二次 `Close()` → WPF `VerifyNotClosing()` 抛异常。栈顶指名到行：
+`DropActionCard.Dismiss()` line 89 → `Window_Deactivated()` line 112。**功能没事，纯白弹框。**
+
+**修法**：① `Dismiss()` 幂等；② `OnClosing` 上锁 + 停表（覆盖 MainWindow 直接 `Close()` 的路径）；
+③ 关窗前摘 `Deactivated` 监听；④ 顺手修掉自己引入的 CS8622（`Window_Deactivated` 签名改 `object?`）。
+
+**遗留**：`crash.log` 里 2026-08-27/28 另有 8 条同类报错，是待办汇总窗被二次 `Show()`，**v3.8 已修**，与本条无关。
 
 ### 尚未完成（需要你动手，无法由自动化代劳）
 
