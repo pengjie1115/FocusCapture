@@ -445,9 +445,14 @@ public class BaiduNetdiskClient
 
         var uploadId = Str(pre, "uploadid");
         var returnType = IntOr(pre, "return_type");
-        var serverBlocks = new List<string>();
-        if (pre.TryGetProperty("block_list", out var bl) && bl.ValueKind == JsonValueKind.Array)
-            foreach (var b in bl.EnumerateArray()) serverBlocks.Add(b.GetString() ?? "");
+
+        // 服务端已收下的分片序号。注意：**不是**请求参数里那个"每片 md5 列表"，同名不同义，
+        // 唯一权威解释见 ParseExistingSlices 的注释 —— 2026-09-16 第二个事故就死在这里。
+        var existingSlices = ParseExistingSlices(pre);
+        if (existingSlices.Count > 0)
+            AppLog.Info("Baidu",
+                $"服务端报告已存在 {existingSlices.Count} 个分片（序号 {string.Join(",", existingSlices.OrderBy(x => x))}）；" +
+                "本版本仍按全量重传处理（跳过分片功能尚未启用）");
 
         // return_type = 1 → 秒传：内容已在网盘里，一个字节都不用传
         var rapid = returnType == 1;
@@ -466,12 +471,16 @@ public class BaiduNetdiskClient
                 var slice = new byte[size];
                 if (size > 0) fs.ReadExactly(slice, 0, size);
 
-                // precreate 回来的 block_list 里已经有值的片，说明服务端已存过（断点续传）→ 跳过上传。
-                // 这是官方支持的省流量路径，重试一次中断的上传时能省掉绝大部分传输。
-                if (seq < serverBlocks.Count && !string.IsNullOrEmpty(serverBlocks[seq]))
-                    AppLog.Info("Baidu", $"分片 {seq + 1} 已在服务端，跳过上传");
-                else
-                    await UploadSliceAsync(token, netPath, uploadId, seq, slice, ct).ConfigureAwait(false);
+                // 【B 预留位：跳过已传分片】当前一律全量重传（2026-09-16 抉择）。
+                // 启用方式：把下面这一行改成
+                //     if (existingSlices.Contains(seq)) { 记日志; continue; }
+                // 启用前提（两条，缺一不可）：
+                //   ① 先实测确认该字段的真实语义（什么条件下出现、是否一定为数字）——
+                //      第三方实现互相矛盾，本机从未实测；
+                //   ② 解析失败必须继续退化成"不跳过"，这是 ParseExistingSlices 已经保证的契约。
+                // 不急着启用的成本很低：单片 4MB、文件多为 KB~几十 MB，重传是秒级；
+                // 而判错的代价是"上传失败"——恰是本功能最不能出的错。
+                await UploadSliceAsync(token, netPath, uploadId, seq, slice, ct).ConfigureAwait(false);
 
                 sent += size;
                 if (info.Length > 0) progress?.Report((double)sent / info.Length);
@@ -499,6 +508,42 @@ public class BaiduNetdiskClient
 
         progress?.Report(1.0);
         return netPath;
+    }
+
+    /// <summary>
+    /// 解析 precreate 响应里「服务端已收下哪些分片」。
+    ///
+    /// <b>两个 block_list 同名不同义，别再混（2026-09-16 第二个实机事故）</b>：
+    /// <list type="bullet">
+    /// <item><b>请求参数</b>里的 block_list = 本地算出来的每片 md5 列表（我们自己的数据，可控）；</item>
+    /// <item><b>响应字段</b>里的 block_list = 服务端已收下的分片**序号**（数字数组，形如 <c>[0,1]</c>）。</item>
+    /// </list>
+    /// 事故原貌：把响应里的它当 md5 字符串读（<c>GetString()</c>），每个文件都在这一步抛
+    /// <c>InvalidOperationException</c>（"requires an element of type 'String', but the target element
+    /// has type 'Number'"）→ 上传 100% 失败，而报错里一个字都没提"百度"，排查只能靠翻日志。
+    ///
+    /// <b>本函数的契约比它的返回值更重要</b>：任何读不懂的情况一律返回空集合，**绝不抛异常**。
+    /// 空集合 = 一片都不跳过 = 全量重传 —— 失败方向必须是"多传几片"，不是"传不上去"。
+    /// </summary>
+    public static HashSet<int> ParseExistingSlices(JsonElement response)
+    {
+        var slices = new HashSet<int>();
+        if (response.ValueKind != JsonValueKind.Object) return slices;
+        if (!response.TryGetProperty("block_list", out var list)) return slices;
+        if (list.ValueKind != JsonValueKind.Array) return slices;
+
+        foreach (var item in list.EnumerateArray())
+        {
+            // 只认数字与"能当数字读的字符串"，其余（null / 布尔 / 对象）忽略该元素、继续读下一个
+            int? parsed = item.ValueKind switch
+            {
+                JsonValueKind.Number when item.TryGetInt32(out var n) => n,
+                JsonValueKind.String when int.TryParse(item.GetString(), out var s) => s,
+                _ => null,
+            };
+            if (parsed.HasValue && parsed.Value >= 0) slices.Add(parsed.Value);
+        }
+        return slices;
     }
 
     /// <summary>上传单分片：superfile2 的 access_token 在 query 上，文件走 multipart body。</summary>

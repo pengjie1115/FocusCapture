@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using FocusCapture;
@@ -233,7 +234,40 @@ internal static class Program
         Check(BaiduNetdiskClient.NormalizeNetRoot("apps/FocusCapture") == "/apps/FocusCapture",
               "缺前导斜杠的网盘目录配置必须被纠正");
 
-        // ── ⑥ 重试上限必须留有出口 ──
+        // ── ⑥ precreate 响应解析：读不懂也绝不许抛（2026-09-16 第二次实机事故的正面回归） ──
+        // 事故原貌：响应里的 block_list 是「服务端已收下的分片序号」数字数组，代码把它当 md5 字符串读，
+        // 每个文件都在这一步抛 InvalidOperationException → 上传 100% 失败、网盘恒空，
+        // 而报错文本里一个字都没提"百度"（排查只能靠翻日志 + 读代码）。
+        // 这组的契约：读不懂一律返回空集合（= 一片都不跳过 = 全量重传），绝不抛异常。
+        // 方向必须错在"多传几片"，不能错在"传不上去"。
+        static HashSet<int> ParseSlices(string json)
+        {
+            using var doc = JsonDocument.Parse(json);
+            return BaiduNetdiskClient.ParseExistingSlices(doc.RootElement);
+        }
+
+        Check(SetsEqual(ParseSlices("""{"errno":0,"return_type":1,"block_list":[0,1],"uploadid":"x"}"""), 0, 1),
+              "数字数组（服务端真实口径）必须解析成序号集合，绝不抛异常");
+
+        Check(ParseSlices("""{"errno":0,"block_list":[]}""").Count == 0,
+              "空数组必须解析成空集合");
+
+        Check(ParseSlices("""{"errno":0,"uploadid":"x"}""").Count == 0,
+              "字段缺失必须解析成空集合（结果 = 不跳过任何分片）");
+
+        Check(ParseSlices("""{"errno":0,"block_list":"1,2"}""").Count == 0,
+              "字段类型完全不对时必须解析成空集合，不许抛异常");
+
+        Check(ParseSlices("""{"errno":0,"block_list":[null,true,{"a":1},2]}""").Count == 1,
+              "数组里混进无法识别的元素时必须忽略该元素、其余照常，不许整体失败");
+
+        Check(SetsEqual(ParseSlices("""{"errno":0,"block_list":["3","1"]}"""), 1, 3),
+              "字符串形式的序号也要认（服务端改类型时不至于再瘫一次）");
+
+        Check(ParseSlices("""{"errno":0,"block_list":[-1,0]}""").Count == 1,
+              "非法序号（负数）必须被忽略，只保留合法值");
+
+        // ── ⑦ 重试上限必须留有出口 ──
         // 撞上限后永久卡死、用户改对配置也等不到重传 —— 那是比反复重试更难排查的状态。
         var retryCheck = FileRepository.RegisterText("重试出口检查", "retry-check.txt", FileTypes.Artifact);
         Check(retryCheck.Meta != null, "登记用于重试检查的文件", retryCheck.Error);
@@ -258,6 +292,10 @@ internal static class Program
         try { act(); return false; }
         catch (BaiduApiException) { return true; }
     }
+
+    /// <summary>集合内容是否与给定元素完全一致（与顺序无关）。</summary>
+    private static bool SetsEqual(HashSet<int> set, params int[] expected)
+        => set.Count == expected.Length && expected.All(set.Contains);
 
     // ── 单测（验收 F：确定性 ID / 加密往返 / 恢复码 / 强度校验） ──
 
