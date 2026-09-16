@@ -1,6 +1,7 @@
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Baidu;
+using FocusCapture.Services.Destinations;
 using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
@@ -277,8 +278,288 @@ public partial class MainWindow : Window
         _floatBall.VoiceInputRequested += () => Dispatcher.Invoke(ShowVoiceInput);
         _floatBall.AiAskRequested += () => Dispatcher.Invoke(() => AIDialogHelper.Open(ExplainMode.Ask));
         _floatBall.ExitRequested += () => Dispatcher.Invoke(ExitApp);
+
+        // 拖放保存（2026-09-16）：总开关决定 AllowDrop，关闭时球收不到任何拖放事件
+        _floatBall.SetDragToSaveEnabled(_settings.DragToSaveEnabled);
+        _floatBall.DropReceived += payload => Dispatcher.Invoke(() => HandleBallDrop(payload));
+
         _floatBall.Show();
     }
+
+    // ══════════════════ 悬浮球拖放保存（2026-09-16）══════════════════
+    //
+    // 设计依据 docs/悬浮球拖放保存方案.md。三条最容易在维护中被破坏的纪律，先写在这里：
+    //
+    //  ① **拖入不做任何落地**：文件拖进来"什么都不做"是正确行为，没有暂存区、不复制、不入仓。
+    //     「不点任何选项 → 零副作用」是这块设计的底线（方案 §3 第 5 条 / §11-8）。
+    //  ② **不可撤回的动作只能由显式点击触发**：绝不用"悬停 N 秒"这类时间阈值触发上传（方案 §3 第 1 条）。
+    //  ③ **浮层必须是独立窗口**：球窗口的透明区穿透，画在球里的按钮既收不到拖放也点不到（方案 §3 第 3 条）。
+    //
+    // 外发链路不新增机制：「得到大脑」直接调适配器（用户已拍板），与 B-8 按钮直传同一条。
+    // 以后新增渠道 = 卡片选项加一行 + 适配器注册一行，**卡片不硬编码渠道名**。
+
+    private DropActionStrip? _dropStrip;
+    private DropActionCard? _dropCard;
+
+    private void HandleBallDrop(DragPayload payload)
+    {
+        // 双保险：开关关闭时球根本收不到拖放，这里再挡一次（设置项刚关、事件还在飞的情况）
+        if (!_settings.DragToSaveEnabled) return;
+
+        switch (payload.Kind)
+        {
+            case DragPayloadKind.Text: HandleTextDrop(payload); break;
+            case DragPayloadKind.Files: HandleFileDrop(payload); break;
+        }
+    }
+
+    /// <summary>文字拖入：立即存本地笔记 + 球闪绿（球在 FloatBall 里已闪）+ 浮出竖向小条（方案 §4.2）。</summary>
+    private void HandleTextDrop(DragPayload payload)
+    {
+        var text = (payload.Text ?? "").Trim();
+        if (text.Length == 0) return;
+
+        // ① 立即存为本地笔记。这是本地动作，误存只是脏数据（能删），所以可以自动发生；
+        //    「上传」那类收不回的动作一律留给用户点（见上面纪律 ②）。
+        try
+        {
+            _noteService?.SaveNote(text, payload.SourceApp);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Drag", "拖入文字存笔记失败：" + ex.Message);
+        }
+
+        // ② 小条的两个出口
+        CloseDropOverlays();
+        var strip = new DropActionStrip(
+            _settings.DropActionStripSeconds, HasGetNoteCredential(), _settings.DropActionOpacity);
+        strip.AiAskRequested += () => AIDialogHelper.Open(ExplainMode.Ask, null, text);
+        strip.GetNoteRequested += () => PushTextToGetNote(text);
+        _dropStrip = strip;
+        strip.Closed += (_, _) => { if (ReferenceEquals(_dropStrip, strip)) _dropStrip = null; };
+        ShowOverlayNearBall(strip);
+    }
+
+    /// <summary>
+    /// 文件拖入：**什么都不做**（不复制、不入仓、不上传），只弹紧凑卡片（方案 §4.3）。
+    /// 看到这里想"顺手复制一份保命"的话，先回读方案 §3 第 5 条 —— 那个方案已经被否掉了。
+    /// </summary>
+    private void HandleFileDrop(DragPayload payload)
+    {
+        var paths = payload.Paths.ToList();
+        if (paths.Count == 0) return;
+
+        var (title, subtitle) = DragDropSaveService.BuildCardHeader(paths, payload.SourceApp);
+        var showGetNote = DragDropSaveService.HasAnyTextFile(paths);
+
+        CloseDropOverlays();
+        var card = new DropActionCard(title, subtitle, showGetNote,
+            HasGetNoteCredential(), _settings.DropActionOpacity);
+        card.AiAskRequested += () => OpenAiWithFiles(paths);
+        card.SaveToCloudRequested += () => SaveFilesToCloud(paths);
+        card.GetNoteRequested += () => PushFilesToGetNote(paths);
+        _dropCard = card;
+        card.Closed += (_, _) => { if (ReferenceEquals(_dropCard, card)) _dropCard = null; };
+        ShowOverlayNearBall(card);
+    }
+
+    /// <summary>贴着球浮出（球在屏幕左半 → 弹右侧；右半 → 弹左侧）。几何一律取球的**实时**尺寸：
+    /// 吸附态是 8×36、展开后是 48×48，写死会算错位置。</summary>
+    private void ShowOverlayNearBall(Window overlay)
+    {
+        if (_floatBall == null || !_floatBall.IsVisible)
+        {
+            try { overlay.Close(); } catch { /* 球都不在了，浮层没意义 */ }
+            return;
+        }
+
+        var (left, top) = _floatBall.GetPosition();
+        var w = _floatBall.Width;
+        var h = _floatBall.Height;
+
+        switch (overlay)
+        {
+            case DropActionStrip s: s.ShowNear(left, top, w, h); break;
+            case DropActionCard c:  c.ShowNear(left, top, w, h); break;
+        }
+    }
+
+    /// <summary>同一时刻只留一个浮层（连拖两次不叠一堆）。</summary>
+    private void CloseDropOverlays()
+    {
+        try { _dropStrip?.Close(); } catch { /* 已关闭 */ }
+        try { _dropCard?.Close(); } catch { /* 已关闭 */ }
+        _dropStrip = null;
+        _dropCard = null;
+    }
+
+    /// <summary>得到大脑凭证是否已配置（未配置时卡片/小条上那一项置灰）。</summary>
+    private bool HasGetNoteCredential() =>
+        !string.IsNullOrWhiteSpace(_settings.GetNoteApiKey)
+        && !string.IsNullOrWhiteSpace(_settings.GetNoteClientId);
+
+    /// <summary>卡片「用 AI 问答打开」：把文件带进对话（方案 §10 第 1 项：Open 扩展了附件参数）。</summary>
+    private void OpenAiWithFiles(List<string> paths)
+    {
+        var usable = DragDropSaveService.ExistingFiles(paths);
+        var missing = paths.Where(p => !usable.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList();
+
+        if (usable.Count == 0)
+        {
+            WarnMissingFiles(missing);
+            return;
+        }
+
+        AIDialogHelper.Open(ExplainMode.Ask, null, null, usable);
+
+        // 部分文件已不在：对话照样打开（能用的先用上），但要如实说少了什么
+        if (missing.Count > 0) WarnMissingFiles(missing);
+    }
+
+    /// <summary>卡片「存到网盘」：现有链路原样 —— RegisterLocalFile 入仓 + UploadQueue.Kick（方案 §4.3）。</summary>
+    private void SaveFilesToCloud(List<string> paths)
+    {
+        var usable = DragDropSaveService.ExistingFiles(paths);
+        var missing = paths.Where(p => !usable.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList();
+
+        if (usable.Count == 0)
+        {
+            WarnMissingFiles(missing);
+            return;
+        }
+
+        var ok = 0;
+        var failures = new List<string>();
+
+        foreach (var path in usable)
+        {
+            var display = DragDropSaveService.BuildDisplayName(path);
+            try
+            {
+                var (meta, error) = FileRepository.RegisterLocalFile(
+                    path, FileTypes.Upload, display, false, null);
+                if (meta == null) failures.Add($"{display}：{error}");
+                else ok++;
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{display}：{ex.Message}");
+            }
+        }
+
+        if (ok > 0) UploadQueue.Kick();
+
+        // ⚠ 措辞纪律（2026-09-16 事故教训）：登记成功 **不等于** 已经到网盘。
+        //   内部状态显示什么不算数，用户能在网盘上看见才算。所以这里只说"已加入上传队列"。
+        var msg = new StringBuilder();
+        if (ok > 0)
+            msg.Append($"{ok} 个文件已登记到本机文件区，并加入上传队列。\n" +
+                       "稍后可在「设置 → 文件与网盘」看到，上传完成后百度网盘上才有。");
+        if (failures.Count > 0)
+            msg.Append((msg.Length > 0 ? "\n\n" : "") + "这些没成功：\n" + string.Join("\n", failures.Take(6)));
+        if (missing.Count > 0)
+            msg.Append((msg.Length > 0 ? "\n\n" : "") + DragDropSaveService.BuildMissingFileMessage(missing));
+
+        if (msg.Length > 0) ShowDropResult(msg.ToString(), failures.Count > 0 || missing.Count > 0);
+    }
+
+    /// <summary>小条「得到大脑」：文字直传（**绕过 AI 直接调适配器**，用户已拍板）。</summary>
+    private void PushTextToGetNote(string text)
+    {
+        var title = DragDropSaveService.MakeGetNoteTitle(text);
+        if (string.IsNullOrWhiteSpace(title)) title = "拖入的内容";
+        _ = ExecuteGetNoteSaveAsync(title, text);
+    }
+
+    /// <summary>卡片「发到得到大脑」：文本类文件读出来直传（方案 §4.3；该行只对文本类显示）。</summary>
+    private void PushFilesToGetNote(List<string> paths)
+    {
+        var usable = DragDropSaveService.ExistingFiles(paths)
+            .Where(DragDropSaveService.IsTextFile).ToList();
+
+        if (usable.Count == 0)
+        {
+            ShowDropResult("这些文件里没有可直接读取的文本类文件（.md/.txt/.csv/.json/代码）。", true);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        var errors = new List<string>();
+
+        foreach (var path in usable)
+        {
+            var (content, error) = DragDropSaveService.ReadTextFileStrict(path);
+            if (error != null)
+            {
+                errors.Add($"{Path.GetFileName(path)}：{error}");
+                continue;
+            }
+            if (usable.Count > 1) sb.Append("## ").Append(Path.GetFileName(path)).Append('\n');
+            sb.Append(content).Append('\n');
+        }
+
+        if (sb.Length == 0)
+        {
+            ShowDropResult("没有读到可用内容：\n" + string.Join("\n", errors), true);
+            return;
+        }
+
+        // 标题策略：单文件用文件名（去掉扩展名）—— 比"首行前 30 字"更符合"我把这个文件发上去"的预期
+        var title = usable.Count == 1
+            ? Path.GetFileNameWithoutExtension(usable[0])
+            : $"{usable.Count} 个文本文件";
+
+        if (errors.Count > 0)
+            ShowDropResult("部分文件没读成功，已先传读到的内容：\n" + string.Join("\n", errors), true);
+
+        _ = ExecuteGetNoteSaveAsync(title, sb.ToString());
+    }
+
+    /// <summary>调得到大脑适配器保存一篇笔记。这是**绕过 AI** 的直传路径（方案 §8 架构纪律）。</summary>
+    private async Task ExecuteGetNoteSaveAsync(string title, string content)
+    {
+        try
+        {
+            var json = BuildGetNoteSaveArgs(title, content);
+            var destination = new GetNoteDestination(_settings);
+            var result = await destination.ExecuteAsync("getnote_save_note", json, System.Threading.CancellationToken.None);
+            ShowDropResult(result.Message, !result.Success);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Drag", "拖放直传得到大脑异常：" + ex.Message);
+            ShowDropResult("上传得到大脑时出错：" + ex.Message, true);
+        }
+    }
+
+    private string BuildGetNoteSaveArgs(string title, string content)
+    {
+        var body = new System.Text.Json.Nodes.JsonObject
+        {
+            ["title"] = title,
+            ["content"] = content,
+        };
+        // 默认知识库：与设置面板里选的一致；没选就让服务端用账号默认库
+        if (!string.IsNullOrWhiteSpace(_settings.GetNoteDefaultTopicId))
+            body["topic_id"] = _settings.GetNoteDefaultTopicId;
+        return body.ToJsonString();
+    }
+
+    /// <summary>文件已不在的提示（微信的 temp 图片会被清掉，必须说清楚而不是静默失败）。</summary>
+    private void WarnMissingFiles(List<string> missing)
+    {
+        if (missing.Count == 0) return;
+        ShowDropResult(DragDropSaveService.BuildMissingFileMessage(missing), true);
+    }
+
+    private void ShowDropResult(string message, bool isWarning)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        System.Windows.MessageBox.Show(this, message, isWarning ? "拖放保存" : "拖放保存",
+            MessageBoxButton.OK, isWarning ? MessageBoxImage.Warning : MessageBoxImage.Information);
+    }
+
 
     private void OpenSettings()
     {
@@ -297,6 +578,13 @@ public partial class MainWindow : Window
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 _quickViewWindow?.ApplySettings();   // v3.9：宽度/置顶/标题栏按钮即时生效
                 ApplyAssistantNameToAllEntries();
+
+                // 拖放保存（2026-09-16）：开关关掉要立刻收回球上的 AllowDrop，并收掉已经浮着的浮层；
+                // 透明度要**实时**作用到已打开的小条/卡片（方案 §11-7 验收的就是这件事）。
+                _floatBall?.SetDragToSaveEnabled(_settings.DragToSaveEnabled);
+                if (!_settings.DragToSaveEnabled) CloseDropOverlays();
+                _dropStrip?.SetOpacity(_settings.DropActionOpacity);
+                _dropCard?.SetOpacity(_settings.DropActionOpacity);
             }, _noteService, () => _syncEngine, RebuildSyncEngine, () => _chatSyncEngine);
             sw.Owner = this; sw.ShowDialog();
         }
@@ -615,6 +903,7 @@ public partial class MainWindow : Window
         if (_floatBall != null) { var (l, t) = _floatBall.GetPosition(); _settings.BallLeft = l; _settings.BallTop = t; _settings.Save(); }
         AIDialogHelper.CloseAll();
         _floatBall?.Close(); _inputWindow?.Close(); _quickViewWindow?.Close(); _voiceWindow?.Close(); _notifyIcon?.Dispose();
+        CloseDropOverlays();   // 拖放浮层是 Topmost 无边框窗口，退出时必须显式关，否则可能残留在屏幕上
         _todoSummaryWindow?.Close();   // v3.8：待办汇总改为实例常驻，退出时一并关闭
         WpfApp.Current.Shutdown();
     }

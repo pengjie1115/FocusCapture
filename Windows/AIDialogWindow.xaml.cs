@@ -1019,6 +1019,20 @@ public partial class AIDialogWindow : Window
             .ToList();
     }
 
+    /// <summary>
+    /// 把一批文件**直接落进输入区**（悬浮球拖放保存用，2026-09-16）。
+    /// 与「加号 / 粘贴 / 拖到输入框」三条入口的差别：这条是"从外面带着文件来的"，
+    /// 所以先清空输入区再落 —— 复用单例窗口时，上一轮没发出去的残留附件会跟新附件堆在一起，
+    /// 用户看到的是"怎么自己多出两个文件"。
+    /// 调用时机硬要求：必须等窗口 Show() 之后再调（AddFilesAsync 失败要弹 MessageBox，owner 尚未显示会出问题）。
+    /// </summary>
+    public void AddAttachmentPaths(IReadOnlyList<string> paths)
+    {
+        if (paths == null || paths.Count == 0) return;
+        ResetInput();
+        _ = AddFilesAsync(paths);
+    }
+
     /// <summary>把一批本地文件加进输入区；不支持的格式逐个收集原因，最后一次性告知</summary>
     private async Task AddFilesAsync(IEnumerable<string> paths)
     {
@@ -2096,7 +2110,12 @@ public static class AIDialogHelper
     }
 
     /// <summary>打开 AI 对话框；Key 为空时提示并返回</summary>
-    public static void Open(ExplainMode mode, NoteEntry? targetNote = null, string? selectedText = null)
+    /// <param name="attachmentPaths">
+    /// 要预置到输入区的本地文件（悬浮球拖放保存的「用 AI 问答打开」，2026-09-16 新增）。
+    /// 原签名只有 (mode, targetNote, selectedText)，塞不进文件附件 —— 所以这里扩展了第四个参数。
+    /// </param>
+    public static void Open(ExplainMode mode, NoteEntry? targetNote = null, string? selectedText = null,
+        IReadOnlyList<string>? attachmentPaths = null)
     {
         if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureAiChat, "AI 问答")) return;
         if (_noteService == null || _settings == null) return;
@@ -2146,5 +2165,13 @@ public static class AIDialogHelper
         // 2026-09-14 修复：输入框必须显式聚焦，且要等窗口显示并完成布局之后再聚焦。
         // 此前只调了窗口级 Activate()/Focus()，用户看到的现象是"打开后打字没反应，得先用鼠标点一下输入框"。
         _dialog.Dispatcher.BeginInvoke(new Action(_dialog.FocusInput), DispatcherPriority.Input);
+
+        // 拖放保存（2026-09-16）：附件在**窗口显示之后**才落。
+        // 走 Normal 优先级，早于上面 Input 优先级的聚焦 —— 先落附件、再把光标还给输入框。
+        if (attachmentPaths is { Count: > 0 })
+        {
+            var seed = _dialog;
+            seed.Dispatcher.BeginInvoke(new Action(() => seed.AddAttachmentPaths(attachmentPaths)));
+        }
     }
 }

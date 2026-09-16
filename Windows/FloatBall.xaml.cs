@@ -28,6 +28,92 @@ public partial class FloatBall : Window
     public event Action? ExitRequested;
     public event Action? BadgeClicked;   // v3.5：点击角标 → 打开待办汇总窗
 
+    /// <summary>
+    /// 拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §4.3）：松手后把解析结果交出去。
+    /// 本窗口**只负责判定与反馈**（展开 / 闪绿 / 原子），不落地任何数据 ——
+    /// 「什么都不做」是文件拖入的正确行为，别在这里偷偷复制或上传（方案 §3 第 5 条：无暂存区）。
+    /// </summary>
+    public event Action<DragPayload>? DropReceived;
+
+    /// <summary>
+    /// 拖放保存总开关（方案 §4.1）。**关闭时 AllowDrop=false**：拖放完全无反应，连光标都不变，
+    /// 与改造前行为完全一致。这是"默认关"这条设计能被用户验证的唯一落点。
+    /// </summary>
+    public void SetDragToSaveEnabled(bool enabled)
+    {
+        AllowDrop = enabled;
+        if (!enabled) ClearDragState();
+    }
+
+    /// <summary>当前这一次拖放的解析结果（DragEnter 时算一次，DragOver 高频心跳直接复用）。
+    /// 不在 DragOver 里反复 Parse：那里每秒几十次，而 Parse 要查前台窗口进程，扛不住。</summary>
+    private DragPayload _pendingDrag = DragPayload.Empty;
+
+    /// <summary>本次拖入是否已经展开过球（避免 DragEnter 抖动时反复动画）。</summary>
+    private bool _dragExpanded;
+
+    private void ClearDragState()
+    {
+        _pendingDrag = DragPayload.Empty;
+        _dragExpanded = false;
+    }
+
+    private void Ball_DragEnter(object sender, DragEventArgs e)
+    {
+        if (!AllowDrop) return;
+        _pendingDrag = DragDropSaveService.Parse(e.Data);
+
+        if (_pendingDrag.Kind == DragPayloadKind.None)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        // 吸附态只有 8×36，不展开用户根本瞄不准（方案 §4.2）
+        if (!_dragExpanded)
+        {
+            _dragExpanded = true;
+            ExpandBall();
+        }
+
+        // 显示"可以放"的光标，而不是禁止符号
+        e.Effects = DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    private void Ball_DragOver(object sender, DragEventArgs e)
+    {
+        if (!AllowDrop) return;
+        e.Effects = _pendingDrag.Kind == DragPayloadKind.None
+            ? DragDropEffects.None
+            : DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    private void Ball_DragLeave(object sender, DragEventArgs e)
+    {
+        if (!AllowDrop) return;
+        ClearDragState();
+    }
+
+    private void Ball_Drop(object sender, DragEventArgs e)
+    {
+        if (!AllowDrop) return;
+
+        // Drop 的 e.Data 是权威数据（本次拖放的终态），以它为准；取不到才退回 DragEnter 的缓存
+        var payload = DragDropSaveService.Parse(e.Data);
+        if (payload.Kind == DragPayloadKind.None) payload = _pendingDrag;
+
+        ClearDragState();
+        e.Handled = true;
+
+        if (payload.Kind == DragPayloadKind.None) return;
+
+        FlashGreen();
+        DropReceived?.Invoke(payload);
+    }
+
     /// <summary>AI 助手显示名称（MainWindow 从 AppSettings 注入，三处入口同源）</summary>
     public string AiAssistantName { get; set; } = "AI 问答";
 
@@ -37,6 +123,15 @@ public partial class FloatBall : Window
         var wa = SystemParameters.WorkArea;
         Left = wa.Right - 80;
         Top = wa.Bottom - 200;
+
+        // 拖放保存：四个事件的接线放在这里而不是 XAML —— AllowDrop 是运行时按设置项开关的，
+        // 接线与开关放一处才看得出"关闭时到底为什么没反应"。
+        // ⚠ 这几行是「写了但没生效」的高危形态（订阅缺失不报编译错、只在运行时静默失效），
+        //   改完必须 Grep 复核 + 真机拖一次。
+        DragEnter += Ball_DragEnter;
+        DragOver += Ball_DragOver;
+        DragLeave += Ball_DragLeave;
+        Drop += Ball_Drop;
     }
 
     public void SetOpacity(double o) => Opacity = Math.Clamp(o, 0.3, 1.0);

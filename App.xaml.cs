@@ -56,6 +56,14 @@ public partial class App : WpfApp
             return;
         }
 
+        // 拖放探针模式（--dragprobe）：只拉起探针球 + 诊断面板，不创建主窗口
+        // （避免悬浮球/托盘/剪贴板监听干扰拖放验证）。仅供开发期验证「拖到悬浮球」交互是否成立。
+        if (DragProbe.IsRequested(e.Args))
+        {
+            DragProbe.Run(e.Args);
+            return;
+        }
+
         new MainWindow().Show();
 
         // 自定义数据根不可用：主窗口起来后再提示（启动期弹窗会挡住托盘/悬浮球的初始化）

@@ -159,6 +159,44 @@ internal static class UiSnapshot
                 w.SeedCloudFileCardsForSnapshot();
                 return w;
             }, outDir, log);
+
+            // ── 悬浮球拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §5）──
+            // 这两个浮层是**独立窗口**（球窗口的透明区穿透，画在球里收不到鼠标事件），
+            // 尺寸/配色/悬停都是线框数值，必须出图对照判读：小条宽 96 竖向；卡片宽 ≤276 **贴合内容**
+            // （旧版卡片右侧留一大片空白，已否）；两者均**无图标**。
+
+            Capture("19-拖放小条（得到大脑可用）",
+                () => new DropActionStrip(3, getNoteAvailable: true, opacity: 1.0), outDir, log);
+
+            // 未配得到大脑凭证 → 该项置灰 + 悬停提示去设置
+            Capture("20-拖放小条（得到大脑未配置·置灰）",
+                () => new DropActionStrip(3, getNoteAvailable: false, opacity: 1.0), outDir, log);
+
+            // 非文本类文件：不显示「发到得到大脑」行（"只对文本类显示"是用户拍板）
+            Capture("21-拖放卡片（单文件·非文本类）",
+                () => new DropActionCard("季度汇报-2026Q3.pptx", "1.8 MB · 来自微信",
+                    showGetNote: false, getNoteAvailable: false, opacity: 1.0), outDir, log);
+
+            // 文本类文件：多一行「发到得到大脑」。标题用微信图片的自动生成名，顺带核验命名格式。
+            Capture("22-拖放卡片（单文件·文本类）",
+                () => new DropActionCard("微信图片_20260916_231045.jpg", "320 KB · 来自微信",
+                    showGetNote: true, getNoteAvailable: true, opacity: 1.0), outDir, log);
+
+            // 多文件：标题「N 个文件」+ 总大小（方案 §4.3，**推定未与用户确认**，出图确认形态）
+            Capture("23-拖放卡片（多文件）",
+                () => new DropActionCard("3 个文件", "5.2 MB · 来自文件管理器",
+                    showGetNote: false, getNoteAvailable: true, opacity: 1.0), outDir, log);
+
+            // 设置「显示」板块（3 = 显示：0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览）。
+            // ⚠ 方案 §9 写的「外观」板块（PanelAppearance）与实际不符 —— 三个透明度滑块其实都在
+            //   「显示」（PanelDisplay）里，拖放这三项也落在同一板块（理由见 SettingsWindow.xaml 的注释）。
+            //   新增设置项属 REGRESSION 维护触发条件，这里出图核验控件没被挤出可视区、默认值正确。
+            Capture("24-设置-显示板块（含拖放设置）", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 3;
+                return w;
+            }, outDir, log);
         }
         catch (Exception ex)
         {

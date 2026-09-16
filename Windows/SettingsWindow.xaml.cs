@@ -270,6 +270,12 @@ public partial class SettingsWindow : Window
         InputOpacityLabel.Text = $"{(int)(_settings.InputOpacity * 100)}%";
         BallOpacityLabel.Text = $"{(int)(_settings.FloatBallOpacity * 100)}%";
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
+        // 悬浮球拖放保存（2026-09-16）：开关 + 浮层不透明度 + 小条停留秒数
+        DragToSaveCheck.IsChecked = _settings.DragToSaveEnabled;
+        DropActionOpacitySlider.Value = Math.Clamp(_settings.DropActionOpacity, 0.3, 1.0);
+        DropActionOpacityLabel.Text = $"{(int)(_settings.DropActionOpacity * 100)}%";
+        DropActionStripSlider.Value = Math.Clamp(_settings.DropActionStripSeconds, 2, 10);
+        DropActionStripLabel.Text = $"{_settings.DropActionStripSeconds} 秒";
         NotesPathText.Text = _settings.NotesPath;
         AutoStartCheck.IsChecked = _settings.AutoStart;
         // v3.8：灵感速览唤出行为下拉回显（v3.9 起在「灵感速览」板块）
@@ -582,6 +588,15 @@ public partial class SettingsWindow : Window
     { if (_suppressEvents) return; _settings.FloatBallOpacity = e.NewValue; BallOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
     private void QuickViewOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (_suppressEvents) return; _settings.QuickViewOpacity = e.NewValue; QuickViewOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
+
+    // 悬浮球拖放保存（2026-09-16）。_onChanged 里会让已打开的小条/卡片实时跟手，
+    // 否则「拖完再调滑块」看不到变化，会被当成功能坏了。
+    private void DragToSave_Changed(object sender, RoutedEventArgs e)
+    { if (_suppressEvents) return; _settings.DragToSaveEnabled = DragToSaveCheck.IsChecked == true; _settings.Save(); _onChanged?.Invoke(); }
+    private void DropActionOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (_suppressEvents) return; _settings.DropActionOpacity = e.NewValue; DropActionOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
+    private void DropActionStripSeconds_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (_suppressEvents) return; _settings.DropActionStripSeconds = (int)Math.Round(e.NewValue); DropActionStripLabel.Text = $"{_settings.DropActionStripSeconds} 秒"; _settings.Save(); _onChanged?.Invoke(); }
 
     private void AutoStart_Changed(object sender, RoutedEventArgs e)
     { if (_suppressEvents) return; _settings.AutoStart = AutoStartCheck.IsChecked == true; SetAutoStart(_settings.AutoStart); _settings.Save(); }

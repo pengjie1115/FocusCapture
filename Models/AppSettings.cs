@@ -111,6 +111,19 @@ public class AppSettings
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 
+    // ── 悬浮球拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §9）──
+    /// <summary>
+    /// 拖到悬浮球触发保存的总开关。**默认关**：关闭时悬浮球 AllowDrop=false，
+    /// 拖放完全无反应（连光标都不变），与改造前行为完全一致。
+    /// </summary>
+    public bool DragToSaveEnabled { get; set; } = false;
+
+    /// <summary>拖放后浮出的小条／卡片的不透明度（0.3~1.0），与 FloatBallOpacity 同套做法。</summary>
+    public double DropActionOpacity { get; set; } = 0.90;
+
+    /// <summary>文字拖入后小条的停留秒数（2~10，默认 3）。不点则自动消失，笔记已存在本地。</summary>
+    public int DropActionStripSeconds { get; set; } = 3;
+
     // ── 灵感速览窗口壳（v3.9：宽度/置顶/标题栏可组装）──
     // 唤出面板宽度（px，480–1280）；标题栏按钮区预算 = 宽度 - QuickViewToolbarCatalog.FixedTitleBarOverhead
     public double QuickViewWidth { get; set; } = 620;

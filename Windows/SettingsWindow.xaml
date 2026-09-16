@@ -617,6 +617,49 @@
                                 Margin="0,4,0,12"
                                 ValueChanged="QuickViewOpacity_Changed"/>
                     </StackPanel>
+
+                    <!-- ── 悬浮球拖放保存（2026-09-16 新增，方案 §9；默认关）──
+                         板块落位说明（实施时发现的方案自相矛盾，已按"可验证锚点"落地）：
+                         方案 §8/§9 说放「外观」板块（PanelAppearance），但**实际三个透明度滑块都在
+                         「显示」板块（PanelDisplay）**，不在 PanelAppearance —— 方案那句"（现有三个
+                         透明度滑块所在板块）"才是可验证的锚点。且本文件第 659 行留了项目自己的约定
+                         "不透明度仍留「显示」"，DropActionOpacity 与 FloatBallOpacity 同类，故落「显示」。
+                         若要挪到「外观」，把这四块（开关/说明/两个滑块）整段剪切过去即可。 -->
+                    <CheckBox x:Name="DragToSaveCheck"
+                              Content="拖到悬浮球保存内容"
+                              Foreground="#E0E0E0"
+                              Margin="0,8,0,0"
+                              Checked="DragToSave_Changed"
+                              Unchecked="DragToSave_Changed"/>
+                    <TextBlock Text="开启后：文字拖到悬浮球 → 直接存为本地笔记；文件拖到悬浮球 → 弹出动作卡片"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
+
+                    <StackPanel Margin="0,12,0,0">
+                        <Grid>
+                            <TextBlock Text="拖放浮层不透明度" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="DropActionOpacityLabel" Text="90%"
+                                       HorizontalAlignment="Right"/>
+                        </Grid>
+                        <Slider x:Name="DropActionOpacitySlider"
+                                Minimum="0.3" Maximum="1.0" SmallChange="0.05"
+                                Value="0.90"
+                                Margin="0,4,0,12"
+                                ValueChanged="DropActionOpacity_Changed"/>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,4,0,0">
+                        <Grid>
+                            <TextBlock Text="文字小条停留时长" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="DropActionStripLabel" Text="3 秒"
+                                       HorizontalAlignment="Right"/>
+                        </Grid>
+                        <Slider x:Name="DropActionStripSlider"
+                                Minimum="2" Maximum="10" SmallChange="1"
+                                IsSnapToTickEnabled="True" TickFrequency="1"
+                                Value="3"
+                                Margin="0,4,0,12"
+                                ValueChanged="DropActionStripSeconds_Changed"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- ── 板块 4：灵感速览（v3.9 新增；唤出行为自「通用」迁入，不透明度仍留「显示」）── -->

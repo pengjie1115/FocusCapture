@@ -58,6 +58,7 @@ internal static class Program
             TestUnit();
             TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
             TestFileRepository();        // 网盘文件仓库：句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
+            TestDragDropSave();          // 悬浮球拖放保存：判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             await TestAttachmentCleanup();  // 附件到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
@@ -75,6 +76,229 @@ internal static class Program
         }
         Console.WriteLine(_failed == 0 ? "\n===== ALL TESTS PASSED =====" : $"\n===== {_failed} TEST(S) FAILED =====");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ══════════════════ 悬浮球拖放保存（2026-09-16） ══════════════════
+    //
+    // 方案 docs/悬浮球拖放保存方案.md §6。本组守护的是"靠真机事故换来的规则"——
+    // 这些规则看代码都"很合理"，随手改一下也很像优化，改了却只在真实拖放场景下才炸：
+    //   ① 判定顺序：FileDrop 必须优先于文字（微信拖 xlsx 时 Text 里装的是**文件名**，
+    //      顺序一反就会把 JD-260911.xlsx 当成正文存成一条笔记）
+    //   ② 取值口径：只认 UnicodeText（Chromium 的 CF_TEXT 中文是乱码 搴旂敤鍑瘉）
+    //   ③ 命名规则：微信图片的哈希名必须换成"微信图片_日期_时间"
+    //   ④ 零副作用：判定过程既不改源文件，也不凭空落地任何东西（方案 §11-8 的机器可验部分）
+    //
+    // 边界（诚实标注）：真实的 OLE 拖放（鼠标拖起来、松手）**本组覆盖不到** ——
+    // 那需要在真实宿主里用真人手拖，见 REGRESSION B-15 的人工清单。
+
+    private static void TestDragDropSave()
+    {
+        Console.WriteLine("[拖放保存] 判定顺序 / 取值口径 / 命名规则 / 零副作用");
+
+        var dir = Path.Combine(_sandbox, "dragdrop");
+        Directory.CreateDirectory(dir);
+
+        // ── ① 判定顺序：FileDrop 优先于文字 ──
+
+        var xlsx = Path.Combine(dir, "JD-260911.xlsx");
+        File.WriteAllText(xlsx, "fake-xlsx");
+
+        var both = new System.Windows.DataObject();
+        both.SetData(System.Windows.DataFormats.FileDrop, new[] { xlsx });
+        // 微信拖 xlsx 的真实形态：UnicodeText 里装的是**文件名**
+        both.SetData(System.Windows.DataFormats.UnicodeText, "JD-260911.xlsx");
+
+        var p1 = DragDropSaveService.Parse(both);
+        Check(p1.Kind == DragPayloadKind.Files,
+              "同时有文件与文字时必须按【文件】处理（否则文件名会被当成正文存成一条笔记）",
+              $"实际判定={p1.Kind}");
+        Check(p1.Paths.Count == 1 && p1.Paths[0] == xlsx,
+              "文件路径必须原样带出（供后续存网盘/问答使用）");
+
+        // FileDrop 存在但路径全为空 → 按"没有文件"处理，退回文字
+        var emptyDrop = new System.Windows.DataObject();
+        emptyDrop.SetData(System.Windows.DataFormats.FileDrop, Array.Empty<string>());
+        emptyDrop.SetData(System.Windows.DataFormats.UnicodeText, "一段普通文字");
+        Check(DragDropSaveService.Parse(emptyDrop).Kind == DragPayloadKind.Text,
+              "FileDrop 存在但没有有效路径时必须退回按【文字】处理（不能判为无内容）");
+
+        // ── ② 取值口径：只认 UnicodeText ──
+
+        var textBoth = new System.Windows.DataObject();
+        // 模拟 Chromium：Text（ANSI）是坏的，UnicodeText 是对的
+        textBoth.SetData(System.Windows.DataFormats.Text, "搴旂敤鍑瘉");
+        textBoth.SetData(System.Windows.DataFormats.UnicodeText, "应用凭证");
+
+        var p2 = DragDropSaveService.Parse(textBoth);
+        Check(p2.Kind == DragPayloadKind.Text && p2.Text == "应用凭证",
+              "文字必须从 UnicodeText 取，绝不从 Text 取（浏览器给的 CF_TEXT 中文是乱码）",
+              $"实际取到「{p2.Text}」");
+
+        // 只有 ANSI 版文字（源程序只给了 CF_TEXT）：
+        // ⚠ 这里**不能**断言"判为读不到" —— WPF 的 DataObject.GetDataPresent 默认 autoConvert=true，
+        //   会把 CF_TEXT 按系统代码页自动转成 CF_UNICODETEXT 再交出来（由 Windows 做转换，不是我们自己猜编码）。
+        //   这是**正确且有用**的行为：只提供 CF_TEXT 的程序照样能被拖进来。
+        //   真正要守的是上面那条 —— 两者都在、且内容不一致时，必须取 UnicodeText 原值，不走转换。
+        //   （本检查点最初写成了"必须判为读不到"，属检查点构造错误，已按实际语义修正，未动产品代码。）
+        var onlyAnsi = new System.Windows.DataObject();
+        onlyAnsi.SetData(System.Windows.DataFormats.Text, "只有ANSI的程序");
+        Check(DragDropSaveService.Parse(onlyAnsi).Kind == DragPayloadKind.Text,
+              "只提供 ANSI 版文字的程序必须照样能拖进来（不许因为缺少 UnicodeText 就判为无内容）");
+
+        // 什么都没有
+        Check(DragDropSaveService.Parse(new System.Windows.DataObject()).Kind == DragPayloadKind.None,
+              "空数据对象必须判定为无内容");
+        Check(DragDropSaveService.Parse(null).Kind == DragPayloadKind.None,
+              "取不到数据对象时不许抛异常（源程序退出等边缘情况）");
+
+        // 只有空白字符的文字 = 没有内容
+        var blank = new System.Windows.DataObject();
+        blank.SetData(System.Windows.DataFormats.UnicodeText, "   \r\n  ");
+        Check(DragDropSaveService.Parse(blank).Kind == DragPayloadKind.None,
+              "纯空白文字必须判定为无内容（否则会存出一条空笔记）");
+
+        // ── ③ 命名规则：微信图片的哈希名 ──
+
+        Check(DragDropSaveService.IsHashLikeName(new string('a', 32)),
+              "32 位十六进制名必须被识别为哈希名（微信图片拿不到原始名）");
+        Check(!DragDropSaveService.IsHashLikeName(new string('a', 30)),
+              "30 位不许当成哈希名（长度不够，可能是正常名字）");
+        Check(!DragDropSaveService.IsHashLikeName("697a54b2c3d4e5f6a7b8c9d0e1f2g3h4"),
+              "含非十六进制字符不许当成哈希名");
+        Check(!DragDropSaveService.IsHashLikeName("季度汇报-2026Q3"),
+              "正常中文名不许当成哈希名");
+
+        var hashJpg = Path.Combine(dir, "697a54b2c3d4e5f6a7b8c9d0e1f2a3b4.jpg");
+        var renamed = DragDropSaveService.BuildDisplayName(hashJpg);
+        Check(renamed.StartsWith("微信图片_", StringComparison.Ordinal)
+              && renamed.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase),
+              "微信图片的哈希名必须自动换成「微信图片_日期_时间.jpg」", $"实际「{renamed}」");
+
+        Check(DragDropSaveService.BuildDisplayName(xlsx) == "JD-260911.xlsx",
+              "正常来源必须原样保留真实文件名");
+
+        // ── ④ 来源程序映射 ──
+
+        Check(DragDropSaveService.MapProcessName("Weixin") == "微信", "Weixin.exe → 微信");
+        Check(DragDropSaveService.MapProcessName("Tabbit Browser") == "浏览器", "Tabbit Browser → 浏览器");
+        Check(DragDropSaveService.MapProcessName("chrome") == "浏览器", "chrome → 浏览器");
+        Check(DragDropSaveService.MapProcessName("explorer") == "文件管理器", "explorer → 文件管理器");
+        Check(DragDropSaveService.MapProcessName("wps") == "WPS", "wps → WPS");
+        Check(DragDropSaveService.MapProcessName("SomeApp.exe") == "SomeApp",
+              "表外进程名必须去掉 .exe 原样显示");
+        Check(DragDropSaveService.MapProcessName("") == DragDropSaveService.FallbackSourceApp,
+              "识别不出来源时必须兜底为「拖动」（不能留空把界面撑坏）");
+
+        // ── ⑤ 得到大脑标题策略（方案 §4.2 推定规则）──
+
+        Check(DragDropSaveService.MakeGetNoteTitle("第一行\n第二行") == "第一行",
+              "标题取正文首行");
+        Check(DragDropSaveService.MakeGetNoteTitle(new string('长', 50)).Length == 30,
+              "单行超过 30 字必须截到 30 字", 
+              $"实际长度 {DragDropSaveService.MakeGetNoteTitle(new string('长', 50)).Length}");
+        Check(DragDropSaveService.MakeGetNoteTitle("\n\n   \n真正的首行") == "真正的首行",
+              "首行为空时必须往下找第一个非空行（空标题建不出笔记）");
+        Check(DragDropSaveService.MakeGetNoteTitle("") == "", "空内容必须返回空标题（由调用方兜底）");
+
+        // ── ⑥ 文本类判定（「发到得到大脑」只对文本类显示）──
+
+        Check(DragDropSaveService.IsTextFile("a.md") && DragDropSaveService.IsTextFile("b.TXT")
+              && DragDropSaveService.IsTextFile("c.json") && DragDropSaveService.IsTextFile("d.cs"),
+              "md/txt/json/代码必须判为文本类");
+        Check(!DragDropSaveService.IsTextFile("a.png") && !DragDropSaveService.IsTextFile("b.docx")
+              && !DragDropSaveService.IsTextFile("c.xlsx") && !DragDropSaveService.IsTextFile("d.zip"),
+              "图片/docx/xlsx/压缩包不许判为文本类（二进制读出来是乱码）");
+        Check(DragDropSaveService.HasAnyTextFile(new[] { "a.png", "b.md" }),
+              "一批文件里只要有一个文本类，就必须显示「发到得到大脑」");
+        Check(!DragDropSaveService.HasAnyTextFile(new[] { "a.png", "b.zip" }),
+              "全是非文本类时必须隐藏「发到得到大脑」");
+
+        // ── ⑦ 严格 UTF-8 读取（不猜编码）──
+
+        var utf8File = Path.Combine(dir, "utf8.txt");
+        File.WriteAllText(utf8File, "中文内容 OK", new UTF8Encoding(false));
+        var (t1, e1) = DragDropSaveService.ReadTextFileStrict(utf8File);
+        Check(e1 == null && t1 == "中文内容 OK", "UTF-8 文本必须原样读出", $"错误={e1}");
+
+        var bomFile = Path.Combine(dir, "bom.txt");
+        File.WriteAllBytes(bomFile, new byte[] { 0xEF, 0xBB, 0xBF }
+            .Concat(new UTF8Encoding(false).GetBytes("带BOM")).ToArray());
+        var (t2, _) = DragDropSaveService.ReadTextFileStrict(bomFile);
+        Check(t2 == "带BOM", "BOM 必须被剥离（否则首行会多出看不见的字符）", $"实际「{t2}」");
+
+        var gbkFile = Path.Combine(dir, "gbk.txt");
+        File.WriteAllBytes(gbkFile, new byte[] { 0xB0, 0xA1, 0xB2, 0xE2 });   // GBK「测试」，非法 UTF-8
+        var (t3, e3) = DragDropSaveService.ReadTextFileStrict(gbkFile);
+        Check(e3 != null && t3.Length == 0,
+              "非 UTF-8 文本必须明确报错，不许猜编码后把乱码传上云端", $"错误={e3}");
+
+        var longFile = Path.Combine(dir, "long.txt");
+        File.WriteAllText(longFile, new string('x', DragDropSaveService.MaxTextChars + 500));
+        var (t4, _) = DragDropSaveService.ReadTextFileStrict(longFile);
+        Check(t4.Length <= DragDropSaveService.MaxTextChars + 40 && t4.Contains("已截断"),
+              "超长文本必须截断并留下可见说明（防一次拖入把几十 MB 日志塞进云端笔记）");
+
+        // ── ⑧ 卡片头部（单文件 / 多文件）──
+
+        var (title1, sub1) = DragDropSaveService.BuildCardHeader(new[] { xlsx }, "微信");
+        Check(title1 == "JD-260911.xlsx", "单文件卡片标题必须是真实文件名", $"实际「{title1}」");
+        Check(sub1.Contains("来自微信") && sub1.Contains("·"),
+              "副行必须是「大小 · 来自来源」（不是旧版的「已复制到本机」）", $"实际「{sub1}」");
+
+        var (title2, sub2) = DragDropSaveService.BuildCardHeader(new[] { xlsx, utf8File }, "文件管理器");
+        Check(title2 == "2 个文件", "多文件标题必须是「N 个文件」（方案 §4.3 推定规则）", $"实际「{title2}」");
+
+        // 总大小用**已知字节数**的两个文件来验，别拿随手造的小文件去 Contains("2 ") 这种模糊匹配——
+        // 24 字节的文件会被格式化成「24 字节」，模糊匹配必然误红（本检查点第一版就栽在这）。
+        var sizeA = Path.Combine(dir, "size-a.bin");
+        var sizeB = Path.Combine(dir, "size-b.bin");
+        File.WriteAllBytes(sizeA, new byte[1024]);        // 1 KB
+        File.WriteAllBytes(sizeB, new byte[2048]);        // 2 KB
+        var (title3, sub3) = DragDropSaveService.BuildCardHeader(new[] { sizeA, sizeB }, "文件管理器");
+        Check(title3 == "2 个文件" && sub3 == "3 KB · 来自文件管理器",
+              "多文件副行必须是总大小 + 来源（1024+2048 字节 → 3 KB）",
+              $"实际标题「{title3}」副行「{sub3}」");
+
+        // ── ⑨ 大小格式化 ──
+
+        Check(DragDropSaveService.FormatSize(512) == "512 字节", "小于 1KB 显示字节");
+        Check(DragDropSaveService.FormatSize(1024) == "1 KB", "1024 字节 = 1 KB");
+        Check(DragDropSaveService.FormatSize(1024 * 1024) == "1 MB", "1MB 必须显示为 MB 而不是 1024 KB");
+
+        // ── ⑩ 文件已不在（微信 temp 会被清）──
+
+        var ghost = Path.Combine(dir, "已被微信清掉.jpg");
+        var existing = DragDropSaveService.ExistingFiles(new[] { xlsx, ghost });
+        Check(existing.Count == 1 && existing[0] == xlsx,
+              "已不存在的文件必须被剔除（否则后续动作会对着空气执行）");
+
+        var msg = DragDropSaveService.BuildMissingFileMessage(new[] { ghost });
+        Check(msg.Contains("已被微信清掉.jpg") && msg.Length > 0,
+              "「文件已不在」的提示必须点名是哪个文件");
+        Check(msg.Contains("重新拖入"),
+              "提示里必须给出下一步动作（否则用户只能干瞪眼）");
+
+        // ── ⑪ 零副作用（方案 §11-8 的机器可验部分）──
+
+        var beforeFiles = Directory.GetFiles(dir).OrderBy(x => x).ToArray();
+        var beforeContent = File.ReadAllText(utf8File);
+        var beforeLen = new FileInfo(xlsx).Length;
+
+        var probe = new System.Windows.DataObject();
+        probe.SetData(System.Windows.DataFormats.FileDrop, new[] { xlsx, utf8File });
+        var parsed = DragDropSaveService.Parse(probe);
+        _ = DragDropSaveService.BuildCardHeader(parsed.Paths, parsed.SourceApp);
+        _ = DragDropSaveService.ExistingFiles(parsed.Paths);
+
+        var afterFiles = Directory.GetFiles(dir).OrderBy(x => x).ToArray();
+
+        Check(File.Exists(xlsx) && File.Exists(utf8File),
+              "判定过程绝不许移动或删除源文件（我们只读取数据，不实现移动语义）");
+        Check(new FileInfo(xlsx).Length == beforeLen && File.ReadAllText(utf8File) == beforeContent,
+              "判定过程绝不许改动源文件内容");
+        Check(afterFiles.Length == beforeFiles.Length,
+              "判定过程不许凭空落地任何文件（拖入=什么都不做的底线）",
+              $"之前 {beforeFiles.Length} 个，之后 {afterFiles.Length} 个");
     }
 
     // ══════════════════ 网盘文件仓库（2026-09-16） ══════════════════
