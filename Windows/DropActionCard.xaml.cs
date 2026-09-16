@@ -27,6 +27,26 @@ public partial class DropActionCard : Window
     private double _targetOpacity;
     private bool _armed;
 
+    /// <summary>
+    /// 关闭**必须幂等**的锁（2026-09-16 实机修复，别删）。
+    ///
+    /// 现象：拖文件到球 → 点「AI 问答」或「上传网盘」→ 先弹一个「FocusCapture 遇到一个界面错误」
+    /// （「在窗口关闭期间，无法将可见性设置为可见…」），点掉之后功能照旧可用。
+    /// crash.log 于 23:33~23:38 连报 7 次，栈顶恒为 Dismiss() → Window_Deactivated()。
+    ///
+    /// 根因：关闭入口有五个（三个选项按钮 / 点外面 / Esc / 兜底超时），它们会互相踩。
+    /// 按钮路径是「先 Dismiss() 再抛事件去开 AI 窗口」，而 AI 窗口一激活，本窗就收到
+    /// WM_ACTIVATE → Deactivated → `_armed` 早已 true → 二次 Dismiss() → **二次 Close()**
+    /// → WPF 在 InternalClose 里 VerifyNotClosing() 抛 InvalidOperationException。
+    /// **功能其实没事**（异常发生在关闭流程的再入里，动作早已派发出去），纯粹白弹一个吓人的框。
+    ///
+    /// 所以：① 一进入关闭流程就上锁，后到的入口直接返回；
+    /// ② <see cref="OnClosing"/> 也上锁 —— 这样连 MainWindow 直接 Close()
+    ///    （换浮层时走 CloseDropOverlays）的路径也一并覆盖，不必依赖调用方守规矩；
+    /// ③ 关窗自身会产生激活变化，关之前先摘掉 Deactivated 监听。
+    /// </summary>
+    private bool _dismissed;
+
     public event Action? AiAskRequested;
     public event Action? SaveToCloudRequested;
     public event Action? GetNoteRequested;
@@ -84,9 +104,26 @@ public partial class DropActionCard : Window
 
     private void Dismiss()
     {
+        if (_dismissed) return;
+        _dismissed = true;
+
         _safety.Stop();
         _arm.Stop();
-        Close();
+        // 关窗本身会让焦点转移、再触发一次 Deactivated，先摘掉监听避免再入
+        Deactivated -= Window_Deactivated;
+
+        try { Close(); }
+        catch (InvalidOperationException) { /* 已在关闭流程里（OnClosing 已上锁，这里是兜底）*/ }
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // 上锁 + 停表：不管谁发起的关闭（本类 Dismiss 或 MainWindow.CloseDropOverlays），
+        // 一旦进入关闭流程，后到的 Dismiss() 就只是空操作 —— 这是防「二次 Close 抛异常」的根。
+        _dismissed = true;
+        _safety.Stop();
+        _arm.Stop();
+        base.OnClosing(e);
     }
 
     private void BtnAiAsk_Click(object sender, RoutedEventArgs e)
@@ -107,7 +144,10 @@ public partial class DropActionCard : Window
         GetNoteRequested?.Invoke();
     }
 
-    private void Window_Deactivated(object sender, EventArgs e)
+    // 参数用 object?（而非 object）：Deactivated 是 EventHandler(object?, EventArgs)，
+    // 签名不带 ? 的话，下面 Dismiss() 里的 `Deactivated -= Window_Deactivated` 会报 CS8622
+    //（XAML 订阅那条路不查，所以写错只会在加 -= 时才炸出来）。
+    private void Window_Deactivated(object? sender, EventArgs e)
     {
         if (_armed) Dismiss();
     }

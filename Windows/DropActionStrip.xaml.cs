@@ -18,6 +18,14 @@ public partial class DropActionStrip : Window
     private readonly DispatcherTimer _dismiss;
     private double _targetOpacity;
 
+    /// <summary>
+    /// 关闭幂等锁。与 <see cref="DropActionCard"/> 同一个坑（2026-09-16 一并加固）：
+    /// 小条虽然不抢激活（没有 Deactivated 路径，风险远低于卡片），但关闭入口也有四个
+    /// （两个按钮 / Esc / 停留超时），且 MainWindow 换浮层时会直接 Close()。
+    /// 一旦两条路径撞在同一拍上，二次 Close() 就会抛「在窗口关闭期间…」。加锁成本三行，不值当赌。
+    /// </summary>
+    private bool _dismissed;
+
     /// <summary>点了「AI 问答」。</summary>
     public event Action? AiAskRequested;
 
@@ -65,8 +73,21 @@ public partial class DropActionStrip : Window
 
     private void Dismiss()
     {
+        if (_dismissed) return;
+        _dismissed = true;
+
         _dismiss.Stop();
-        Close();
+
+        try { Close(); }
+        catch (InvalidOperationException) { /* 已在关闭流程里（OnClosing 已上锁，这里是兜底）*/ }
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // 见字段注释：不管谁发起的关闭，一进关闭流程就上锁，后到的 Dismiss() 变成空操作
+        _dismissed = true;
+        _dismiss.Stop();
+        base.OnClosing(e);
     }
 
     private void BtnAiAsk_Click(object sender, RoutedEventArgs e)
