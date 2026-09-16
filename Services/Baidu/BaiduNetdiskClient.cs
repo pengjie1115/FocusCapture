@@ -335,13 +335,33 @@ public class BaiduNetdiskClient
     private async Task CreateDirectoryAsync(string netDir, CancellationToken ct)
     {
         var token = await EnsureAccessTokenAsync(ct).ConfigureAwait(false);
-        var form = new Dictionary<string, string> { ["path"] = netDir, ["isdir"] = "1", ["size"] = "0" };
+        // rtype=0（不重命名、同名即冲突）**必须显式传**。
+        // 2026-09-16 实测：不传时服务端的行为与官方文档不符 —— 用户的网盘里凭空多出
+        // `FocusCapture_20260916_104601`、`FocusCapture_20260916_112442` 这类"名字_时间戳"目录，
+        // 每重启一次应用就多一个（进程内已建目录缓存清空后第一次上传时触发）。
+        // 显式 0 才能拿到"已存在"的信号，由下面的分支按正常情况处理。
+        var form = new Dictionary<string, string>
+        {
+            ["path"] = netDir, ["isdir"] = "1", ["size"] = "0", ["rtype"] = "0",
+        };
         var json = await PostFormAsync($"{XpanFileUrl}?method=create&access_token={Uri.EscapeDataString(token)}", form, ct)
             .ConfigureAwait(false);
         var errno = IntOr(json, "errno", 0);
-        // -8 = 已存在：并发创建下的正常结果，不算失败
-        if (errno != 0 && errno != -8)
+        // -8 / 31061 = 已存在：目录已就绪就是要的结果，属正常情况（并发创建、重启后重复确保）
+        if (errno != 0 && errno != -8 && errno != 31061)
             throw new BaiduApiException(errno, $"创建目录失败：{DescribeErrNo(errno)}");
+
+        // 自检：服务端返回的 path 与请求不一致 = 它没报冲突，而是把目录改名后另建了一个。
+        // 这不是致命错误（目标目录通常已存在，上传照样能继续），但必须留痕 ——
+        // 否则用户网盘里会悄悄堆出一串空目录，而且没人知道是谁建的。
+        var actual = Str(json, "path");
+        if (actual.Length > 0 &&
+            !string.Equals(actual.TrimEnd('/'), netDir.TrimEnd('/'), StringComparison.Ordinal))
+        {
+            AppLog.Warn("Baidu",
+                $"建目录被服务端改名：请求 {netDir} → 实际返回 {actual}。目标目录应当已经存在，" +
+                "上传继续；若频繁出现请检查 create 的 rtype 是否被平台忽略。");
+        }
     }
 
     /// <summary>删除（沙箱内，可批量）。走官方 filemanager 的 delete 动作。</summary>
@@ -446,16 +466,22 @@ public class BaiduNetdiskClient
         var uploadId = Str(pre, "uploadid");
         var returnType = IntOr(pre, "return_type");
 
-        // 服务端已收下的分片序号。注意：**不是**请求参数里那个"每片 md5 列表"，同名不同义，
-        // 唯一权威解释见 ParseExistingSlices 的注释 —— 2026-09-16 第二个事故就死在这里。
-        var existingSlices = ParseExistingSlices(pre);
-        if (existingSlices.Count > 0)
-            AppLog.Info("Baidu",
-                $"服务端报告已存在 {existingSlices.Count} 个分片（序号 {string.Join(",", existingSlices.OrderBy(x => x))}）；" +
-                "本版本仍按全量重传处理（跳过分片功能尚未启用）");
+        // 服务端告诉我们「还有哪些分片等着上传」。注意：**不是**请求参数里那个"每片 md5 列表"，
+        // 同名不同义，唯一权威解释见 ParseMissingSlices 的注释。
+        var (hasBlockList, missingSlices) = ParseMissingSlices(pre);
+        AppLog.Info("Baidu", hasBlockList
+            ? $"precreate：return_type={returnType}，待上传分片 {missingSlices.Count} 个" +
+              (missingSlices.Count > 0 ? $"（序号 {string.Join(",", missingSlices.OrderBy(x => x))}）" : "（= 无需上传）")
+            : $"precreate：return_type={returnType}，响应里没有可解析的分片列表 → 按「全部上传」处理");
 
-        // return_type = 1 → 秒传：内容已在网盘里，一个字节都不用传
-        var rapid = returnType == 1;
+        // 秒传的唯一判据：服务端**显式**给了空的分片列表（= 没有任何片需要上传）。
+        //
+        // ⛔ 绝不再用 return_type 判断秒传 —— 那是 2026-09-16 第三次事故的根源：
+        //    它的常规值被当成"秒传命中"，于是每个文件（含全新文件）都跳过全部分片上传，
+        //    create 时服务端发现一片都没收到 → errno 31500（「uploadid 无效或上传未完成」）。
+        //    更根本的原因是：本站从未传 content_md5 / slice_md5，服务端无从判断"内容已存在"，
+        //    所以 return_type 从来就不是秒传信号。
+        var rapid = hasBlockList && missingSlices.Count == 0;
         if (!rapid)
         {
             if (uploadId.Length == 0)
@@ -471,15 +497,10 @@ public class BaiduNetdiskClient
                 var slice = new byte[size];
                 if (size > 0) fs.ReadExactly(slice, 0, size);
 
-                // 【B 预留位：跳过已传分片】当前一律全量重传（2026-09-16 抉择）。
-                // 启用方式：把下面这一行改成
-                //     if (existingSlices.Contains(seq)) { 记日志; continue; }
-                // 启用前提（两条，缺一不可）：
-                //   ① 先实测确认该字段的真实语义（什么条件下出现、是否一定为数字）——
-                //      第三方实现互相矛盾，本机从未实测；
-                //   ② 解析失败必须继续退化成"不跳过"，这是 ParseExistingSlices 已经保证的契约。
-                // 不急着启用的成本很低：单片 4MB、文件多为 KB~几十 MB，重传是秒级；
-                // 而判错的代价是"上传失败"——恰是本功能最不能出的错。
+                // 一律全量上传（2026-09-16 抉择）：服务端那份"待上传分片"列表**只用于记日志**。
+                // 理由：只有本机保证"每一片都传过"，create 提交时带的 block_list 才能与云端完全对上；
+                // 若改成"只传列表里的那几片"，等于又把成败押在一个外部字段的完整性上 —— 刚被咬过两轮。
+                // 将来若要做「按列表精确补传」（省流量的断点续传），必须先实测确认该列表的完整性再开。
                 await UploadSliceAsync(token, netPath, uploadId, seq, slice, ct).ConfigureAwait(false);
 
                 sent += size;
@@ -489,7 +510,9 @@ public class BaiduNetdiskClient
         else
         {
             progress?.Report(1.0);
-            AppLog.Info("Baidu", $"秒传命中（内容已存在）：{Path.GetFileName(netPath)}");
+            if (uploadId.Length == 0)
+                AppLog.Warn("Baidu", "服务端称无需上传分片，却未返回 uploadid —— 提交可能被拒，留痕备查");
+            AppLog.Info("Baidu", $"服务端确认无需上传分片（内容已在云端）：{Path.GetFileName(netPath)}");
         }
 
         // ③ create 提交
@@ -499,6 +522,10 @@ public class BaiduNetdiskClient
             ["size"] = info.Length.ToString(),
             ["isdir"] = "0",
             ["uploadid"] = uploadId,
+            // rtype 必须显式带上，且与上面 precreate 的取值保持一致 —— 官方原文：
+            // 「3 为覆盖，**需要与预上传 precreate 接口中的 rtype 保持一致**」。
+            // 漏传时服务端按默认 0（不重命名、返回冲突）处理，与 precreate 的 3 对不上（2026-09-16 补）。
+            ["rtype"] = "3",
             ["block_list"] = JsonSerializer.Serialize(blockList, BaiduJsonContext.Default.ListString),
         };
         var create = await PostFormAsync($"{XpanFileUrl}?method=create&access_token={Uri.EscapeDataString(token)}", createForm, ct)
@@ -511,26 +538,30 @@ public class BaiduNetdiskClient
     }
 
     /// <summary>
-    /// 解析 precreate 响应里「服务端已收下哪些分片」。
+    /// 解析 precreate 响应里的分片列表。**它是「还需要上传」的分片序号，不是「已经传完」的**。
     ///
-    /// <b>两个 block_list 同名不同义，别再混（2026-09-16 第二个实机事故）</b>：
+    /// <b>同名字段、两处语义完全不同 —— 这是 2026-09-16 连续两轮事故的共同根源</b>：
     /// <list type="bullet">
-    /// <item><b>请求参数</b>里的 block_list = 本地算出来的每片 md5 列表（我们自己的数据，可控）；</item>
-    /// <item><b>响应字段</b>里的 block_list = 服务端已收下的分片**序号**（数字数组，形如 <c>[0,1]</c>）。</item>
+    /// <item><b>请求参数</b> block_list = 本地算的每片 md5 列表（我们自己的数据，可控）；</item>
+    /// <item><b>响应字段</b> block_list = <b>还需要上传</b>的缺失分片序号（形如 <c>[0,1,2,3]</c>）。</item>
     /// </list>
-    /// 事故原貌：把响应里的它当 md5 字符串读（<c>GetString()</c>），每个文件都在这一步抛
-    /// <c>InvalidOperationException</c>（"requires an element of type 'String', but the target element
-    /// has type 'Number'"）→ 上传 100% 失败，而报错里一个字都没提"百度"，排查只能靠翻日志。
+    /// 交叉验证：开源 SDK 对该字段的注释原文是
+    /// "List of missing block indices that need to be uploaded"；实测也吻合 ——
+    /// 15.4MB 的文件（4MB × 4 片）返回 <c>[0,1,2,3]</c>，1.6KB 的文件返回 <c>[0]</c>，
+    /// 都是"该文件全部分片"，而不是"已存在分片"。
     ///
-    /// <b>本函数的契约比它的返回值更重要</b>：任何读不懂的情况一律返回空集合，**绝不抛异常**。
-    /// 空集合 = 一片都不跳过 = 全量重传 —— 失败方向必须是"多传几片"，不是"传不上去"。
+    /// <b><paramref name="hasField"/> = false 时，调用方必须按「全部分片都要传」处理</b>
+    /// —— 字段缺失或读不懂 = 不知道缺哪些片 = 只能全传。
+    ///
+    /// <b>本函数的契约比它的返回值更重要</b>：任何读不懂的情况都不抛异常。
+    /// 失败方向必须是"多传几片"，不能是"传不上去"（曾在这里抛过一次异常，上传 100% 失败）。
     /// </summary>
-    public static HashSet<int> ParseExistingSlices(JsonElement response)
+    public static (bool HasField, HashSet<int> Slices) ParseMissingSlices(JsonElement response)
     {
         var slices = new HashSet<int>();
-        if (response.ValueKind != JsonValueKind.Object) return slices;
-        if (!response.TryGetProperty("block_list", out var list)) return slices;
-        if (list.ValueKind != JsonValueKind.Array) return slices;
+        if (response.ValueKind != JsonValueKind.Object) return (false, slices);
+        if (!response.TryGetProperty("block_list", out var list)) return (false, slices);
+        if (list.ValueKind != JsonValueKind.Array) return (false, slices);
 
         foreach (var item in list.EnumerateArray())
         {
@@ -543,7 +574,7 @@ public class BaiduNetdiskClient
             };
             if (parsed.HasValue && parsed.Value >= 0) slices.Add(parsed.Value);
         }
-        return slices;
+        return (true, slices);
     }
 
     /// <summary>上传单分片：superfile2 的 access_token 在 query 上，文件走 multipart body。</summary>

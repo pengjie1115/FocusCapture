@@ -68,10 +68,11 @@ internal static class FileToolSupport
         };
     }
 
-    /// <summary>格式化一行文件描述（编号 + 类型 + 名称 + 时间 + 大小 + 标签）。</summary>
+    /// <summary>格式化一行文件描述（编号 + 类型 + 名称 + 时间 + 大小 + 本机副本 + **真实上传状态**）。</summary>
     public static string Describe(FileMetadata m)
     {
-        var local = FileRepository.FindCache(m.Id) != null && File.Exists(FileRepository.FindCache(m.Id)!.LocalPath);
+        var entry = FileRepository.FindCache(m.Id);
+        var local = entry != null && File.Exists(entry.LocalPath);
         var parts = new List<string>
         {
             $"[{ShortRef(m.Id)}]",
@@ -82,6 +83,11 @@ internal static class FileToolSupport
         };
         if (m.Tags.Count > 0) parts.Add("标签:" + string.Join("/", m.Tags));
         parts.Add(local ? "本机已有" : "需取回");
+        // ⚠️ 上传状态**必须**出现在输出里。少了它，模型会把「本机已有」读成「已经传上去了」，
+        // 然后对用户说"两个文件都已经上传成功，网盘上都能看到了" —— 而那批文件在账本里全是 failed
+        // （2026-09-16 实测踩到：用户去网盘一看，网盘是空的，信任当场归零）。
+        // 措辞由 UploadStates.Label 统一给，避免各处自己发挥。
+        parts.Add(UploadStates.Label(entry?.UploadState));
         return string.Join("  ", parts);
     }
 }
@@ -260,7 +266,10 @@ public class FindCloudFilesTool : AgentTool
     public override string Description =>
         "在用户的网盘文件记录里检索（本地离线查询，不联网、不消耗额度）。" +
         "用户说「把我上周存的那份文档找出来」「网盘里有没有关于 XX 的文件」时使用。" +
-        "返回结果每行开头的中括号里是编号，后续用 fetch_cloud_file / read_cloud_file 时把它作为 file_id 传入。";
+        "返回结果每行开头的中括号里是编号，后续用 fetch_cloud_file / read_cloud_file 时把它作为 file_id 传入。\n" +
+        "⚠️ 这里查的是**本机记录**，不等于文件已经到了网盘 —— 每行末尾标着真实上传状态：" +
+        "只有「云端已就绪」才算真的在网盘上；「等待上传 / 正在上传 / 上传失败」都表示**云端还没有这个文件**。" +
+        "这种时候**绝不许**对用户说「已上传成功」「网盘上能看到」，只能说「还没传上去」并提示去「设置 → 文件与网盘」看原因。";
 
     public override string ParametersJson =>
         """{"type":"object","properties":{"keyword":{"type":"string","description":"文件名或标签关键词，模糊匹配"},"type":{"type":"string","description":"可选：artifact=AI产出 / upload=用户上传 / attachment=对话附件；也可填 图片 / 文档"},"tag":{"type":"string","description":"可选，按标签过滤"},"recent_days":{"type":"number","description":"可选，最近 N 天内新增（用户说「上周」填 7，「最近三天」填 3）"},"from_date":{"type":"string","description":"可选，起始日期 yyyy-MM-dd"},"to_date":{"type":"string","description":"可选，结束日期 yyyy-MM-dd"},"limit":{"type":"number","description":"可选，最多返回几条，默认 20"}},"required":[]}""";

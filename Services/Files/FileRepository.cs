@@ -300,7 +300,11 @@ public static class FileRepository
                 PersistLedgerLocked();
             }
 
-            AppLog.Info("Files", $"已登记文件：{meta.Name}（{FileTypes.Label(type)}，{RootMigrationService.FormatSize(meta.Size)}）");
+            // 措辞守则：**登记 ≠ 已上传**。日志里既要说明分类（这文件怎么进来的），
+            // 也要把"还没传上去"写明白 —— 早先这里打的是「已上传」，读日志的人会以为传成功了
+            // （2026-09-16 实测，连排查的人都被它骗过一轮）。
+            AppLog.Info("Files",
+                $"已登记到本机文件区：{meta.Name}（{FileTypes.Label(type)} / {RootMigrationService.FormatSize(meta.Size)}）—— 等待后台上传");
             return (meta.Clone(), null);
         }
         catch (Exception ex)

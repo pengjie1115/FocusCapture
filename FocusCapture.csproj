@@ -43,4 +43,10 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 慢层检查点工程要直接断言 internal 成员的输出（如 FileToolSupport.Describe 里必须体现真实上传状态 ——
+         它是「AI 谎报已上传成功」这条事故的防线，只能靠断言输出守住）。2026-09-16 加入。 -->
+    <InternalsVisibleTo Include="FocusCapture.SyncTests" />
+  </ItemGroup>
+
 </Project>

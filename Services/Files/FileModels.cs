@@ -24,7 +24,11 @@ public static class FileTypes
     public static string Label(string? type) => type switch
     {
         Artifact => "AI 产出",
-        Upload => "已上传",
+        // ⚠️ 这一项曾叫「已上传」—— 它是**分类**（这文件是怎么进来的），不是**状态**（到底传上去没有）。
+        // 名字撞上状态语义的后果很实在：日志里「已登记文件：x.pdf（已上传，1.5 KB）」会直接把排查的人
+        // 和 AI 一起带偏（实测：AI 据此对用户说"已上传成功"，而账本里该文件是 failed）。
+        // 谈"传没传上去"一律用 UploadStates.Label。
+        Upload => "用户上传",
         Attachment => "对话附件",
         _ => "文件",
     };
@@ -107,6 +111,20 @@ public static class UploadStates
     public const string Uploading = "uploading";
     public const string Uploaded = "uploaded";
     public const string Failed = "failed";
+
+    /// <summary>
+    /// 把上传状态翻成人话给工具输出与日志用。**只有 <see cref="Uploaded"/> 才允许说"云端有"** ——
+    /// 其余一律要说清"云端还没有"，否则 AI 会替用户脑补成"已上传成功"（2026-09-16 实测踩到）。
+    /// 注意别拿 <c>FileTypes.Label</c> 当状态用，那是分类。
+    /// </summary>
+    public static string Label(string? state) => state switch
+    {
+        Uploaded => "云端已就绪",
+        Uploading => "正在上传",
+        Failed => "上传失败（云端还没有此文件）",
+        Pending => "等待上传（云端还没有此文件）",
+        _ => "状态未知（云端有没有此文件未确认）",
+    };
 }
 
 /// <summary>
