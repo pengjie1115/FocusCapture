@@ -304,6 +304,12 @@ internal static class Program
         Check(PickHost("""{"error_code":0,"servers":["https://c3.pcs.baidu.com/"]}""") == "https://c3.pcs.baidu.com",
               "域名末尾的斜杠必须被吃掉（否则拼出来是双斜杠的 URL）");
 
+        Check(PickHost("""{"error_code":0,"servers":["c3.pcs.baidu.com"]}""") == "https://c3.pcs.baidu.com",
+              "裸域名必须自动补 https://（服务端两种写法都见过）");
+
+        Check(PickHost("""{"error_code":0,"host":"c3.pcs.baidu.com"}""") == "https://c3.pcs.baidu.com",
+              "没有 servers 时必须能读 host 字段（响应结构不止一种，别只认一种）");
+
         // ── ⑦ 工具输出必须体现真实上传状态（AI 谎报"已上传成功"的正面回归） ──
         // 事故原貌：账本里 5 个文件全是 failed，模型却对用户说"两个文件都已经上传成功，网盘上都能看到了"。
         // 根因不在模型 —— **输出里压根没有"传没传上去"这个信息**，它只能拿「本机已有」去脑补。

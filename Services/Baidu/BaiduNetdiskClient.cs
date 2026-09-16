@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 
 namespace FocusCapture.Services.Baidu;
@@ -632,7 +633,12 @@ public class BaiduNetdiskClient
             var host = PickUploadHost(json);
             if (host != null) return host;
 
-            AppLog.Warn("Baidu", $"获取上传域名：返回里没有可用的 https 域名，改用默认域名 {FallbackUploadHost}");
+            // 挑不到就把**原始响应**写进日志 —— 这是"字段真值"唯一可靠的来源。
+            // 2026-09-16 实测：日志里只写了"没有可用的 https 域名"，看不到响应到底长什么样，
+            // 于是又只能靠猜字段名，白白多绕一轮。以后这一行就是答案。
+            AppLog.Warn("Baidu",
+                $"获取上传域名：响应里没找到可用域名，改用默认域名 {FallbackUploadHost}。" +
+                $"原始响应：{Truncate(json.GetRawText(), 400)}");
             return FallbackUploadHost;
         }
         catch (Exception ex)
@@ -645,26 +651,51 @@ public class BaiduNetdiskClient
     /// <summary>
     /// 从 locateupload 响应里挑一个可用的 https 上传域名；挑不到返回 null（调用方退兜底域名）。
     ///
-    /// 抽成纯函数是为了让检查点能直接钉住它 —— 域名挑错在真机上只表现为"分片 403"，
+    /// 兼容三种形态（都是"可能的形状"，所以调用方在挑不到时会把**原始响应写进日志**）：
+    /// ① <c>servers</c> 数组里的完整地址 "https://xxx"；
+    /// ② <c>servers</c> 数组里的裸域名 "xxx"（自动补 https://）；
+    /// ③ 单个 <c>host</c> 字段。
+    ///
+    /// 抽成纯函数是为了让检查点能直接钉住它 —— 域名挑错在真机上只表现为"分片传不上去"，
     /// 从现象反查回这一行要绕很远（2026-09-16 实测）。
-    /// 契约同其它解析函数：**任何形状都不抛异常**（非字符串元素直接跳过）。
+    /// 契约同其它解析函数：**任何形状都不抛异常**。
     /// </summary>
     public static string? PickUploadHost(JsonElement response)
     {
         if (response.ValueKind != JsonValueKind.Object) return null;
-        if (!response.TryGetProperty("servers", out var servers)) return null;
-        if (servers.ValueKind != JsonValueKind.Array) return null;
 
-        foreach (var item in servers.EnumerateArray())
+        if (response.TryGetProperty("servers", out var servers) && servers.ValueKind == JsonValueKind.Array)
         {
-            if (item.ValueKind != JsonValueKind.String) continue;
-            var host = item.GetString();
-            if (!string.IsNullOrWhiteSpace(host) &&
-                host.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                return host.TrimEnd('/');
+            foreach (var item in servers.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String) continue;
+                var host = NormalizeHost(item.GetString());
+                if (host != null) return host;
+            }
         }
+
+        if (response.TryGetProperty("host", out var single) && single.ValueKind == JsonValueKind.String)
+            return NormalizeHost(single.GetString());
+
         return null;
     }
+
+    /// <summary>
+    /// 把服务端给的域名整成可用的 https 根地址。空值、非 http(s) 协议一律返回 null。
+    /// 裸域名（如 <c>c3.pcs.baidu.com</c>）自动补 https:// —— 服务端两种写法都见过。
+    /// 明确给 http 的宁可不选：token 在 query 上，明文发出去不如退兜底域名。
+    /// </summary>
+    private static string? NormalizeHost(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var v = raw.Trim().TrimEnd('/');
+        if (!v.Contains("://", StringComparison.Ordinal)) return "https://" + v;
+        return v.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? v : null;
+    }
+
+    /// <summary>截断长文本用于日志（留头部即可，别把日志刷爆）。</summary>
+    private static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..max] + $"…（共 {text.Length} 字符）";
 
     /// <summary>
     /// 上传单分片：域名由 <see cref="LocateUploadHostAsync"/> 提供（官方要求），
@@ -695,7 +726,7 @@ public class BaiduNetdiskClient
 
         using (resp)
         {
-            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var body = await ReadBodyAsync(resp.Content, ct).ConfigureAwait(false);
             using var doc = TryParse(body);
             if (doc == null)
             {
@@ -873,10 +904,25 @@ public class BaiduNetdiskClient
 
     // ══════════════════ HTTP 基座 ══════════════════
 
+    /// <summary>
+    /// 读响应体：**自己按 UTF-8 解码，不看服务端声明的 charset**。
+    ///
+    /// 2026-09-16 实测：百度分片上传接口的响应头里带了一个非法 charset，
+    /// 直接调 <c>ReadAsStringAsync</c> 会抛
+    /// "The character set provided in ContentType is invalid. Cannot read content as string" ——
+    /// 而那一刻**分片其实已经传出去了**，却因为"读不出响应体"把整单判成失败。
+    /// 外部返回的声明永远不能当事实用：这里一律按字节读、自己解码。
+    /// </summary>
+    private static async Task<string> ReadBodyAsync(HttpContent content, CancellationToken ct)
+    {
+        var bytes = await content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        return bytes.Length == 0 ? "" : Encoding.UTF8.GetString(bytes);
+    }
+
     private static async Task<JsonElement> GetJsonAsync(string url, CancellationToken ct, bool treatMissingAsEmpty = false)
     {
         using var resp = await Http.GetAsync(url, ct).ConfigureAwait(false);
-        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadBodyAsync(resp.Content, ct).ConfigureAwait(false);
         using var doc = TryParse(body);
         if (doc == null)
         {
@@ -890,7 +936,7 @@ public class BaiduNetdiskClient
     {
         using var content = new FormUrlEncodedContent(form);
         using var resp = await Http.PostAsync(url, content, ct).ConfigureAwait(false);
-        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadBodyAsync(resp.Content, ct).ConfigureAwait(false);
         using var doc = TryParse(body);
         if (doc == null)
             throw new BaiduApiException(2, $"接口返回了无法解析的内容（HTTP {(int)resp.StatusCode}）。");
