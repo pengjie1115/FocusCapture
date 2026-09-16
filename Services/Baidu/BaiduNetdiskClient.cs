@@ -651,14 +651,23 @@ public class BaiduNetdiskClient
     /// <summary>
     /// 从 locateupload 响应里挑一个可用的 https 上传域名；挑不到返回 null（调用方退兜底域名）。
     ///
-    /// 兼容三种形态（都是"可能的形状"，所以调用方在挑不到时会把**原始响应写进日志**）：
-    /// ① <c>servers</c> 数组里的完整地址 "https://xxx"；
-    /// ② <c>servers</c> 数组里的裸域名 "xxx"（自动补 https://）；
-    /// ③ 单个 <c>host</c> 字段。
+    /// <b>真实响应形态（2026-09-16 用本机令牌实测拿到，不再是推测）</b>：
+    /// <code>
+    /// {"error_code":0,"expire":60,"host":"c.pcs.baidu.com","prov":"chongqing","isp":"cnc",
+    ///  "servers":[{"server":"https://c5.pcs.baidu.com"},{"server":"https://c6.pcs.baidu.com"},
+    ///             {"server":"http://c5.pcs.baidu.com"}, ...]}
+    /// </code>
+    /// 三个要点：
+    /// <list type="number">
+    /// <item><c>servers</c> 的元素是**对象**（<c>{"server":"url"}</c>），不是字符串 ——
+    ///   早先只认字符串，于是每次都挑不到，只能退兜底域名（日志里刷"没有可用的 https 域名"）；</item>
+    /// <item>同一批里 https 与 http 混排，**只取 https**（token 在 query 上）；</item>
+    /// <item><c>expire</c> 只有 **60 秒** —— 这也印证了"不跨文件缓存域名"的决定：60 秒太短，
+    ///   任何缓存都会引出"大文件传到一半失败、小文件没事"这类难查问题。</item>
+    /// </list>
     ///
     /// 抽成纯函数是为了让检查点能直接钉住它 —— 域名挑错在真机上只表现为"分片传不上去"，
-    /// 从现象反查回这一行要绕很远（2026-09-16 实测）。
-    /// 契约同其它解析函数：**任何形状都不抛异常**。
+    /// 从现象反查回这一行要绕很远。契约同其它解析函数：**任何形状都不抛异常**。
     /// </summary>
     public static string? PickUploadHost(JsonElement response)
     {
@@ -668,8 +677,7 @@ public class BaiduNetdiskClient
         {
             foreach (var item in servers.EnumerateArray())
             {
-                if (item.ValueKind != JsonValueKind.String) continue;
-                var host = NormalizeHost(item.GetString());
+                var host = ExtractHost(item);
                 if (host != null) return host;
             }
         }
@@ -677,6 +685,19 @@ public class BaiduNetdiskClient
         if (response.TryGetProperty("host", out var single) && single.ValueKind == JsonValueKind.String)
             return NormalizeHost(single.GetString());
 
+        return null;
+    }
+
+    /// <summary>
+    /// 从一个 <c>servers</c> 元素里取出域名。**真实形态是对象** <c>{"server":"https://..."}</c>，
+    /// 同时兼容直接给字符串的写法（两种都留着，反正代价只是几行）。
+    /// </summary>
+    private static string? ExtractHost(JsonElement item)
+    {
+        if (item.ValueKind == JsonValueKind.String) return NormalizeHost(item.GetString());
+        if (item.ValueKind == JsonValueKind.Object &&
+            item.TryGetProperty("server", out var s) && s.ValueKind == JsonValueKind.String)
+            return NormalizeHost(s.GetString());
         return null;
     }
 

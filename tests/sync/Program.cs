@@ -307,6 +307,17 @@ internal static class Program
         Check(PickHost("""{"error_code":0,"servers":["c3.pcs.baidu.com"]}""") == "https://c3.pcs.baidu.com",
               "裸域名必须自动补 https://（服务端两种写法都见过）");
 
+        // 真实响应样本（2026-09-16 用本机令牌实测拿到，见 REGRESSION B-14）：
+        // servers 的元素是**对象** {"server":"url"}，不是字符串。
+        // 早先只认字符串元素 → 每次都挑不到域名 → 只能退兜底，日志里刷"没有可用的 https 域名"。
+        var realLocate = """{"error_code":0,"expire":60,"host":"c.pcs.baidu.com","prov":"chongqing","isp":"cnc","servers":[{"server":"https://c5.pcs.baidu.com"},{"server":"https://c6.pcs.baidu.com"},{"server":"http://c5.pcs.baidu.com"}]}""";
+        Check(PickHost(realLocate) == "https://c5.pcs.baidu.com",
+              "真实响应（servers 是对象数组）必须挑出第一个 https 域名 —— 只认字符串就会挑不到");
+
+        Check(PickHost("""{"error_code":0,"servers":[{"server":"http://c5.pcs.baidu.com"},{"server":"https://c6.pcs.baidu.com"}]}""")
+                  == "https://c6.pcs.baidu.com",
+              "对象数组里 https 排在 http 后面时，仍必须跳到 https（token 在 query 上，不能走明文）");
+
         Check(PickHost("""{"error_code":0,"host":"c3.pcs.baidu.com"}""") == "https://c3.pcs.baidu.com",
               "没有 servers 时必须能读 host 字段（响应结构不止一种，别只认一种）");
 
