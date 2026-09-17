@@ -6,7 +6,7 @@ namespace FocusCapture.Services.Sync;
 
 /// <summary>
 /// Windows DPAPI 封装（P/Invoke crypt32.dll CryptProtectData/CryptUnprotectData，CurrentUser 作用域）。
-/// 项目依赖克制（QUEST-5 §1：不用第三方 NuGet），且当前环境无外网装不了官方
+/// 项目依赖克制（不用第三方 NuGet），且当前环境无外网装不了官方
 /// System.Security.Cryptography.ProtectedData 包——用系统原生 API 等价实现（2026-08-13 审查调整）。
 /// 用途：WebDAV 授权码本机加密存储（settings.json 中为 DPAPI 密文）。
 /// </summary>
@@ -52,7 +52,7 @@ internal static class Dpapi
         }
     }
 
-    /// <summary>解密失败（换机器/损坏/被篡改）返回 null——调用方提示重新配置，不崩（QUEST-5 第六步 1）。</summary>
+    /// <summary>解密失败（换机器/损坏/被篡改）返回 null——调用方提示重新配置，不崩。</summary>
     public static string? Unprotect(string protectedBase64)
     {
         try

@@ -680,7 +680,7 @@
 
 ### B-16 Agent 工具扩展 + 文档解析（Services/Agent/ + Services/Files/ + Services/AI/PromptBuilder + AIDialogWindow Agent 路径，2026-09-17 新增）
 
-> 设计依据：`docs/Agent工具盘点与新增建议.md`（工具清单与能力边界）、`docs/Agent工具扩展-影响面分析与执行计划.md`（决策记录）。
+> 设计依据（原文档已解耦，可删）：工具清单与能力边界见 `Services/Agent/` 下各 `*Tools.cs` 的类注释与 `AIDialogWindow.EnsureAgentRegistry()` 的注册表；逐项决策记录见 `BRANCHES.md` 本节与提交历史。
 > 涉及文件：`Services/Agent/`（LocalTools / FileTools / RecycleBinTools / ExportTools / DocumentTools）、
 > `Services/Files/DocumentTextExtractor.cs`（新）、`Services/Files/XlsxTextExtractor.cs`（新）、
 > `Services/Files/FileRepository.cs`（ReadTextAsync 扩展）、`Services/AI/ChatAttachmentService.cs`（PDF/xlsx 支持）、

@@ -8,11 +8,11 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- 测试相关目录必须从默认编译项排除，否则 WPF 的 **/*.cs glob 会吞掉测试 Program.cs 导致 CS0579 重复定义：
-         ① docs/fc-sync-test-archive/ —— QUEST-5 同步验收测试归档（2026-08-27）
+         ① docs/fc-sync-test-archive/ —— 同步验收测试归档（2026-08-27，已于 2026-09-17 移出仓库）
          ② tests/ —— 常态化自动化检查点工程（2026-09-11 建立，独立 csproj，不参与主程序编译）
          ③ tools/baidu-diag/ —— 百度网盘真机联调诊断（2026-09-16 建立，引用主项目做同栈接口验证） -->
     <DefaultItemExcludes>$(DefaultItemExcludes);docs\fc-sync-test-archive\**;tests\**;tools\**</DefaultItemExcludes>
-    <!-- QUEST-4：exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
+    <!-- exe 编译期图标（任务栏/资源管理器大图标可见），用户托盘图标另由 SettingsWindow 动态加载 -->
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <!-- 无外网环境：禁用包漏洞审计（NuGetAudit 每次构建尝试连 nuget.org 报 NU1900，破坏验收 A 的 0 警告） -->
     <NuGetAudit>false</NuGetAudit>
@@ -32,7 +32,7 @@
     <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
   </PropertyGroup>
 
-  <!-- QUEST-4：.NET 8 SDK 默认不自动嵌入 ApplicationIcon 到 apphost，用 PostBuildEvent 调用 UpdateResource 嵌入
+  <!-- .NET 8 SDK 默认不自动嵌入 ApplicationIcon 到 apphost，用 PostBuildEvent 调用 UpdateResource 嵌入
        路径：系统 PATH 上的 python 解释器（聚焦 .py 嵌入 ICO 到 bin/Release/.../FocusCapture.exe） -->
   <Target Name="EmbedAppIcon" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' AND Exists('Resources\app.ico')">
     <Exec Command="python Resources\embed_icon.py" ContinueOnError="true"/>

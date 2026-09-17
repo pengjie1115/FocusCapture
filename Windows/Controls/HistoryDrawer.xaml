@@ -126,7 +126,7 @@
                                 ToolTip="分组管理（新建 / 重命名 / 删除）" Click="BtnGroups_Click"/>
                         <Button x:Name="BtnRecycleBin" Content="回收站" Style="{StaticResource MiniToolButton}"
                                 ToolTip="会话回收站（恢复 / 彻底删除）" Click="BtnRecycleBin_Click"/>
-                        <!-- 收起：面板+左箭头图标用 Path 绘制（不依赖字体字形，方案文档 §5） -->
+                        <!-- 收起：面板+左箭头图标用 Path 绘制（不依赖字体字形） -->
                         <Button x:Name="BtnCollapse" Style="{StaticResource MiniToolButton}" Padding="4,3"
                                 ToolTip="收起历史会话" Click="BtnCollapse_Click" Margin="2,0,0,0">
                             <Path Width="10" Height="10" Stretch="Uniform"

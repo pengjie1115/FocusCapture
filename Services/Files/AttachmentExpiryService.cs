@@ -3,7 +3,7 @@ using System.Threading;
 namespace FocusCapture.Services.Files;
 
 /// <summary>
-/// 对话附件到期清理（方案 §5.6，决策 10；2026-09-16 按实机结论重构）。
+/// 对话附件到期清理（2026-09-16 按实机结论重构）。
 ///
 /// 只管 <see cref="FileTypes.Attachment"/> 一类 —— AI 产出与用户主动上传的文件云端永久保留。
 /// 这条分级是刻意的：一刀切清理会让网盘从「全量权威仓库」退化成「滚动窗口」，

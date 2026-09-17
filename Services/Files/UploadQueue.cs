@@ -3,7 +3,7 @@ using System.Threading;
 namespace FocusCapture.Services.Files;
 
 /// <summary>
-/// 后台上传队列（方案 §5.1 / §5.2）。
+/// 后台上传队列。
 ///
 /// 设计要点：
 /// 1. <b>先本地后云端，绝不阻塞用户</b> —— 文件登记完就返回，上传在后台慢慢走

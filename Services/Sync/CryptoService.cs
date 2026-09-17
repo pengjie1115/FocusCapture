@@ -6,7 +6,7 @@ using System.Text;
 namespace FocusCapture.Services.Sync;
 
 /// <summary>
-/// E2EE 加密模块（QUEST-5 任务4）：主密码 PBKDF2 派生 DEK + AES-256-GCM 加解密。
+/// E2EE 加密模块：主密码 PBKDF2 派生 DEK + AES-256-GCM 加解密。
 /// 密钥永不上传；盐明文存云端 sync_meta.json（跨设备一致的关键，盐无需保密）；
 /// 只加密 SyncNote.Content / Tags[]，Id/CreatedAt/UpdatedAt/Deleted/DeviceId 明文（引擎对账需要）。
 /// 本地 MD 明文不动（本地明文兜底是密钥重置的前提）。
@@ -35,7 +35,7 @@ public static class CryptoService
         return Rfc2898DeriveBytes.Pbkdf2(masterPassword, salt, Pbkdf2Iterations, HashAlgorithmName.SHA256, KeySize);
     }
 
-    /// <summary>主密码强度校验：≥8 位且含字母 + 数字（QUEST-5 第八步要求）。</summary>
+    /// <summary>主密码强度校验：≥8 位且含字母 + 数字。</summary>
     public static bool IsValidMasterPassword(string? password)
     {
         if (string.IsNullOrEmpty(password) || password.Length < 8) return false;

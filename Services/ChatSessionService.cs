@@ -250,7 +250,7 @@ public class ChatSessionService
         return result;
     }
 
-    /// <summary>列表预览：重命名标题优先，无标题回退首条用户消息前 40 字（方案文档 4.2-2）</summary>
+    /// <summary>列表预览：重命名标题优先，无标题回退首条用户消息前 40 字</summary>
     private static string BuildPreview(string? title, string firstUser)
     {
         if (!string.IsNullOrWhiteSpace(title)) return title;

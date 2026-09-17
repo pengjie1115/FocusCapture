@@ -238,7 +238,7 @@
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
-                                            <!-- 云文件卡片（2026-09-16，方案 §6.4）：从网盘取回的文件落进对话，
+                                            <!-- 云文件卡片（2026-09-16）：从网盘取回的文件落进对话，
                                                  卡片上给三个动作。取回后文件已在本机，所以「打开 / 定位」几乎零成本。 -->
                                             <ItemsControl x:Name="BubbleCloudFiles"
                                                           ItemsSource="{Binding CloudFiles}"
@@ -358,7 +358,7 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- 已选择的本地文件（2026-09-16，方案 §6.2 红线）：
+                    <!-- 已选择的本地文件（2026-09-16，红线）：
                          用户点「选择文件」后这里出现一张牌号卡片，AI 只能引用卡片上的牌号（file:yyyyMMdd-N）。
                          路径永远不进模型 —— 模型编不出牌号，也就碰不到没被点过的文件。
                          刻意与下方附件卡片区分配色（金黄描边）：附件是要发给模型的内容，这里是「AI 可操作的本机文件」。 -->

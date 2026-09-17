@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace FocusCapture.Models;
 
 /// <summary>
-/// 云同步配置（QUEST-5，进 settings.json，随 AppSettings 源生成序列化）。
+/// 云同步配置（进 settings.json，随 AppSettings 源生成序列化）。
 /// WebDavToken 为 DPAPI 密文（ProtectedData.CurrentUser），RecoveryCodeHash 为加盐哈希；
 /// 主密码 / 派生密钥 / 恢复码明文任何位置都不存。
 /// </summary>

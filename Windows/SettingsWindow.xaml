@@ -942,7 +942,7 @@
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="132,2,0,0"/>
                 </StackPanel>
 
-                <!-- ── 板块 8：文件与网盘（2026-09-16，方案 §2.4 + §6.2） ──
+                <!-- ── 板块 8：文件与网盘（2026-09-16） ──
                      注意：本板块内**不放独立分组标题**（导航面板的搜索索引会把非灰色独立 TextBlock
                      当成「下一行的名称」，分组标题会把真正的设置项名称顶掉）。分组信息写进各行 label。 -->
                 <StackPanel x:Name="PanelFiles" Margin="24,18" Visibility="Collapsed">

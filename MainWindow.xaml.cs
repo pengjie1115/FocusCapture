@@ -16,7 +16,7 @@ public partial class MainWindow : Window
     private HotkeyService? _hotkeyService;
     private NoteService? _noteService;
     private IChatProvider? _aiProvider;              // v3.5：共享 AI provider（面板编辑时间识别 LLM 兜底 + AI 对话框同源配置），设置变更后重建
-    private SyncEngine? _syncEngine;            // QUEST-5：云端同步引擎（可插拔 Provider，配置完整才创建）
+    private SyncEngine? _syncEngine;            // 云端同步引擎（可插拔 Provider，配置完整才创建）
     private ChatSyncEngine? _chatSyncEngine;    // 2026-09：AI 会话同步引擎（搭 _syncEngine 周期，共享闸；随 CreateSyncEngine 一并创建/重建）
     private FileStoreSync? _fileStoreSync;      // 2026-09-16：网盘文件清单同步（同周期搭车；只同步几 KB 元数据，文件本体按需取回）
     private FloatBall? _floatBall;
@@ -69,7 +69,7 @@ public partial class MainWindow : Window
             _hotkeyService.HotkeyPressed += OnHotkeyPressed;
             _hotkeyService.RegisterAll();
 
-            // QUEST-5：云端同步引擎（本机变更 → 合并窗口推送；自动同步开 → 启动自动解锁 + 30min 轮询）
+            // 云端同步引擎（本机变更 → 合并窗口推送；自动同步开 → 启动自动解锁 + 30min 轮询）
             _noteService.NotesChanged += OnNotesChanged;
             _syncEngine = CreateSyncEngine();
             if (_syncEngine != null && _syncEngine.TryUnlockWithStoredToken())
@@ -645,7 +645,7 @@ public partial class MainWindow : Window
         catch (Exception ex) { LogStartupError("OpenDailySummary", ex); }
     }
 
-    // ── QUEST-5：同步引擎生命周期 ──
+    // ── 同步引擎生命周期 ──
 
     // ── 文件仓库生命周期（2026-09-16） ──
 
@@ -693,7 +693,7 @@ public partial class MainWindow : Window
     /// 与改造前「附件只存本机」的行为完全一致。
     ///
     /// 注意这里只管「自动」：开关关着时用户显式说「把这张图存上去」，仍会由 Agent 工具走显式路径上传
-    /// （显式意图优先 —— 方案决策 15）。
+    /// （显式意图优先）。
     /// </summary>
     private void OnAttachmentStored(ChatAttachment attachment)
     {

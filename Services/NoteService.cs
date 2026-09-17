@@ -31,7 +31,7 @@ public class NoteService
     public static DateTime TodoDisplayTime(NoteEntry e)
         => e.Type == NoteType.Todo && e.DueTime.HasValue ? e.DueTime.Value : e.Timestamp;
 
-    /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送（QUEST-5 任务6）。</summary>
+    /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送。</summary>
     public event Action? NotesChanged;
 
     /// <summary>本机"行消失"事件（v4 2026-09-12 起两处触发）：(相对路径, 消失的原始行)。
@@ -314,7 +314,7 @@ public class NoteService
             if (removedLines.Count == 0) return false;
 
             // 先写回收站（成功）→ 再删原行（2026-08-13 审查修正：防"行已删但回收站没记"的数据永久丢失，
-            // 见 QUEST-5 §2 铁律与反作弊 9；不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
+            // 不再 MarkDeleted，避免 v2.0 软删记录与回收站双轨冲突）
             if (!_recycleBin.Add(Path.GetFileName(filePath), removedLines))
             {
                 AppLog.Error("Note", $"删除中止：回收站写入失败，原行保留 ({filePath})");
@@ -841,7 +841,7 @@ public class NoteService
         return dates;
     }
 
-    // ── 同步层行级读写扩展（QUEST-5 任务2）：只新增方法，不改现有方法 ──
+    // ── 同步层行级读写扩展：只新增方法，不改现有方法 ──
 
     /// <summary>
     /// 遍历 NotesPath 下全部 .md，逐行解析（不合并标记行，同步层按纯行级处理），

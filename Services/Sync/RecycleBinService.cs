@@ -33,7 +33,7 @@ public class RecycleBinEntry
 }
 
 /// <summary>
-/// 本地回收站（QUEST-5 任务5）：删除先进回收站（N=30 天），可恢复；确认清空才物理删除。
+/// 本地回收站：删除先进回收站（N=30 天），可恢复；确认清空才物理删除。
 /// 存储：NotesPath/.recycle_bin/ 下的 recycle-*.json。与 v2.0 DeletedNoteService（deleted.json）并存互不干扰。
 /// </summary>
 public class RecycleBinService
@@ -51,7 +51,7 @@ public class RecycleBinService
     /// <summary>
     /// 删除时移入回收站：记录被删的行（含关联标记行）。
     /// 写成功返回 true；失败返回 false——调用方**必须中止删除**（先写回收站成功再删原行，
-    /// 2026-08-13 审查修正：防止"行已删但回收站没记"的数据永久丢失，见 QUEST-5 §2/反作弊 9）。
+    /// 2026-08-13 审查修正：防止"行已删但回收站没记"的数据永久丢失）。
     /// </summary>
     public bool Add(string relativePath, IReadOnlyList<string> lines)
     {
@@ -165,7 +165,7 @@ public class RecycleBinService
 
     /// <summary>
     /// 清空回收站：物理删除全部记录，返回被清空的记录（供同步层生成 Deleted=true 软删标记，
-    /// QUEST-5 第五步 2：清空回收站 → 对该笔记触发同步软删）。
+    /// 清空回收站 → 对该笔记触发同步软删）。
     /// </summary>
     public List<RecycleBinEntry> PurgeAll()
     {

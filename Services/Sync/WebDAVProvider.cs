@@ -13,7 +13,7 @@ using FocusCapture.Models;
 namespace FocusCapture.Services.Sync;
 
 /// <summary>
-/// 坚果云 WebDAV Provider（QUEST-5 任务7）：PROPFIND/PUT/GET/DELETE/MKCOL + sync_meta.json + 桶清单 + 401/503 区分。
+/// 坚果云 WebDAV Provider：PROPFIND/PUT/GET/DELETE/MKCOL + sync_meta.json + 桶清单 + 401/503 区分。
 /// - 整桶 PUT 覆盖天然幂等（重复推送同一桶结果一致）；
 /// - 请求频率由引擎按 Limits 控制（30s 合并窗口天然限流），本类不做 sleep；
 /// - 桶规则：ISO 周分桶（updatedAt UTC），≤Limits.MaxBatchSize 条/桶，文件名 notes-{yyyy-Www}-{seq}.json（§5.0.3）。
@@ -168,7 +168,7 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
 
     // ── WebDAV 方言 ──
 
-    /// <summary>首次同步前确保 Base URL 目录存在：PROPFIND 400/404/405/409 → MKCOL（坚果云自定义子目录不会自动存在，QUEST-5 审查补充；400 为坚果云对不存在目录的实测返回，2026-09-05 新设备验证补充）。</summary>
+    /// <summary>首次同步前确保 Base URL 目录存在：PROPFIND 400/404/405/409 → MKCOL（坚果云自定义子目录不会自动存在，审查补充；400 为坚果云对不存在目录的实测返回，2026-09-05 新设备验证补充）。</summary>
     public async Task EnsureDirectoryAsync(CancellationToken ct)
     {
         var (exists, status) = await PropFindAsync(ct).ConfigureAwait(false);
@@ -268,7 +268,7 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
         => SendAsync(() => new HttpRequestMessage(new HttpMethod("MKCOL"), _baseUrl), "创建目录", _baseUrl, ct);
 
     /// <summary>
-    /// 统一发送：401/503/网络错误分类（QUEST-5 §7 第七步 5）+ 限流自动重试（2026-09-09）。
+    /// 统一发送：401/503/网络错误分类 + 限流自动重试（2026-09-09）。
     /// 503/429 自动退避重试（默认 2 次：5s/15s；退避时长见构造参数，测试可注入 0）——坚果云限流惩罚多为短时突发，
     /// 单发必失败会让整轮同步报废；重试经请求工厂重建（HttpRequestMessage 不可复用）。仍失败才抛给引擎（引擎按 auto/manual 各自处理）。
     /// </summary>

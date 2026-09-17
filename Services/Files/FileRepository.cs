@@ -4,7 +4,7 @@ using FocusCapture.Services.AI;
 
 namespace FocusCapture.Services.Files;
 
-/// <summary>本地检索条件（方案 §6.3：纯离线查元数据，不联网、不消耗网盘额度）。</summary>
+/// <summary>本地检索条件（纯离线查元数据，不联网、不消耗网盘额度）。</summary>
 public sealed class FileQuery
 {
     /// <summary>文件名模糊匹配（不区分大小写）</summary>
@@ -30,7 +30,7 @@ public sealed class FileQuery
 }
 
 /// <summary>
-/// 文件仓库（方案 §4 / §5，本次更新的地基）。
+/// 文件仓库（本次更新的地基）。
 ///
 /// 「本地当工作区，网盘当仓库」：检索、筛选、分析全在本地完成（零成本、瞬时），文件本体按需取回。
 ///
@@ -752,7 +752,7 @@ public static class FileRepository
 
     /// <summary>
     /// 彻底删除：云端删（入回收站）+ 元数据打墓碑 + 清本地副本与账本。
-    /// 与「清本地（淘汰）」的区别见方案 §5.5：淘汰只删本地、元数据与云端都留着。
+    /// 与「清本地（淘汰）」的区别：淘汰只删本地、元数据与云端都留着。
     /// </summary>
     public static async Task<(bool Ok, string Message)> DeletePermanentlyAsync(string id, CancellationToken ct = default)
     {

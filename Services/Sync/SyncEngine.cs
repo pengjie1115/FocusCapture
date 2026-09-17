@@ -20,7 +20,7 @@ public record SyncResult(bool Success, string? Error)
 }
 
 /// <summary>
-/// 核心同步引擎（QUEST-5 任务6）：游标 / 回声识别 / push 全量合并 / 冲突 LWW+PrevContent / 30s 合并窗口 /
+/// 核心同步引擎：游标 / 回声识别 / push 全量合并 / 冲突 LWW+PrevContent / 30s 合并窗口 /
 /// 自愈重置 / 指数退避 / PendingDeletes。
 /// - 线程：后台执行（Timer 回调 → Task.Run），SemaphoreSlim(1) 防并发；UI 更新由订阅方 marshal 到 Dispatcher；
 /// - 本机明文是唯一事实源，云端只是镜像（§5.0.4）；
@@ -253,7 +253,7 @@ public class SyncEngine
         _mergeTimer.Change(_mergeWindow, Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>上传合并间隔配置变更后调用：重排等待中的合并窗口，使新配置立即生效（方案文档 §3.3 配套要求，不可漏）。</summary>
+    /// <summary>上传合并间隔配置变更后调用：重排等待中的合并窗口，使新配置立即生效（配套要求，不可漏）。</summary>
     public void RefreshMergeWindow()
     {
         if (_dirty) _mergeTimer.Change(_mergeWindow, Timeout.InfiniteTimeSpan);
@@ -499,7 +499,7 @@ public class SyncEngine
 
             if (cloud.Deleted)
             {
-                // 软删落地：本地有对应行 → 移入回收站（先写回收站成功再删行，QUEST-5 §2 铁律）
+                // 软删落地：本地有对应行 → 移入回收站（先写回收站成功再删行）
                 if (localLines.TryGetValue(cloud.Id, out var local))
                 {
                     // 本机行时间戳 ≥ 删除时间 → 本机是删除后重新录入的同内容行，本机 wins（push 覆盖墓碑）
@@ -645,7 +645,7 @@ public class SyncEngine
     }
 
     /// <summary>
-    /// 清空回收站联动（QUEST-5 第五步 2）：把全部被清空记录转为 Deleted=true + Purged=true 的 SyncNote 压入 PendingDeletes。
+    /// 清空回收站联动：把全部被清空记录转为 Deleted=true + Purged=true 的 SyncNote 压入 PendingDeletes。
     /// Content 用完整原始行密文（与普通行一致）；Tags 规则同 ReadAllLines（灵感_*.md → []，其余 → [文件名]）。
     /// CreatedAt 用原始行时间戳；**UpdatedAt 必须用软删发生时间（Now）**——否则增量拉取
     /// （UpdatedAt &gt;= since 过滤）会把软删标记漏掉（原行时间戳 ≤ 他端游标）。
@@ -751,7 +751,7 @@ public class SyncEngine
 
     /// <summary>
     /// 自愈重置：清空本地游标 + 清空云端全部桶（PushAsync 空集 → 孤儿桶全删）→ 全量重新上传。
-    /// UI 二次确认由调用方负责（QUEST-5 第七步 6）。
+    /// UI 二次确认由调用方负责。
     /// </summary>
     public async Task<SyncResult> ResetSyncAsync(CancellationToken ct = default)
     {

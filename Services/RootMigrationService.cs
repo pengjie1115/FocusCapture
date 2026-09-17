@@ -18,7 +18,7 @@ public sealed record RootValidation(bool Ok, string Message, RootTargetState Sta
 public sealed record RootMigrationResult(bool Ok, string Message, int Files, long Bytes);
 
 /// <summary>
-/// 数据根迁移（2026-09-16，方案 §2.4 决策 16/17）。
+/// 数据根迁移（2026-09-16）。
 ///
 /// 最坏后果是丢笔记，所以这套逻辑的原则只有一条：**任何一步不确定就停，且永不破坏已有数据**。
 /// 具体保障：

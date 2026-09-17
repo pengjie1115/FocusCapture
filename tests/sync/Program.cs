@@ -20,8 +20,8 @@ using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 
 /// <summary>
-/// FocusCapture QUEST-5 同步验收测试（单机双设备模拟，验收 B/C/D/E/F）。
-/// - 本地 WebDAV 桩（HttpListener 实现 PROPFIND/PUT/GET/DELETE/MKCOL）替代真实坚果云（QUEST-5 §8 联调说明）；
+/// FocusCapture 同步验收测试（单机双设备模拟，验收 B/C/D/E/F）。
+/// - 本地 WebDAV 桩（HttpListener 实现 PROPFIND/PUT/GET/DELETE/MKCOL）替代真实坚果云；
 /// - 两台设备 A/B：独立 NotesPath + 独立 AppSettings（内存）+ 同一桩地址；
 /// - 测试前备份/恢复真实 settings.json（SyncEngine 内部会调 AppSettings.Save）。
 /// </summary>
@@ -53,7 +53,7 @@ internal static class Program
 
     private static async Task<int> Main()
     {
-        Console.WriteLine("=== FocusCapture 同步检查点（原 QUEST-5 验收测试）===");
+        Console.WriteLine("=== FocusCapture 同步检查点 ===");
 
         // ── 数据隔离（2026-09-11）──
         // 全程改道到临时沙箱，绝不触碰用户真实 %AppData%\FocusCapture
@@ -376,9 +376,9 @@ internal static class Program
     // ══════════════════ 网盘文件仓库（2026-09-16） ══════════════════
     //
     // 本组守护三件最容易出大事的东西：
-    //   ① 红线：AI 不能凭空构造牌号去读没被用户选过的文件（方案 §6.2）
-    //   ② 合并：多设备合并规则（元数据近似只增不改，所以规则能这么简单，方案 §4.3）
-    //   ③ 保护：还没传上去的文件绝不能被本地淘汰清掉 —— 那是真丢数据（方案 §5.4）
+    //   ① 红线：AI 不能凭空构造牌号去读没被用户选过的文件
+    //   ② 合并：多设备合并规则（元数据近似只增不改，所以规则能这么简单）
+    //   ③ 保护：还没传上去的文件绝不能被本地淘汰清掉 —— 那是真丢数据
     // 全程跑在主流程已建好的临时沙箱里（RootOverride），绝不触碰真实数据目录。
 
     // ══════════════════ Agent 工具（2026-09-17） ══════════════════
@@ -1863,7 +1863,7 @@ internal sealed class FailingSyncProvider : ISyncProvider
 }
 
 /// <summary>
-/// 最小 WebDAV 桩：PROPFIND/PUT/GET/DELETE/MKCOL（QUEST-5 §8 联调替代方案）。
+/// 最小 WebDAV 桩：PROPFIND/PUT/GET/DELETE/MKCOL（联调替代方案）。
 /// 用 TcpListener 手写 HTTP（HttpListener 需 http.sys URL 预留，无外网沙箱环境会抛"句柄无效"）。
 /// </summary>
 internal sealed class TestWebDavServer : IDisposable

@@ -4,7 +4,7 @@ namespace FocusCapture.Services.Files;
 public sealed record FileHandleInfo(string Id, string FileName, string Path, long Size, DateTime CreatedAt);
 
 /// <summary>
-/// 文件句柄（方案 §6.2 —— 本次更新最重要的一条红线）。
+/// 文件句柄 —— 本次更新最重要的一条红线。
 ///
 /// <b>问题的本质</b>：如果工具做成 upload_file(path)，path 由模型填，模型就能编造**任意路径**，
 /// 等于把整台电脑的文件系统向 AI 敞开。这与 LocalTools「只作用于笔记库」的沙箱设计直接冲突。

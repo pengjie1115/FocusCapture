@@ -74,7 +74,7 @@ public class AppSettings
     public bool AgentEnabled { get; set; } = false;   // 默认关：关闭时 AI 对话行为与旧版完全一致
     public bool AgentWriteConfirmPopup { get; set; } = false; // 默认不弹窗：写操作靠系统提示词对话内确认 + 回收站 + 运行日志兜底
     public int AgentMaxToolRounds { get; set; } = 15;  // 工具调用往返轮数上限：原硬编码 5 偏低（多步工具易触顶），默认 15
-    public double AiDrawerWidth { get; set; } = 240;   // AI 对话历史抽屉记忆宽度（拖拽后跨启动恢复；收起状态不记忆，方案文档 §7 设置项 3）
+    public double AiDrawerWidth { get; set; } = 240;   // AI 对话历史抽屉记忆宽度（拖拽后跨启动恢复；收起状态不记忆）
 
     // ── 运行日志 ──
     public int LogRetentionDays { get; set; } = 30;   // 日志保留天数（1-365，超期自动清理）
@@ -153,7 +153,7 @@ public class AppSettings
     public bool VoiceTopmost { get; set; } = false;
     public double VoiceSplitterPosition { get; set; } = 0.65; // 正文占比 (0.3~0.9)
 
-    // ── 云同步（QUEST-5）──
+    // ── 云同步 ──
     public SyncSettings Sync { get; set; } = new();
 
     // ── v3.5 待办与提醒 ──

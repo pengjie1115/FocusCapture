@@ -62,7 +62,7 @@ public interface ISyncProvider
 
     /// <summary>
     /// 增量拉取：返回 since 之后的变更 + 最新时间。
-    /// WebDAV 无服务端游标：语义 = 拉取全部桶后按 UpdatedAt &gt; since 客户端过滤（含边界，见 QUEST-5 §7 第二步 5），
+    /// WebDAV 无服务端游标：语义 = 拉取全部桶后按 UpdatedAt &gt; since 客户端过滤（含边界），
     /// NewSince = 当前扫描到的最新时间。
     /// </summary>
     Task<SyncPullResult> PullAsync(string? since, CancellationToken ct);
@@ -80,13 +80,13 @@ public interface ISyncProvider
 
     /// <summary>
     /// 读取云端元数据（E2EE 盐 / 桶清单 / 游标）。云端无元数据（首配设备）返回 null。
-    /// QUEST-5 审查补充（2026-08-13）：密钥重置后其他设备需比对"云端盐 vs 本地缓存盐"，故契约提供此方法。
+    /// 审查补充（2026-08-13）：密钥重置后其他设备需比对"云端盐 vs 本地缓存盐"，故契约提供此方法。
     /// </summary>
     Task<SyncMeta?> GetMetaAsync(CancellationToken ct);
 
     /// <summary>
     /// 保存 E2EE 盐到云端元数据（首配设备生成盐后上传，跨设备派生同一 DEK 的关键；幂等，重复调用结果一致）。
-    /// QUEST-5 审查补充（2026-08-13）：首配盐必须随 sync_meta.json 上传，契约提供此方法。
+    /// 审查补充（2026-08-13）：首配盐必须随 sync_meta.json 上传，契约提供此方法。
     /// </summary>
     Task SaveSaltAsync(string saltBase64, CancellationToken ct);
 }

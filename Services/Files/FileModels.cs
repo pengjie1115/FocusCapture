@@ -64,7 +64,7 @@ public static class CloudStates
 }
 
 /// <summary>
-/// 文件元数据（方案 §4.1）。**只记客观事实，不记任何设备状态** —— 这是整个设计的地基：
+/// 文件元数据。**只记客观事实，不记任何设备状态** —— 这是整个设计的地基：
 /// 元数据近似只增不改，多设备合并才降级成「按 id 求并集」这么简单。
 /// 会变的状态（有没有本地副本、传到哪一步了）一律放 CacheEntry，那边只存本机、绝不上云。
 /// </summary>
@@ -127,7 +127,7 @@ public sealed class FileMetadata
     };
 }
 
-/// <summary>本机缓存条目的来源（方案 §4.2 防线①的载体）。</summary>
+/// <summary>本机缓存条目的来源（防线①的载体）。</summary>
 public static class CacheOrigins
 {
     /// <summary>本地新增，需要上传。</summary>
@@ -161,7 +161,7 @@ public static class UploadStates
 }
 
 /// <summary>
-/// 本机缓存账本条目（方案 §4.2）。**只存在本机，绝不上云** ——
+/// 本机缓存账本条目。**只存在本机，绝不上云** ——
 /// 淘汰是设备级事件，写进云端就会把「自动过期」变成「永久删除」。
 /// </summary>
 public sealed class CacheEntry

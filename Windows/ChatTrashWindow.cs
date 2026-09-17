@@ -8,7 +8,7 @@ namespace FocusCapture.Windows;
 
 /// <summary>
 /// 会话回收站窗口（代码构造，无 XAML）：查看 / 恢复（移回主目录）/ 彻底删除（本地物理删）/ 清空。
-/// 本期均为本地行为，不跨端传播（方案文档 4.6 / 3.5 闭环①；恢复不触发同步 Notify）。
+/// 本期均为本地行为，不跨端传播（恢复不触发同步 Notify）。
 /// </summary>
 public class ChatTrashWindow : Window
 {

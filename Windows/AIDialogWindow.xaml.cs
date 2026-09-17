@@ -60,7 +60,7 @@ public class ChatAttachmentViewModel
 }
 
 /// <summary>
-/// 对话里的云文件卡片（2026-09-16，方案 §6.4）。
+/// 对话里的云文件卡片（2026-09-16）。
 /// 与附件卡片是两套东西：附件是「要发给模型看的内容」，这里是「从网盘取回到本机的文件」，
 /// 所以独立成一个 VM，避免把两种语义混进同一个模板里。
 /// </summary>
@@ -735,7 +735,7 @@ public partial class AIDialogWindow : Window
         _ = AddFilesAsync(dlg.FileNames);
     }
 
-    // ── 选择文件：只签发牌号，不复制、不发给模型（2026-09-16，方案 §6.2） ──
+    // ── 选择文件：只签发牌号，不复制、不发给模型（2026-09-16） ──
 
     /// <summary>
     /// 「选择文件」入口。**只做一件事：给用户点过的文件签发一个牌号。**
@@ -794,7 +794,7 @@ public partial class AIDialogWindow : Window
         }
     }
 
-    // ── 云文件卡片的三个交付动作（2026-09-16，方案 §6.4） ──
+    // ── 云文件卡片的三个交付动作（2026-09-16） ──
 
     private void CloudFile_Open_Click(object sender, RoutedEventArgs e)
     {
@@ -1629,7 +1629,7 @@ public partial class AIDialogWindow : Window
 
     // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
 
-    private const double DrawerMinWidth = 150;   // 防拖没了（方案文档 §6）
+    private const double DrawerMinWidth = 150;   // 防拖没了
     private const double DrawerMaxWidth = 480;
 
     /// <summary>展开/收起抽屉（"历史"按钮与抽屉内收起按钮共用）。
@@ -1949,7 +1949,7 @@ public partial class AIDialogWindow : Window
         // 导出（2026-09-17）：落到设置里的默认导出文件夹，**不上传网盘**（用户明确要求）
         registry.Register(new ExportNotesTool(_noteService, _settings));
 
-        // 文件类工具（2026-09-16，方案 §6.1 五条链路）：
+        // 文件类工具（2026-09-16，五条链路）：
         // 这是本次更新的基座 —— 没有这几个工具，网盘接入就退化成一个需要手动操作的同步盘。
         // 注意它们**没有路径参数**：链路的可达范围由用户点过的牌号（handle）与本地元数据编号（file_id）决定，
         // 模型编不出这两样东西，因此拿不到没被授权过的本机文件。

@@ -7,7 +7,7 @@ public sealed record EvictionReport(int Removed, long FreedBytes, int Protected,
 }
 
 /// <summary>
-/// 本地缓存淘汰器（方案 §5.4，决策 5 / 6 / 18）。
+/// 本地缓存淘汰器。
 ///
 /// 核心语义就一句话：**淘汰 = 设备级事件，只删本地 + 删账本条，元数据与云端一概不动。**
 /// 所以「淘汰」在任何情况下都不会造成数据丢失 —— 云端才是权威副本，本地这份本来就是可再生的缓存。
@@ -21,7 +21,7 @@ public sealed record EvictionReport(int Removed, long FreedBytes, int Protected,
 /// </summary>
 public static class CacheEvictor
 {
-    /// <summary>本地容量上限默认值（GB → 字节），决策 18。</summary>
+    /// <summary>本地容量上限默认值（GB → 字节）。</summary>
     public const long DefaultMaxBytes = 5L * 1024 * 1024 * 1024;
 
     /// <summary>闲置天数默认值（超过则优先淘汰）。</summary>

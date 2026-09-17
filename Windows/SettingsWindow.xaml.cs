@@ -1218,7 +1218,7 @@ public partial class SettingsWindow : Window
         win.ShowDialog();
     }
 
-    // ── 云同步（QUEST-5 第八步：WebDAV 配置 / E2EE 主密码 / 同步控制 / 重置） ──
+    // ── 云同步（WebDAV 配置 / E2EE 主密码 / 同步控制 / 重置） ──
 
     /// <summary>保存 WebDAV 配置 + 解锁/迁移 + 立即同步一次（授权码即钥匙：填一次永久有效，方案A 2026-08-15）。</summary>
     private async void BtnSyncConnect_Click(object sender, RoutedEventArgs e)

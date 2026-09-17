@@ -147,7 +147,7 @@ public partial class RecycleBinWindow : Window
         if (confirm != MessageBoxResult.Yes) return;
 
         var purged = _recycleBin.PurgeAll();
-        // 清空回收站 → 触发同步软删（Deleted=true 上传，QUEST-5 第五步 2）
+        // 清空回收站 → 触发同步软删（Deleted=true 上传）
         if (purged.Count > 0)
         {
             _noteService.RaiseNotesChanged();

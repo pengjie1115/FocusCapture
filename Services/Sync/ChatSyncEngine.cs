@@ -412,7 +412,7 @@ public class ChatSyncEngine
         }
         foreach (var (id, g) in localById) merged[id] = g;   // 本地 wins 同 Id 冲突（无版本号，简单并集）
 
-        // 多端同名分组合并（方案文档 4.4，阶段二）：按名称去重，胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序），
+        // 多端同名分组合并（阶段二）：按名称去重，胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序），
         // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）
         foreach (var g in merged.Values)
             if (string.IsNullOrEmpty(g.DeviceId)) g.DeviceId = _settings.Sync.DeviceId;

@@ -7,7 +7,7 @@ using FocusCapture.Windows.Controls;
 namespace FocusCapture.Services;
 
 /// <summary>
-/// AI 会话导出服务：Markdown / TXT / JSON / Word 四格式（PDF 不做，方案文档 4.2-4）。
+/// AI 会话导出服务：Markdown / TXT / JSON / Word 四格式（PDF 不做）。
 /// 导出内容 = user/assistant 气泡消息；过滤与 AgentRunService.cs:153 同一语义
 /// （tool 中间消息与 assistant(tool_calls) 不导出——开工铁律 9：不另写语义）。
 /// 文件名规则 = 标题（无标题回退预览）；同名去重（_1/_2 不覆盖）由调用方复用
