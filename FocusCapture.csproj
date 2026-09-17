@@ -38,6 +38,32 @@
     <Exec Command="python Resources\embed_icon.py" ContinueOnError="true"/>
   </Target>
 
+  <!-- 构建后清理「非 win-x64」原生库（2026-09-17）。
+       为什么需要：sherpa-onnx 包为 8 个平台各带一份原生库（osx-arm64/osx-x64/linux-arm64/
+       linux-x64/android-arm64/win-arm64/win-x86），而**未指定 RID 的构建**会把它们全部复制
+       到输出目录，合计约 251 MB —— 这些库在 Windows x64 上运行时永远不会被加载。
+       为什么不用 <RuntimeIdentifier>：那会让输出路径变成 ...\win-x64\ 子目录，从而
+       ① 让 Resources/embed_icon.py 里写死的 Release 路径失效（该脚本找不到 exe 时自行
+       print("跳过")+exit 0，配上 ContinueOnError=true 就是**静默不嵌图标**）；
+       ② 使 tests/sync 这类 ProjectReference 到本工程的 RID 无关工程产生 RID 目标不一致风险。
+       本方案不改 RID、不改任何输出路径，只在构建收尾删掉用不到的目录。
+       保护：Condition 排除 RID 专用构建，即**排除 `dotnet publish -r win-x64` 那条发布流程**，
+       发布产物与图标嵌入完全不受影响。 -->
+  <Target Name="TrimForeignRuntimes" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
+    <ItemGroup>
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\android-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\linux-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\linux-x64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\osx-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\osx-x64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\win-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\win-x86" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="TrimForeignRuntimes: OutputPath=[$(OutputPath)] 待清理=[@(_ForeignRuntimeDir->'%(Filename)', ', ')]" />
+    <RemoveDir Directories="@(_ForeignRuntimeDir)" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.4" />

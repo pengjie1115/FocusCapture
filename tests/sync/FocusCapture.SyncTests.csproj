@@ -19,4 +19,23 @@
     <ProjectReference Include="..\..\FocusCapture.csproj" />
   </ItemGroup>
 
+  <!-- 构建后清理「非 win-x64」原生库（2026-09-17）。
+       本工程经 ProjectReference 拉入 sherpa.onnx，输出目录会复制 8 个平台的原生库（约 251 MB），
+       而测试只在 Windows x64 上跑，其余平台永远不会被加载。
+       完整原因与为何不用 <RuntimeIdentifier>：见主项目 FocusCapture.csproj 中同名目标的注释。 -->
+  <Target Name="TrimForeignRuntimes" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
+    <ItemGroup>
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\android-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\linux-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\linux-x64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\osx-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\osx-x64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\win-arm64" />
+      <_ForeignRuntimeDir Include="$(OutputPath)runtimes\win-x86" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="TrimForeignRuntimes: OutputPath=[$(OutputPath)] 待清理=[@(_ForeignRuntimeDir->'%(Filename)', ', ')]" />
+    <RemoveDir Directories="@(_ForeignRuntimeDir)" />
+  </Target>
+
 </Project>
