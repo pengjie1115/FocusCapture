@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -27,11 +28,22 @@ using FocusCapture.Services.Sync;
 internal static class Program
 {
     private static int _failed;
+    private static int _passed;
     private static string _sandbox = "";
+
+    /// <summary>
+    /// 逐组耗时记录（2026-09-17 新增）。慢层此前没有任何分组耗时数据，优化只能靠猜；
+    /// 这里只做记录，不改变任何检查点行为，也不参与退出码。
+    /// </summary>
+    private static readonly List<(string Name, int Checks, long Ms)> _timings = new();
+
+    /// <summary>进程级墙钟，用于对照「各组耗时之和」与「真实总耗时」（差值是沙箱创建等组外开销）。</summary>
+    private static readonly Stopwatch _wall = Stopwatch.StartNew();
 
     private static void Check(bool cond, string name, string? detail = null)
     {
         Console.WriteLine((cond ? "  PASS  " : "  FAIL  ") + name);
+        if (cond) _passed++;
         if (!cond)
         {
             _failed++;
@@ -56,18 +68,20 @@ internal static class Program
 
         try
         {
-            TestUnit();
-            TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
-            TestFileRepository();        // 网盘文件仓库：句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
-            TestDragDropSave();          // 悬浮球拖放保存：判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
-            TestAgentTools();            // Agent 工具：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
-            await TestAttachmentCleanup();  // 附件到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
-            await TestBucketSplitting();
-            await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
-            await TestDualDevice();      // 验收 C（含删除流程）+ D + 自愈 E
-            await TestLineIdentityAsync();   // 行身份改造：未到期待办定位/删除/跨端一致（2026-09-12）
-            await TestNetworkFailure();  // 验收 C-6/C-7
-            await TestCursorProtectionAsync();   // 游标保护：解密失败时游标不该推进（2026-09-11）
+            // 每组外面包一层计时（Run / RunAsync）。组名与 REGRESSION.md 触发表保持一致，
+            // 便于「改哪块 → 该跑哪组」时对照输出。（2026-09-17）
+            Run("单测", TestUnit);
+            Run("AI 附件", TestChatAttachments);           // 图片/文档/会话引用/孤儿清理（2026-09-14）
+            Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
+            Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
+            Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
+            await RunAsync("桶拆分", TestBucketSplitting);
+            await RunAsync("首配目录缺失", TestFirstSyncDirMissing);  // PROPFIND 404 → 自动 MKCOL → 重试
+            await RunAsync("双设备模拟", TestDualDevice);   // 验收 C（含删除流程）+ D + 自愈 E
+            await RunAsync("行身份", TestLineIdentityAsync);      // 未到期待办定位/删除/跨端一致（2026-09-12）
+            await RunAsync("断网/重试", TestNetworkFailure);      // 验收 C-6/C-7
+            await RunAsync("游标保护", TestCursorProtectionAsync); // 解密失败时游标不该推进（2026-09-11）
         }
         finally
         {
@@ -75,9 +89,65 @@ internal static class Program
             // 全绿则清理沙箱；有失败则保留现场供排查
             if (_failed == 0) { try { Directory.Delete(sandbox, true); } catch { } }
             else Console.WriteLine($"\n[有失败] 沙箱已保留供排查：{sandbox}");
+            // 放在 finally 里：某个组中途抛异常时，已跑完的那几组耗时照样能打出来
+            PrintTimingSummary();
         }
         Console.WriteLine(_failed == 0 ? "\n===== ALL TESTS PASSED =====" : $"\n===== {_failed} TEST(S) FAILED =====");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ══════════════════ 分组计时（2026-09-17） ══════════════════
+    //
+    // 目的：慢层此前只有「全跑一次多久」这一个数字，30 多秒具体花在哪一组全靠猜，
+    // 于是「按需只跑相关组」「把无依赖的组搬回快层」这类优化没法算收益。
+    // 这里只做测量：不包住任何断言、不改任何检查点行为、不参与退出码。
+
+    private static void Run(string name, Action body)
+    {
+        var before = _passed;
+        var sw = Stopwatch.StartNew();
+        body();
+        sw.Stop();
+        Record(name, before, sw.ElapsedMilliseconds);
+    }
+
+    private static async Task RunAsync(string name, Func<Task> body)
+    {
+        var before = _passed;
+        var sw = Stopwatch.StartNew();
+        await body();
+        sw.Stop();
+        Record(name, before, sw.ElapsedMilliseconds);
+    }
+
+    private static void Record(string name, int passedBefore, long ms)
+    {
+        var checks = _passed - passedBefore;
+        _timings.Add((name, checks, ms));
+        Console.WriteLine($"  [耗时] {name} | {checks} 条 | {ms} ms");
+    }
+
+    /// <summary>
+    /// 逐组耗时汇总，按耗时降序（一眼看出瓶颈在哪组）。
+    /// 合计 = 各组之和；与墙钟的差值是组外开销（进程启动、沙箱创建等）。
+    /// </summary>
+    private static void PrintTimingSummary()
+    {
+        if (_timings.Count == 0) return;
+
+        var sumMs = _timings.Sum(t => t.Ms);
+        var sumChecks = _timings.Sum(t => t.Checks);
+
+        Console.WriteLine();
+        Console.WriteLine($"=== 各组耗时（按耗时降序）| 合计 {sumMs} ms / {sumChecks} 条 | 墙钟 {_wall.ElapsedMilliseconds} ms ===");
+        foreach (var t in _timings.OrderByDescending(t => t.Ms))
+        {
+            var pct = sumMs > 0 ? t.Ms * 100.0 / sumMs : 0;
+            var per = t.Checks > 0 ? (double)t.Ms / t.Checks : 0;
+            Console.WriteLine($"  {t.Name} | {t.Checks} 条 | {t.Ms} ms | 占 {pct:N1}% | 均 {per:N1} ms/条");
+        }
+        Console.WriteLine($"  [说明] 合计 {sumMs} ms 是各组之和；墙钟 {_wall.ElapsedMilliseconds} ms 含进程启动与沙箱创建。");
+        Console.WriteLine();
     }
 
     // ══════════════════ 悬浮球拖放保存（2026-09-16） ══════════════════
@@ -1496,8 +1566,27 @@ internal static class Program
             await ea.SyncNowAsync();
 
             // C-6 断网（改错 URL）：无法解锁（不生成冲突盐）→ 本地功能正常 → 恢复后补齐
-            var badProvider = new WebDAVProvider("http://127.0.0.1:19999/", "u", "t");
-            var ebBad = new SyncEngine(sb, nb, badProvider, Backoff);
+
+            // ① 真实链路只验一次：底层 HTTP 失败必须被包装成 SyncProviderException（渠道错误），
+            //    而不是裸抛、更不是静默返回 null —— 这是全项目唯一一条用真实网络失败覆盖该转换的断言。
+            //    成本：本机实测这一跳约 2.2 秒（而连「有人监听」的端口只要 5 ms），所以只留这一处，
+            //    其余断网场景走下面的桩。（2026-09-17）
+            var realDown = new WebDAVProvider("http://127.0.0.1:19999/", "u", "t");
+            var realWrapped = false;
+            var realDiag = "(未抛异常：静默返回了正常结果——最坏情况，等于把失败伪装成成功)";
+            try { await realDown.GetMetaAsync(CancellationToken.None); }
+            catch (SyncProviderException ex) { realWrapped = true; realDiag = $"SyncProviderException(StatusCode={ex.StatusCode}, IsNetwork={ex.IsNetwork}) {ex.Message}"; }
+            catch (Exception ex) { realDiag = "裸异常 " + ex.GetType().Name + ": " + ex.Message; }
+            // 刻意不断言「必须 StatusCode=0」：具体状态码取决于环境 ——
+            // 本机实测这一跳拿到的是 502（Bad Gateway），而 TCP 层直连同一端口是「积极拒绝」，
+            // 成因指向系统层网络过滤（详见 .workbuddy 9-17 日志），远程真实断网才会得到网络错误 0，
+            // 那条路径由上面的 FailingSyncProvider 桩覆盖。
+            // 真正要守的契约：底层失败必须被包装成「可区分的渠道错误」——不许裸抛，更不许静默返回 null。
+            Check(realWrapped, "真实 HTTP 层失败必须被包装成渠道错误（不得裸抛，更不得静默返回 null）", "实际=" + realDiag);
+
+            // ② 其余断网场景用秒失败的测试桩：桩抛的是同一个 SyncProviderException(0)，
+            //    引擎看到的东西与真实 TCP 失败一致，下面几条上层断言一条没改。
+            var ebBad = new SyncEngine(sb, nb, new FailingSyncProvider(), Backoff);
             var unlockThrew = false;
             try { await ebBad.SetTokenKeyAsync("MasterPass123"); }
             catch (InvalidOperationException) { unlockThrew = true; }
@@ -1508,7 +1597,9 @@ internal static class Program
             Check(nb.ReadAllLines().Any(x => x.Line.Contains("断网期间")), "C-6 断网时本地功能正常");
 
             // 恢复联网（正确 URL）→ 自动补齐
-            var ebOk = new SyncEngine(sb, nb, new WebDAVProvider(server.BaseUrl, "u", "t"), Backoff);
+            // 零退避注入：下面 C-7 用 503 触发限流，而 WebDAVProvider 对 503/429 会干等 5s+15s（生产默认值）。
+            // 重试次数不变（同为 2 次），只是不等待 —— 本机实测这段独占断网组约 20 秒。
+            var ebOk = new SyncEngine(sb, nb, new WebDAVProvider(server.BaseUrl, "u", "t", ThrottleBackoff), Backoff);
             await ebOk.SetTokenKeyAsync("MasterPass123");
             var rOk = await ebOk.SyncNowAsync();
             Check(rOk.Success, "C-6 恢复后同步成功" + (rOk.Success ? "" : " ← " + rOk.Error));
@@ -1741,6 +1832,34 @@ internal static class Program
     }
 
     private static readonly int[] Backoff = { 1, 1, 1 };   // 测试注入小退避（SyncEngine 构造参数）
+
+    /// <summary>
+    /// 测试注入零退避：WebDAVProvider 的 503/429 内部重试（生产默认 {5,15}）。
+    /// 本机实测「断网/重试」组 25.8 秒里约 20 秒耗在这段干等上。数组长度 = 重试次数（与生产同为 2 次），只去掉等待。
+    /// </summary>
+    private static readonly int[] ThrottleBackoff = { 0, 0 };
+}
+
+/// <summary>
+/// 秒级失败的同步渠道桩（2026-09-17）：所有方法立即抛 SyncProviderException(0)，即「网络错误」。
+/// 存在的理由：原断网检查点用「连一个没人监听的端口」来造断网，而本机实测
+/// 连得上 5 ms / 连不上 2.1 秒（loopback），十来次失败连接就把 8 条检查点拖成 25.8 秒。
+/// 桩抛出的异常与 WebDAVProvider 真实转换出来的**同一类型、同一状态码**，引擎看到的东西不变，
+/// 上层断言一条没改；「真实 TCP 失败 → IsNetwork」这条链路另有一条真实断言专门守护。
+/// </summary>
+internal sealed class FailingSyncProvider : ISyncProvider
+{
+    public string Name => "FailingStub";
+    public SyncLimits Limits { get; } = new();
+
+    private static SyncProviderException Down() =>
+        new(0, "模拟断网：网络错误（测试桩，与 WebDAVProvider 真实转换同型）");
+
+    public Task<SyncPullResult> PullAsync(string? since, CancellationToken ct) => Task.FromException<SyncPullResult>(Down());
+    public Task<SyncPushResult> PushAsync(IReadOnlyList<SyncNote> changes, string? lastCursor, CancellationToken ct) => Task.FromException<SyncPushResult>(Down());
+    public Task<List<SyncNote>> FullAsync(CancellationToken ct) => Task.FromException<List<SyncNote>>(Down());
+    public Task<SyncMeta?> GetMetaAsync(CancellationToken ct) => Task.FromException<SyncMeta?>(Down());
+    public Task SaveSaltAsync(string saltBase64, CancellationToken ct) => Task.FromException(Down());
 }
 
 /// <summary>

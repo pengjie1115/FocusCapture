@@ -27,13 +27,21 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
     private readonly string _baseUrl;
     private readonly string _user;
 
+    /// <summary>
+    /// 503/429 内部重试的退避秒数（默认 {5,15}），数组长度 = 重试次数。
+    /// 之所以可注入：本机实测「断网/重试」检查点耗时 25.8 秒，其中约 20 秒是干等这段 5s+15s。
+    /// 生产默认值一字未改，测试传 {0,0} 即可跳过等待——重试次数与判定逻辑完全不变。（2026-09-17）
+    /// </summary>
+    private readonly int[] _throttleRetryBackoffSeconds;
+
     public string Name => "WebDAV";
     public SyncLimits Limits { get; } = new(30, 200, 500);   // 坚果云实测红线：30min ≤600 请求 / 单次 >200 文件 503
 
-    public WebDAVProvider(string baseUrl, string user, string token)
+    public WebDAVProvider(string baseUrl, string user, string token, int[]? throttleRetryBackoffSeconds = null)
     {
         _baseUrl = baseUrl.TrimEnd('/') + "/";
         _user = user;
+        _throttleRetryBackoffSeconds = throttleRetryBackoffSeconds ?? new[] { 5, 15 };
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{token}"));
         _http.DefaultRequestHeaders.Authorization =
@@ -261,8 +269,8 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
 
     /// <summary>
     /// 统一发送：401/503/网络错误分类（QUEST-5 §7 第七步 5）+ 限流自动重试（2026-09-09）。
-    /// 503/429 自动退避重试 2 次（5s/15s）——坚果云限流惩罚多为短时突发，单发必失败会让整轮同步报废；
-    /// 重试经请求工厂重建（HttpRequestMessage 不可复用）。仍失败才抛给引擎（引擎按 auto/manual 各自处理）。
+    /// 503/429 自动退避重试（默认 2 次：5s/15s；退避时长见构造参数，测试可注入 0）——坚果云限流惩罚多为短时突发，
+    /// 单发必失败会让整轮同步报废；重试经请求工厂重建（HttpRequestMessage 不可复用）。仍失败才抛给引擎（引擎按 auto/manual 各自处理）。
     /// </summary>
     private async Task<string> SendAsync(Func<HttpRequestMessage> reqFactory, string action, string target, CancellationToken ct)
     {
@@ -278,9 +286,9 @@ public class WebDAVProvider : ISyncProvider, IFileStorageProvider
                     return body;
                 }
                 var code = (int)resp.StatusCode;
-                if (code is 503 or 429 && attempt < 2)
+                if (code is 503 or 429 && attempt < _throttleRetryBackoffSeconds.Length)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(attempt == 0 ? 5 : 15), ct).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(_throttleRetryBackoffSeconds[attempt]), ct).ConfigureAwait(false);
                     continue;
                 }
                 var msg = code switch
