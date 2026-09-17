@@ -82,7 +82,8 @@ public static class TodoEditService
         if (llm == null || string.IsNullOrWhiteSpace(llm.ApiKey)) return null;
         try
         {
-            var messages = PromptBuilder.BuildTimeParseMessages(text);
+            // 带上当前时间：相对时间表达（"明天中午 12 点"）没有基准点就只能靠猜（2026-09-17）
+            var messages = PromptBuilder.BuildTimeParseMessages(text, DateTime.Now);
             var result = await llm.CompleteAsync(messages, ct);
             var json = result.Trim();
             // 宽容：剥 ```json ... ``` 代码块（部分模型不遵守"只输出 JSON"）

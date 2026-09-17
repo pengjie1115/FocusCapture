@@ -40,6 +40,29 @@ public static class ToolArgs
         catch (JsonException) { }
         return false;
     }
+
+    /// <summary>取布尔参数（2026-09-17 加）：同时容忍 true/"true"/"是"。取不到返回 false。</summary>
+    public static bool TryGetBool(string json, string key)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                !doc.RootElement.TryGetProperty(key, out var prop))
+                return false;
+
+            return prop.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => prop.GetString()?.Trim().ToLowerInvariant() is "true" or "1" or "yes" or "是",
+                JsonValueKind.Number => prop.TryGetInt32(out var n) && n != 0,
+                _ => false,
+            };
+        }
+        catch (JsonException) { }
+        return false;
+    }
 }
 
 /// <summary>按关键词搜索本地笔记（只读）。走 NoteService.LoadNotesSearch，每条截 200 字。</summary>
@@ -334,5 +357,213 @@ public class DeleteNoteTool : AgentTool
         return ok
             ? $"已删除（可在回收站恢复）：{SearchNotesTool.FormatContent(entry!)}"
             : "错误：删除失败（回收站写入出错或条目已被其他操作改动），原条目保留。";
+    }
+}
+
+/// <summary>
+/// 修改一条已有笔记或待办的正文（写，需确认）。2026-09-17 新增。
+///
+/// 为什么笔记与待办合成一个工具：定位方式完全一样（ref_time + content_hint），
+/// 差别只在"待办还能改提醒时间"。拆成两个只会多给模型一次选错的机会。
+/// </summary>
+public class UpdateNoteTool : AgentTool
+{
+    private readonly NoteService _noteService;
+    public UpdateNoteTool(NoteService noteService) => _noteService = noteService;
+
+    public override string Name => "update_note";
+
+    public override string Description =>
+        "修改用户已有一条笔记或待办的正文（顺带可改待办的提醒时间）。" +
+        "ref_time 用列表/搜索工具输出中方括号里的时间戳定位。\n" +
+        "⚠️ 这是**原地替换**：原内容会被新内容取代（旧内容会自动存进回收站，可恢复）；" +
+        "这与界面上点「编辑」不同 —— 那个是追加一条编辑记录、原内容仍保留。\n" +
+        "⚠️ 只改用户明确指定、且已确认的那一条。改之前必须先用列表/搜索工具拿到准确的 ref_time，" +
+        "并把「哪一条、改成什么」告诉用户；不要顺手改别的条目，也不要一次改多条。";
+
+    public override string ParametersJson =>
+        """{"type":"object","properties":{"ref_time":{"type":"string","description":"条目时间戳，格式 yyyy-MM-dd HH:mm（来自列表/搜索输出）"},"content_hint":{"type":"string","description":"内容关键词，可选，同分钟有多条时用于消歧"},"content":{"type":"string","description":"新的正文内容（要改内容时必填）"},"due_time":{"type":"string","description":"可选，仅待办：新的提醒时间，格式 yyyy-MM-dd HH:mm"},"clear_due":{"type":"boolean","description":"可选，仅待办：true = 清除提醒时间"}},"required":["ref_time"]}""";
+
+    public override bool IsReadOnly => false;
+
+    public override string DescribeAction(string argumentsJson)
+    {
+        ToolArgs.TryGetString(argumentsJson, "ref_time", out var refTime);
+        var what = ToolArgs.TryGetString(argumentsJson, "content", out var c)
+            ? $"改为「{(c.Length > 40 ? c[..40] + "…" : c)}」"
+            : ToolArgs.TryGetBool(argumentsJson, "clear_due") ? "清除提醒时间" : "调整提醒时间";
+        return $"修改条目 [{refTime}]：{what}（原内容会存入回收站）";
+    }
+
+    public override async Task<string> ExecuteAsync(string argumentsJson, CancellationToken ct)
+    {
+        var hasContent = ToolArgs.TryGetString(argumentsJson, "content", out var content);
+        var hasDue = ToolArgs.TryGetString(argumentsJson, "due_time", out var dueStr);
+        var clearDue = ToolArgs.TryGetBool(argumentsJson, "clear_due");
+
+        if (!hasContent && !hasDue && !clearDue)
+            return "错误：至少要提供 content（新正文）、due_time（新提醒时间）、clear_due（清除提醒）中的一项。";
+
+        DateTime? due = null;
+        if (hasDue)
+        {
+            if (!DateTime.TryParse(dueStr, out var parsedDue))
+                return $"错误：due_time「{dueStr}」格式不对，请用 yyyy-MM-dd HH:mm。";
+            due = parsedDue;
+        }
+
+        var entries = await Task.Run(() => _noteService.LoadAllEntries(), ct);
+        if (!EntryResolver.TryResolve(entries, argumentsJson, todoOnly: false, out var entry, out var error))
+            return error;
+
+        if (entry!.Type == NoteType.Todo)
+        {
+            var ok = await Task.Run(
+                () => _noteService.UpdateTodo(entry, newContent: hasContent ? content : null,
+                    dueTime: due, clearDue: clearDue), ct);
+            if (!ok)
+                return "错误：待办修改失败（条目可能已被其他操作改动，或正在沉浸式编辑中）。请重新用列表工具核实后再试。";
+
+            var parts = new List<string>();
+            if (hasContent) parts.Add($"内容已改为「{entry.Content}」");
+            if (clearDue) parts.Add("提醒时间已清除");
+            else if (due.HasValue) parts.Add($"提醒时间已改为 {entry.DueTime:yyyy-MM-dd HH:mm}");
+            return "已修改待办：" + string.Join("；", parts) + "。（原内容已存入回收站，需要时可恢复）";
+        }
+
+        if (!hasContent)
+            return "错误：这是一条普通笔记，只能改正文（请提供 content）；提醒时间只有待办才有。";
+
+        var updated = await Task.Run(() => _noteService.UpdateNote(entry, content), ct);
+        if (!updated)
+            return "错误：笔记修改失败（条目可能已被其他操作改动，或正在沉浸式编辑中）。请重新用列表工具核实后再试。";
+
+        return $"已修改笔记 [{entry.Timestamp:yyyy-MM-dd HH:mm}]：{SearchNotesTool.FormatContent(entry)}" +
+               "。（原内容已存入回收站，需要时可恢复）";
+    }
+}
+
+/// <summary>按日期/区间列出笔记与待办（只读）。2026-09-17 新增。</summary>
+public class ListNotesByDateTool : AgentTool
+{
+    private readonly NoteService _noteService;
+    public ListNotesByDateTool(NoteService noteService) => _noteService = noteService;
+
+    public override string Name => "list_notes_by_date";
+
+    public override string Description =>
+        "按日期列出用户记录的笔记与待办（不填日期 = 今天）。" +
+        "用户说「今天记了什么」「上周三都有啥」「9月10号到12号」时使用。\n" +
+        "⚠️ 口径须知：**待办按提醒日期归类**（未到期的待办会出现在它提醒的那一天，而不是创建那天），" +
+        "这是应用内统一口径，回答用户时不要按创建时间解释。";
+
+    public override string ParametersJson =>
+        """{"type":"object","properties":{"date":{"type":"string","description":"某一天，yyyy-MM-dd，默认今天"},"from_date":{"type":"string","description":"可选，起始日 yyyy-MM-dd（与 to_date 配对，给定时优先于 date）"},"to_date":{"type":"string","description":"可选，结束日 yyyy-MM-dd"},"limit":{"type":"number","description":"可选，最多返回几条，默认 50"}},"required":[]}""";
+
+    public override bool IsReadOnly => true;
+
+    public override async Task<string> ExecuteAsync(string argumentsJson, CancellationToken ct)
+    {
+        DateTime from = default, to = default;
+        var hasFrom = ToolArgs.TryGetString(argumentsJson, "from_date", out var fromStr)
+                      && DateTime.TryParse(fromStr, out from);
+        var hasTo = ToolArgs.TryGetString(argumentsJson, "to_date", out var toStr)
+                    && DateTime.TryParse(toStr, out to);
+
+        DateTime start, end;
+        if (hasFrom || hasTo)
+        {
+            start = hasFrom ? from.Date : (hasTo ? to.Date : DateTime.Today);
+            end = hasTo ? to.Date : (hasFrom ? from.Date : DateTime.Today);
+        }
+        else if (ToolArgs.TryGetString(argumentsJson, "date", out var dateStr))
+        {
+            if (!DateTime.TryParse(dateStr, out var d))
+                return $"错误：date「{dateStr}」格式不对，请用 yyyy-MM-dd。";
+            start = end = d.Date;
+        }
+        else
+        {
+            start = end = DateTime.Today;
+        }
+
+        if (end < start) (start, end) = (end, start);
+
+        var limit = ToolArgs.TryGetInt(argumentsJson, "limit", out var lim) && lim > 0 ? Math.Min(lim, 200) : 50;
+
+        var entries = await Task.Run(() => _noteService.LoadNotesRange(start, end), ct);
+        if (entries.Count == 0)
+        {
+            var scope = start == end ? $"{start:yyyy-MM-dd}" : $"{start:yyyy-MM-dd} 至 {end:yyyy-MM-dd}";
+            return $"{scope} 没有记录。";
+        }
+
+        var head = start == end ? $"{start:yyyy-MM-dd}" : $"{start:yyyy-MM-dd} 至 {end:yyyy-MM-dd}";
+        var lines = entries.Take(limit)
+            .Select(e => $"[{e.Timestamp:yyyy-MM-dd HH:mm}] {SearchNotesTool.FormatContent(e)}" +
+                         (e.Type == NoteType.Todo && e.DueTime.HasValue ? $" 提醒: {e.DueTime:yyyy-MM-dd HH:mm}" : ""));
+        var tail = entries.Count > limit ? $"\n（共 {entries.Count} 条，只列出最近 {limit} 条）" : "";
+        return $"{head} 共 {entries.Count} 条：\n" + string.Join("\n", lines) + tail;
+    }
+}
+
+/// <summary>记录量统计（只读）。2026-09-17 新增。</summary>
+public class NoteStatsTool : AgentTool
+{
+    private readonly NoteService _noteService;
+    public NoteStatsTool(NoteService noteService) => _noteService = noteService;
+
+    public override string Name => "note_stats";
+
+    public override string Description =>
+        "统计某个月的记录量与活跃度：共多少条、覆盖多少天、哪天最多；顺带报当前待办数量。" +
+        "用户问「这个月记了多少条」「我最近记得勤不勤」时使用。**只统计本机数据**，不联网。";
+
+    public override string ParametersJson =>
+        """{"type":"object","properties":{"month":{"type":"string","description":"可选，月份格式 yyyy-MM，默认当月"}},"required":[]}""";
+
+    public override bool IsReadOnly => true;
+
+    public override async Task<string> ExecuteAsync(string argumentsJson, CancellationToken ct)
+    {
+        var year = DateTime.Today.Year;
+        var month = DateTime.Today.Month;
+
+        if (ToolArgs.TryGetString(argumentsJson, "month", out var monthStr))
+        {
+            if (!DateTime.TryParse(monthStr + "-01", out var parsed))
+                return $"错误：month「{monthStr}」格式不对，请用 yyyy-MM（如 2026-09）。";
+            year = parsed.Year;
+            month = parsed.Month;
+        }
+
+        var (counts, todos) = await Task.Run(() =>
+        {
+            var c = _noteService.LoadNoteCounts(year, month);
+            var t = _noteService.LoadAllEntries().Where(e => e.Type == NoteType.Todo).ToList();
+            return (c, t);
+        }, ct);
+
+        var total = counts.Values.Sum();
+        var days = counts.Count;
+        var sb = new StringBuilder();
+        sb.Append($"{year} 年 {month} 月：共记录 {total} 条，覆盖 {days} 天。");
+
+        if (total > 0)
+        {
+            var top = counts.OrderByDescending(kv => kv.Value).First();
+            sb.Append($"\n最多的一天：{top.Key:MM-dd}（{top.Value} 条）");
+
+            var perDay = days == 0 ? 0 : Math.Round((double)total / days, 1);
+            sb.Append($"\n有记录的日子里平均每天 {perDay} 条");
+        }
+
+        var openCount = todos.Count(t => t.TodoStatus == TodoStatus.Open);
+        var doneCount = todos.Count(t => t.TodoStatus == TodoStatus.Done);
+        var overdue = todos.Count(t => t.TodoStatus == TodoStatus.Open
+                                       && t.DueTime.HasValue && t.DueTime.Value < DateTime.Now);
+        sb.Append($"\n\n待办总计：未完成 {openCount} 条（其中已过期 {overdue} 条），已办 {doneCount} 条。");
+
+        return sb.ToString();
     }
 }

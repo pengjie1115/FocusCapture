@@ -1501,12 +1501,19 @@ public partial class AIDialogWindow : Window
                 "AI 操作确认",
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
             WriteConfirmEnabled = _settings.AgentWriteConfirmPopup,
-            // 每轮把「用户当前选中的文件牌号」告诉模型。放这里而不是会话历史里：
-            // 它是随手会变的短期状态，写进历史既污染持久化数据，也会让翻旧会话时看到过期牌号。
+            // 每轮把「当前时间」+「用户当前选中的文件牌号」告诉模型。放这里而不是会话历史里：
+            // 它们是随手会变的短期状态，写进历史既污染持久化数据，也会让翻旧会话时看到过期值。
+            // ⚠️ 时间**绝不能**改放系统提示词 —— 那个会被持久化进会话文件（ChatSessionService.Save），
+            // 跨天之后里面的日期就是错的，比不告诉模型更糟（2026-09-17）。
             ExtraSystemContext = () =>
             {
+                var sb = new StringBuilder();
+                sb.Append("当前时间：").Append(PromptBuilder.DescribeNow(DateTime.Now))
+                  .Append("。用户说「今天/明天/上周/这个月」等相对时间时，一律以这个时间为基准。");
+
                 var handleText = FileHandleStore.DescribeForModel();
-                return handleText.Length > 0 ? handleText : null;
+                if (handleText.Length > 0) sb.Append('\n').Append(handleText);
+                return sb.ToString();
             },
         };
 
@@ -1910,7 +1917,8 @@ public partial class AIDialogWindow : Window
             "1. 工具执行返回的结果是唯一事实来源：工具返回成功才可以说完成；返回失败必须如实告知。严禁在没有调用工具、或工具未返回成功的情况下宣称已完成任何操作。\n" +
             "2. 执行任何写操作（新增/修改/删除笔记或待办）之前，必须先在回复中列出将要执行的具体动作，等用户明确同意后再调用工具执行。\n" +
             "3. 没有对应工具的能力就直说做不到，不要编造替代方案的结果。\n" +
-            "4. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。");
+            "4. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。\n" +
+            "5. 只根据工具真正返回的内容作答：文件读不出文字时（如扫描件 PDF、图片）必须如实说读不了，绝不许编造文件里没有的内容；工具返回的是部分数据（只列了前 N 行/条）时要说明这是部分。");
         _agentRulesAdded = true;
     }
 
@@ -1925,7 +1933,21 @@ public partial class AIDialogWindow : Window
         registry.Register(new CreateTodoTool(_noteService));
         registry.Register(new CompleteTodoTool(_noteService));
         registry.Register(new ReopenTodoTool(_noteService));
+        // 改内容（2026-09-17）：原地替换 + 旧内容进回收站。此前只有"改状态"，用户说"把那条改一下"AI 只能答做不到。
+        registry.Register(new UpdateNoteTool(_noteService));
         registry.Register(new DeleteNoteTool(_noteService));
+
+        // 查询与统计（2026-09-17）：AI 此前看不到「某天记了什么」「这个月记了多少」
+        registry.Register(new ListNotesByDateTool(_noteService));
+        registry.Register(new NoteStatsTool(_noteService));
+
+        // 回收站（2026-09-17）：只给「看」与「恢复」。
+        // 明确不给「彻底删除 / 清空回收站」—— 破坏性动作不给 AI，这是项目既有红线。
+        registry.Register(new ListRecycleBinTool(_noteService));
+        registry.Register(new RestoreDeletedTool(_noteService));
+
+        // 导出（2026-09-17）：落到设置里的默认导出文件夹，**不上传网盘**（用户明确要求）
+        registry.Register(new ExportNotesTool(_noteService, _settings));
 
         // 文件类工具（2026-09-16，方案 §6.1 五条链路）：
         // 这是本次更新的基座 —— 没有这几个工具，网盘接入就退化成一个需要手动操作的同步盘。
@@ -1935,6 +1957,11 @@ public partial class AIDialogWindow : Window
         registry.Register(new FindCloudFilesTool());
         registry.Register(new FetchCloudFileTool());
         registry.Register(new ReadCloudFileTool());
+        // 文件记录维护 + 文档读取（2026-09-17）：read_cloud_file 已支持 docx/xlsx/pdf；
+        // update_file_meta 只改本机显示名/标签，**不动云端文件名**（描述里已写明，防模型谎报"已改名"）。
+        registry.Register(new UpdateFileMetaTool());
+        registry.Register(new ReadSpreadsheetTool());
+        registry.Register(new ReadPdfTool());
 
         var getNote = new GetNoteDestination(_settings);
         foreach (var capability in getNote.Capabilities)

@@ -456,8 +456,10 @@ public static class FileRepository
     }
 
     /// <summary>
-    /// 取回并读出文本内容（链路 E）。**本期只支持文本类**（md/txt/代码），
-    /// PDF 解析本项目从未实现，遇到二进制一律给出明确说明而不是丢一堆乱码给模型。
+    /// 取回并读出文本内容（链路 E）。
+    /// 2026-09-17 扩展：除文本类外，docx / xlsx / pdf 改走 <see cref="DocumentTextExtractor"/>
+    /// （与对话附件同一条实现）—— 改造前同一个 docx「贴进对话能读、从网盘调读不了」，
+    /// 那种能力割裂用户既无法理解也没法绕开。图片仍不支持（本方法只产出文本）。
     /// </summary>
     public static async Task<(string? Text, string? Error)> ReadTextAsync(
         string id, int maxChars = 20000, CancellationToken ct = default)
@@ -466,8 +468,9 @@ public static class FileRepository
         if (meta == null) return (null, "找不到这个文件记录。");
 
         var ext = "." + meta.Extension;
-        if (!TextExtensions.Contains(ext))
-            return (null, $"「{meta.Name}」不是文本类文件（当前只能直接读取文本、Markdown 与代码文件）。" +
+        var isRichDocument = DocumentTextExtractor.IsRichDocument(ext);
+        if (!TextExtensions.Contains(ext) && !isRichDocument)
+            return (null, $"「{meta.Name}」这类文件读不出文字（可读：文本/Markdown/代码，以及 Word、Excel、PDF）。" +
                           "可以先用「取回文件」把它放到本机，再用系统程序打开。");
 
         var (path, error) = await EnsureLocalAsync(id, null, ct).ConfigureAwait(false);
@@ -475,10 +478,26 @@ public static class FileRepository
 
         try
         {
-            var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
-            var text = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(StripBom(bytes));
-            if (text.Length > maxChars) text = text[..maxChars] + $"\n\n…（内容过长，仅取前 {maxChars} 字）";
+            string text;
+            if (isRichDocument)
+            {
+                // 解析可能较慢（尤其 PDF），放后台线程，别占着工具循环
+                var (extracted, note) = await Task.Run(
+                    () => DocumentTextExtractor.Extract(path, maxChars), ct).ConfigureAwait(false);
+                text = string.IsNullOrEmpty(note) ? extracted : extracted + "\n\n…" + note;
+            }
+            else
+            {
+                var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+                text = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(StripBom(bytes));
+                if (text.Length > maxChars) text = text[..maxChars] + $"\n\n…（内容过长，仅取前 {maxChars} 字）";
+            }
             return (text, null);
+        }
+        catch (InvalidDataException ex)
+        {
+            // 抽取器的消息本身就是给人看的（如"这份 PDF 是扫描件"），直接透出
+            return (null, ex.Message);
         }
         catch (DecoderFallbackException)
         {

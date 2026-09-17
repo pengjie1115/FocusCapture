@@ -42,6 +42,13 @@
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.4" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- PdfPig（2026-09-17）：PDF 文本抽取。选它的理由：Apache-2.0、**纯托管**（无原生 dll 要分发）、
+         专为提取文本设计。为什么 PDF 必须引库而 docx/xlsx 不用：后两者本质是 zip+XML（手写即可，
+         见 XlsxTextExtractor），而 PDF 是二进制容器（xref + FlateDecode + 字体 CID/ToUnicode 映射），
+         手写不现实。iText7 是 AGPL，许可风险大，明确不用。
+         注意：包只在我方开发期从 NuGet 拉取，编译后随 exe 分发，**用户侧不需要联网**，
+         不破坏"本地优先、离线可用"的定位。 -->
+    <PackageReference Include="PdfPig" Version="0.1.8" />
   </ItemGroup>
 
   <ItemGroup>

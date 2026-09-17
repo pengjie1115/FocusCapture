@@ -387,9 +387,10 @@ public class ReadCloudFileTool : AgentTool
     public override string Name => "read_cloud_file";
 
     public override string Description =>
-        "读取网盘里某个文本文件的内容，用于总结、翻译、分析。" +
-        "仅支持文本类（md / txt / 代码 / csv / json 等）；图片、Word、PDF 读不了 —— " +
-        "遇到这类文件请用 fetch_cloud_file 取回给用户自己打开，不要假装读到了内容。";
+        "读取网盘里某个文件的内容，用于总结、翻译、分析。支持：文本类（md / txt / 代码 / csv / json 等）、" +
+        "Word（.docx）、Excel（.xlsx）、**以及有文字层的 PDF**（2026-09-17 起扩展）。\n" +
+        "⚠️ 读不了的两类：图片（本工具只产出文字）、扫描件/图片版 PDF（里面没有文字层，属 OCR 范畴，工具会明确告知）。" +
+        "遇到读不了的文件，请用 fetch_cloud_file 取回给用户自己打开，**不要假装读到了内容**。";
 
     public override string ParametersJson =>
         """{"type":"object","properties":{"file_id":{"type":"string","description":"find_cloud_files 返回的编号"},"max_chars":{"type":"number","description":"可选，最多读取多少字，默认 20000"}},"required":["file_id"]}""";
@@ -412,5 +413,77 @@ public class ReadCloudFileTool : AgentTool
         if (text == null) return "错误：" + readError;
 
         return $"文件「{meta.Name}」的内容如下：\n\n{text}";
+    }
+}
+
+/// <summary>
+/// 改网盘文件在本机的记录（显示名 / 标签），写操作需确认。2026-09-17 新增。
+///
+/// ⚠️ 能力边界必须写进描述：它**不会重命名云端那份文件**。
+/// 说成"已经帮你把网盘里的文件改名了"就是谎报 —— 用户去网盘一看名字没变，信任当场归零
+/// （这与"登记成功 ≠ 上传成功"是同一类坑，见 FileTools.DescribeSaved 的注释）。
+/// </summary>
+public class UpdateFileMetaTool : AgentTool
+{
+    public override string Name => "update_file_meta";
+
+    public override string Description =>
+        "修改某个网盘文件在**本机记录**里的显示名称和/或标签。file_id 用 find_cloud_files 返回的编号。\n" +
+        "⚠️ 边界：**只改本机记录，云端那份文件的名字不会变**（还是原来那个名字）。" +
+        "所以对用户只能说「已把本地显示名/标签改成 X」，**绝不能说「网盘上的文件已改名」**。\n" +
+        "用途：让以后更容易搜到（标签尤其有用）。改名前先跟用户确认新名字。";
+
+    public override string ParametersJson =>
+        """{"type":"object","properties":{"file_id":{"type":"string","description":"find_cloud_files 返回的编号"},"name":{"type":"string","description":"可选：新的显示名称（含扩展名更清晰）"},"tags":{"type":"string","description":"可选：新标签，逗号分隔（会整体替换原有标签）"}},"required":["file_id"]}""";
+
+    public override bool IsReadOnly => false;
+
+    public override string DescribeAction(string argumentsJson)
+    {
+        ToolArgs.TryGetString(argumentsJson, "file_id", out var id);
+        var (meta, _) = FileToolSupport.ResolveFileRef(id);
+        var target = meta == null ? $"编号 {id}" : $"「{meta.Name}」";
+
+        var changes = new List<string>();
+        if (ToolArgs.TryGetString(argumentsJson, "name", out var name)) changes.Add($"显示名改为「{name}」");
+        if (ToolArgs.TryGetString(argumentsJson, "tags", out var tags)) changes.Add($"标签改为「{tags}」");
+
+        return changes.Count == 0
+            ? $"修改文件 {target} 的记录（未指定要改什么）"
+            : $"修改文件 {target} 的本机记录：{string.Join("；", changes)}（不影响云端文件名）";
+    }
+
+    public override Task<string> ExecuteAsync(string argumentsJson, CancellationToken ct)
+    {
+        if (!ToolArgs.TryGetString(argumentsJson, "file_id", out var fileId))
+            return Task.FromResult("错误：缺少参数 file_id（用 find_cloud_files 返回的编号）。");
+
+        var (meta, error) = FileToolSupport.ResolveFileRef(fileId);
+        if (meta == null) return Task.FromResult("错误：" + error);
+
+        var hasName = ToolArgs.TryGetString(argumentsJson, "name", out var newName);
+        var hasTags = ToolArgs.TryGetString(argumentsJson, "tags", out var tagsRaw);
+        if (!hasName && !hasTags)
+            return Task.FromResult("错误：至少要提供 name（新显示名）或 tags（新标签）中的一项。");
+
+        List<string>? tags = null;
+        if (hasTags)
+        {
+            tags = tagsRaw.Split(new[] { ',', '，', '/', '|' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim())
+                .Where(t => t.Length > 0)
+                .ToList();
+        }
+
+        var oldName = meta.Name;
+        if (!FileRepository.UpdateMetadata(meta.Id, hasName ? newName : null, tags))
+            return Task.FromResult("错误：文件记录更新失败（可能该文件已被删除）。");
+
+        var done = new List<string>();
+        if (hasName) done.Add($"本机显示名：{oldName} → {newName}");
+        if (hasTags) done.Add("标签：" + (tags!.Count == 0 ? "已清空" : string.Join("/", tags)));
+
+        return Task.FromResult("已更新本机记录：" + string.Join("；", done) +
+                               "。（云端那份文件的名字没有变，仍然是原名。）");
     }
 }

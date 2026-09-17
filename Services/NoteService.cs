@@ -332,7 +332,7 @@ public class NoteService
         }
     }
 
-    // ── v3.5 待办：UpdateTodo 原地改行（MD 只增不减的唯一例外，红线 2） ──
+    // ── 原地改行（MD「只增不减」的唯一例外，红线 2）：UpdateTodo（v3.5）+ UpdateNote（2026-09-17） ──
 
     /// <summary>
     /// 待办原地改行：更新内容/状态/提醒时间。用变更前字段定位原行 → 重建行文本 → 整文件重写该行。
@@ -340,11 +340,89 @@ public class NoteService
     /// 顺序敏感：先定位后重建——禁止先套用变更再匹配（IsEntryLine 比较 line == entry.ToMarkdownLine()，
     /// 先改字段后新行文本带 (状态:) 等后缀永远匹配不上原行，UpdateTodo 将恒返回 false）。
     /// 与同步层 AppendLine/RemoveLines 共用 FileWriteLock，防后台同步与用户操作并发整文件重写互相覆盖。
+    /// 2026-09-17：改行内核抽出为 <see cref="RewriteEntryLine"/>（笔记 <see cref="UpdateNote"/> 共用），
+    /// 且**旧行文本先写入回收站**再替换（用户拍板：AI 改错必须能恢复）。
     /// </summary>
     public bool UpdateTodo(NoteEntry entry, string? newContent = null, TodoStatus? status = null,
         DateTime? dueTime = null, bool clearDue = false)
     {
         if (entry == null || entry.Type != NoteType.Todo) return false;
+
+        // 以 entry 原始字段为底套用变更（定位必须用变更前的字段，见上面顺序敏感说明）
+        var updated = CloneForUpdate(entry);
+        if (newContent != null) updated.Content = newContent.Trim();
+        if (clearDue) updated.DueTime = null;
+        else if (dueTime.HasValue) updated.DueTime = dueTime;
+        if (status.HasValue) updated.TodoStatus = status.Value;
+
+        if (!RewriteEntryLine(entry, updated, out var replacedLine, out var fileName)) return false;
+
+        // 成功后把变更回写传入的 entry（防调用方后续再 UpdateTodo 用旧字段定位失败——面板徽标已办/右键设提醒/建议条设提醒
+        // 链路都会先后对同一条待办多次 UpdateTodo，定位必须始终用最新字段）
+        entry.Content = updated.Content;
+        entry.DueTime = updated.DueTime;
+        entry.TodoStatus = updated.TodoStatus;
+
+        // v4（2026-09-12 行身份改造）：原地改行 = 旧版本行在本地消失。若不告知同步层，云端那条旧版本行
+        // 永不删除，而任何"本机没有该行"的设备都会在每次拉取时把它当新行落回来（**本机自己也算**，
+        // 因为改行后本机也认不出旧行了）——这就是"点已完成 → 过一会待办又变回未办、每轮多留一份已办副本"
+        // 的根因。这里复用删除事件把旧行作为 Deleted=true 墓碑推给同步层。
+        // （2026-09-17 起：旧行还会**先写进回收站**兜底，见 RewriteEntryLine。）
+        if (replacedLine != null)
+            LinesDeleted?.Invoke(fileName!, new[] { replacedLine });
+
+        NotesChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>
+    /// 笔记原地改行（2026-09-17 新增，供 Agent 的 update_note 使用）。
+    ///
+    /// **与界面「编辑保存」不是同一条路**：界面走 <see cref="AppendEdit"/>（追加【编辑】行，原行不动、
+    /// 展示层合并为子条目）；这里**原地替换原行**。这是用户明确拍板的语义（"直接在原来那条上改，
+    /// 不要另存一条"）——记在这里，免得日后有人看到两种行为以为其中一个是 bug。
+    ///
+    /// 代价与对策：原地替换 = 旧文本消失，而行身份是 SHA256(行文本)，改行等于「删旧行 + 加新行」，
+    /// 同步层会认不出旧行。所以 ① 旧行先写回收站（改错可恢复）② 成功后抛 LinesDeleted
+    /// 让同步层生成删除墓碑，避免云端旧行被反复投递回本机。
+    ///
+    /// 沉浸式输入锁定中的笔记不许改（与 <see cref="AppendEdit"/> 一致）。
+    /// </summary>
+    public bool UpdateNote(NoteEntry entry, string newContent)
+    {
+        if (entry == null || entry.Type != NoteType.Note) return false;
+        if (string.IsNullOrWhiteSpace(newContent)) return false;
+        if (ImmersiveSessionService.IsLocked(entry.Timestamp)) return false;
+
+        var updated = CloneForUpdate(entry);
+        updated.Content = newContent.Trim();
+
+        if (!RewriteEntryLine(entry, updated, out var replacedLine, out var fileName)) return false;
+
+        entry.Content = updated.Content;
+
+        if (replacedLine != null)
+            LinesDeleted?.Invoke(fileName!, new[] { replacedLine });
+
+        NotesChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>
+    /// 原地改行内核（笔记 / 待办共用，2026-09-17 从 UpdateTodo 抽出）。
+    ///
+    /// 返回 false = **没有改动任何东西**（定位不到原行 / 回收站写入失败 / 文件写入异常），
+    /// 调用方据此如实回复用户，不要谎报成功。
+    /// <c>replacedLine</c> 非空 = 确实替换了，调用方需把它当墓碑推给同步层。
+    ///
+    /// 顺序（不可颠倒）：定位原行 → **旧行写回收站** → 替换 → 带回旧行文本。
+    /// 回收站写失败就中止改行：宁可这次改不成（用户还能重试），也不能让旧内容无声消失 ——
+    /// 那是"原地改行"唯一的可恢复出口。
+    /// </summary>
+    private bool RewriteEntryLine(NoteEntry entry, NoteEntry updated, out string? replacedLine, out string? fileName)
+    {
+        replacedLine = null;
+        fileName = null;
 
         // v3.7 修复：按行精确查找所在文件——FindEntryFile 按 entry 时间戳日期猜文件
         // （只查 灵感_{日期}.md + 标签文件），但存在行内日期与文件名不一致的历史数据
@@ -353,8 +431,7 @@ public class NoteService
         var filePath = FindEntryFileByLine(entry);
         if (filePath == null) return false;
 
-        // 被替换掉的旧行文本（v4 2026-09-12）：改行成功且文本确实变化时，把它交给同步层生成删除墓碑。
-        string? replacedLine = null;
+        var name = Path.GetFileName(filePath);
 
         lock (FileWriteLock)
         {
@@ -370,44 +447,37 @@ public class NoteService
                 }
                 if (matchedIndex < 0) return false;
 
-                // 后重建：以 entry 原始字段为底，套用变更，FormatTodoLine 与 ToMarkdownLine 同一套格式
-                var updated = CloneForUpdate(entry);
-                if (newContent != null) updated.Content = newContent.Trim();
-                if (clearDue) updated.DueTime = null;
-                else if (dueTime.HasValue) updated.DueTime = dueTime;
-                if (status.HasValue) updated.TodoStatus = status.Value;
-
                 var oldLine = lines[matchedIndex].TrimEnd('\r');
-                var newLine = NoteEntry.FormatTodoLine(updated);
+                var newLine = updated.ToMarkdownLine();
+
+                // 文本没变：不算失败，也没有墓碑要发
+                if (string.Equals(oldLine, newLine, StringComparison.Ordinal))
+                {
+                    fileName = name;
+                    return true;
+                }
+
+                // ① 旧行先落回收站（AddIfAbsent：已有同内容记录时不重复写）
+                if (!_recycleBin.AddIfAbsent(name, new[] { oldLine }))
+                {
+                    AppLog.Error("Note", $"改行中止：回收站写入失败，原行保留 ({filePath})");
+                    return false;
+                }
+
+                // ② 再整行替换
                 lines[matchedIndex] = newLine;
                 File.WriteAllLines(filePath, lines, Encoding.UTF8);
-                if (!string.Equals(oldLine, newLine, StringComparison.Ordinal))
-                    replacedLine = oldLine;
+
+                replacedLine = oldLine;
+                fileName = name;
+                return true;
             }
             catch (Exception ex)
             {
-                AppLog.Error("Note", $"待办更新失败 ({filePath})", ex);
+                AppLog.Error("Note", $"原地改行失败 ({filePath})", ex);
                 return false;
             }
         }
-
-        // 成功后把变更回写传入的 entry（防调用方后续再 UpdateTodo 用旧字段定位失败——面板徽标已办/右键设提醒/建议条设提醒
-        // 链路都会先后对同一条待办多次 UpdateTodo，定位必须始终用最新字段）
-        if (newContent != null) entry.Content = newContent.Trim();
-        if (clearDue) entry.DueTime = null;
-        else if (dueTime.HasValue) entry.DueTime = dueTime;
-        if (status.HasValue) entry.TodoStatus = status.Value;
-
-        // v4（2026-09-12 行身份改造）：原地改行 = 旧版本行在本地消失。若不告知同步层，云端那条旧版本行
-        // 永不删除，而任何"本机没有该行"的设备都会在每次拉取时把它当新行落回来（**本机自己也算**，
-        // 因为改行后本机也认不出旧行了）——这就是"点已完成 → 过一会待办又变回未办、每轮多留一份已办副本"
-        // 的根因。这里复用删除事件把旧行作为 Deleted=true 墓碑推给同步层（不写回收站：旧版本只是被替换，
-        // 不是用户主动删除；本机 MD 只增不减原则在 UpdateTodo 处本就是唯一例外，见类注释）。
-        if (replacedLine != null)
-            LinesDeleted?.Invoke(Path.GetFileName(filePath), new[] { replacedLine });
-
-        NotesChanged?.Invoke();
-        return true;
     }
 
     /// <summary>浅克隆 NoteEntry（仅携带存储相关字段），供 UpdateTodo 以原始字段为底重建新行。变更不污染调用方传入的 entry。</summary>

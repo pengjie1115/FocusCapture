@@ -1,11 +1,10 @@
 using System.IO;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Xml;
+using FocusCapture.Services.Files;
 
 namespace FocusCapture.Services.AI;
 
@@ -66,9 +65,14 @@ public static class ChatAttachmentService
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff",
     };
 
+    /// <summary>
+    /// 可作为文档附件的后缀。pdf / xlsx 于 2026-09-17 加入 ——
+    /// 此前 .pdf 被明确拒绝（见旧版 CreateFromFileAsync），.xlsx 只能靠用户自己转成 csv。
+    /// 现在两者都由 <see cref="DocumentTextExtractor"/> 抽成文本后发给模型，**不要求模型有视觉能力**。
+    /// </summary>
     private static readonly HashSet<string> DocumentExts = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".docx", ".md", ".markdown", ".txt", ".log", ".json", ".xml", ".csv", ".tsv",
+        ".pdf", ".docx", ".xlsx", ".md", ".markdown", ".txt", ".log", ".json", ".xml", ".csv", ".tsv",
         ".cs", ".py", ".js", ".ts", ".java", ".kt", ".cpp", ".c", ".h", ".hpp", ".go", ".rs", ".php", ".rb", ".swift",
         ".html", ".htm", ".css", ".sql", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".sh", ".bat", ".ps1",
     };
@@ -91,10 +95,11 @@ public static class ChatAttachmentService
 
     /// <summary>文件选择框过滤器（加号按钮用）</summary>
     public static string FileDialogFilter =>
-        "支持的格式|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.docx;*.md;*.txt;*.log;*.json;*.xml;*.csv;" +
+        "支持的格式|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.pdf;*.docx;*.xlsx;*.md;*.txt;*.log;*.json;*.xml;*.csv;" +
         "*.cs;*.py;*.js;*.ts;*.java;*.cpp;*.h;*.go;*.rs;*.php;*.html;*.css;*.sql;*.yml;*.yaml;*.ini;*.bat;*.ps1;*.sh" +
         "|图片|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp" +
-        "|文档与文本|*.docx;*.md;*.txt;*.log;*.json;*.xml;*.csv;*.cs;*.py;*.js;*.ts;*.html;*.css;*.sql;*.yml;*.sh" +
+        "|文档|*.pdf;*.docx;*.xlsx;*.md;*.txt;*.csv;*.log;*.json;*.xml" +
+        "|代码与配置|*.cs;*.py;*.js;*.ts;*.java;*.cpp;*.h;*.go;*.rs;*.php;*.html;*.css;*.sql;*.yml;*.yaml;*.ini;*.bat;*.ps1;*.sh" +
         "|所有文件|*.*";
 
     // ── 创建（入口） ──
@@ -114,8 +119,6 @@ public static class ChatAttachmentService
                     return ((ChatAttachment?)null, "文件不存在");
 
                 var ext = Path.GetExtension(sourcePath).ToLowerInvariant();
-                if (ext == ".pdf")
-                    return ((ChatAttachment?)null, "PDF 暂不支持（本次开发未包含）");
 
                 if (IsSupportedImage(sourcePath))
                 {
@@ -144,10 +147,9 @@ public static class ChatAttachmentService
                     if (info.Length > MaxDocumentSourceBytes)
                         return ((ChatAttachment?)null, $"文档超过 {MaxDocumentSourceBytes / 1024 / 1024}MB 上限");
 
-                    var (text, note) = ExtractDocumentText(sourcePath);
-                    if (string.IsNullOrWhiteSpace(text))
-                        return ((ChatAttachment?)null, "文档中没有可提取的文字");
-
+                    // 抽取统一走 DocumentTextExtractor（2026-09-17）：与网盘侧的、读同一个文件能力一致。
+                    // 它内部保证"抽不出内容就抛异常并说清原因"（如 PDF 是扫描件），不会给出一段空文本。
+                    var (text, note) = DocumentTextExtractor.Extract(sourcePath, MaxExtractedChars);
                     var raw = File.ReadAllBytes(sourcePath);
                     var stored = WriteWithHash(raw, ext);
 
@@ -165,6 +167,11 @@ public static class ChatAttachmentService
                 }
 
                 return ((ChatAttachment?)null, $"不支持的格式：{ext}");
+            }
+            catch (InvalidDataException ex)
+            {
+                // 抽取器的消息本身就是给用户看的人话（如"这份 PDF 有密码保护"），不要再包一层前缀
+                return ((ChatAttachment?)null, ex.Message);
             }
             catch (Exception ex)
             {
@@ -387,72 +394,8 @@ public static class ChatAttachmentService
     }
 
     // ── 文档抽文本 ──
-
-    /// <summary>抽出文档正文；返回（文本, 截断说明）</summary>
-    private static (string Text, string? Note) ExtractDocumentText(string path)
-    {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        var raw = ext == ".docx" ? ExtractDocx(path) : ExtractPlainText(path);
-
-        var text = raw.Replace("\r\n", "\n").Trim();
-        if (text.Length > MaxExtractedChars)
-            return (text[..MaxExtractedChars], $"（文档过长，仅取前 {MaxExtractedChars} 字）");
-        return (text, null);
-    }
-
-    /// <summary>docx 抽文本：解 zip 读 word/document.xml，按 &lt;w:p&gt; 段落组织（零依赖，与 NoteImportService 同思路）</summary>
-    private static string ExtractDocx(string path)
-    {
-        using var zip = ZipFile.OpenRead(path);
-        var entry = zip.GetEntry("word/document.xml")
-            ?? throw new InvalidDataException("Word 文件缺少 word/document.xml，格式异常");
-
-        var xml = new XmlDocument();
-        using (var s = entry.Open())
-        using (var r = new StreamReader(s, Encoding.UTF8))
-            xml.LoadXml(r.ReadToEnd());
-
-        var nsmgr = new XmlNamespaceManager(xml.NameTable);
-        nsmgr.AddNamespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-
-        var sb = new StringBuilder();
-        var paragraphs = xml.SelectNodes("//w:p", nsmgr);
-        if (paragraphs != null)
-        {
-            foreach (XmlNode p in paragraphs)
-            {
-                var texts = p.SelectNodes(".//w:t", nsmgr);
-                if (texts == null) { sb.Append('\n'); continue; }
-                foreach (XmlNode t in texts) sb.Append(t.InnerText);
-                sb.Append('\n');
-            }
-        }
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// 纯文本类：要求合法 UTF-8。非 UTF-8（如 ANSI/GBK）会解码失败并给出明确提示，
-    /// 不做自动编码嗅探（宁可能力边界清晰，也不猜错编码导致乱码内容被发给模型）。
-    /// </summary>
-    private static string ExtractPlainText(string path)
-    {
-        var bytes = File.ReadAllBytes(path);
-        try
-        {
-            var strict = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-            var text = strict.GetString(StripBom(bytes));
-            return text;
-        }
-        catch (DecoderFallbackException)
-        {
-            throw new InvalidDataException("文件不是 UTF-8 编码，暂不支持（请另存为 UTF-8 后重试）");
-        }
-    }
-
-    private static byte[] StripBom(byte[] bytes)
-    {
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-            return bytes[3..];
-        return bytes;
-    }
+    //
+    // 抽取实现已上提至 Services/Files/DocumentTextExtractor（2026-09-17）：
+    // 改造前它在这里是 private，只有对话附件这一条路能用 —— 同一个 docx/docx，
+    // 贴进对话能读、从网盘调读不了。现在附件侧与网盘侧共用同一份实现，口径不会再分裂。
 }

@@ -646,6 +646,65 @@
 
 ---
 
+### B-16 Agent 工具扩展 + 文档解析（Services/Agent/ + Services/Files/ + Services/AI/PromptBuilder + AIDialogWindow Agent 路径，2026-09-17 新增）
+
+> 设计依据：`docs/Agent工具盘点与新增建议.md`（工具清单与能力边界）、`docs/Agent工具扩展-影响面分析与执行计划.md`（决策记录）。
+> 涉及文件：`Services/Agent/`（LocalTools / FileTools / RecycleBinTools / ExportTools / DocumentTools）、
+> `Services/Files/DocumentTextExtractor.cs`（新）、`Services/Files/XlsxTextExtractor.cs`（新）、
+> `Services/Files/FileRepository.cs`（ReadTextAsync 扩展）、`Services/AI/ChatAttachmentService.cs`（PDF/xlsx 支持）、
+> `Services/AI/PromptBuilder.cs`（当前时间）、`Services/NoteService.cs`（**UpdateNote 新增 / RewriteEntryLine 抽取 / UpdateTodo 加回收站兜底**）、
+> `Windows/AIDialogWindow.xaml.cs`（ExtraSystemContext 注入时间 + 工具注册 + 第 5 条 Agent 规则）、`FocusCapture.csproj`（引 PdfPig）。
+
+**本次新增的工具（11 个，注册后共 26 个）**：
+`update_note`（笔记/待办原地改内容与提醒时间）、`list_notes_by_date`、`note_stats`、
+`list_recycle_bin`、`restore_deleted`、`export_notes`、`update_file_meta`、`read_spreadsheet`、`read_pdf`；
+另 `read_cloud_file` 扩展支持 docx/xlsx/pdf。
+
+> **三条红线（改这块之前必读）**：
+> ① **文档工具的来源只能是 `handle`（用户亲手选的文件牌号）或 `file_id`（本地元数据编号）** ——
+>    `read_spreadsheet` / `read_pdf` 沿用与文件工具同一条红线，**没有路径参数**。慢层有断言守护：编造牌号、把本机路径当牌号、两者都不给，三种情况都必须失败并给出可执行指引。
+> ② **原地改行 = 旧内容先写回收站再替换**（`NoteService.RewriteEntryLine`）。这是用户拍板的语义（"直接改，不要另存一条"），
+>    代价是旧文本消失、且行身份是 `SHA256(行文本)`（改行 = 删旧行 + 加新行）。对策两条：回收站兜底 + 抛 `LinesDeleted` 墓碑给同步层。
+>    回收站写失败就**中止改行** —— 宁可这次改不成，也不能让旧内容无声消失。
+> ③ **AI 改内容与界面「编辑」不是同一条路**：界面走 `AppendEdit`（追加【编辑】行，原行不动），AI 走 `UpdateNote`（原地替换）。
+>    这是刻意的差异，不是 bug；改之前先确认要的是哪一种。
+
+> **⚠️ `read_cloud_image` 为什么没做（2026-09-17 结论，别重复踩）**：工具返回的是 tool 消息，
+> 而 `OpenAICompatibleProvider.BuildMessagesArray` 里 Tool 分支排在附件分支之前、只写纯文本 content ——
+> **工具无法把图片交给模型看**。要做就得改唯一的请求序列化入口，风险与收益不成比例，本次明确放弃。
+
+> **机器可验的部分已进慢层「Agent 工具组」（36 条）**，覆盖：时间上下文注入、原地改行与回收站兜底、
+> 删除→列出→恢复闭环、按日期查询与统计的精确计数、导出落点、xlsx 三类坑（共享字符串 / **日期序列号** / 稀疏列）、
+> PDF 有文字层与扫描件两条路径、以及三条来源红线。
+> 首跑 4 红 + 1 红：4 红是**检查点自身构造不当**（同一分钟内 3 条回收站记录，分钟精度必然撞车 —— 应带 `content_hint` 消歧，已按真实用法修正），
+> 1 红是 H1 旧断言（"PDF 本期不做"）随本次功能变更而失效，已改为断言 PDF 现在**支持**。
+
+| 验收动作 | 期望现象 |
+|---|---|
+| 问 AI「今天几号」 | 答出的日期与系统日期一致（此前全链路没告诉它当前时间） |
+| 隔天在同一会话里再问一次 | 日期**跟着变**（证明时间没被写死进会话历史） |
+| 说「把那条待办改成明天早上八点」 | AI 先列出要改哪一条，确认后改成功；速览面板能看到新内容与提醒时间 |
+| 说「把那条笔记改成 XXX」 | 原行被替换（不是追加一条编辑记录）；**旧内容可在回收站找回** |
+| 故意让 AI 改错内容，然后说「刚才改错了，恢复一下」 | AI 能在回收站找到并恢复 |
+| 说「刚才删的那条能找回来吗」 | AI 列出回收站并恢复（此前只能让用户自己去界面看） |
+| 说「这个月我记了多少条」 | 数字与日历/速览面板对得上 |
+| 说「今天记了什么都列出来」 | 与速览面板当天内容一致；**待办出现在它的提醒日**（不是创建日） |
+| 说「把今天的导出来」 | 文件出现在设置里的默认导出文件夹；AI **不会说"已上传网盘"** |
+| 拖一个 **PDF** 进 AI 输入框 ⚠ | 能加上卡片，AI 能说出文件里的内容（此前是直接拒绝 PDF） |
+| 拖一个**扫描件/图片版 PDF** 进输入框 ⚠ | 明确提示"读不出文字（可能是扫描件）"，**AI 不会编造文件内容** |
+| 拖一个 **xlsx** 进输入框 ⚠ | 能加上卡片，AI 读到的是表格文本；**日期列显示为日期而不是 44927 这类数字** |
+| 说「网盘里那个 xlsx 表读一下，看看总共多少行」⚠ | AI 报出总行数与表头；**不会把只列出的前几十行当成全部** |
+| 说「把网盘那个文件改名叫 XXX」 | AI 说清"改的是本机显示名，云端文件名不变"；**绝不会说"已在网盘上改名"** |
+| 让 AI 读一个**没被选过**的本机文件 | 明确要求用户点「选择文件」，**不会杜撰路径或假装读到** |
+
+### ⚠ 本节尚未经真人验收的部分
+
+上表带 ⚠ 的条目需要在真实对话里跑一遍（涉及模型选工具、真实文件格式、真实拖放）。
+机器能证的部分已全部进慢层检查组；**"模型会不会挑对工具、会不会谎报"只能靠真人对话验收**，
+交付时请按上表逐条走一遍。
+
+---
+
 ## 五、维护约定
 
 ### 谁更新、什么时候更新

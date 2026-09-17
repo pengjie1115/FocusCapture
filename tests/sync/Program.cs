@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -59,6 +60,7 @@ internal static class Program
             TestChatAttachments();       // AI 附件：图片/文档/会话引用/孤儿清理（2026-09-14）
             TestFileRepository();        // 网盘文件仓库：句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             TestDragDropSave();          // 悬浮球拖放保存：判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
+            TestAgentTools();            // Agent 工具：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
             await TestAttachmentCleanup();  // 附件到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await TestBucketSplitting();
             await TestFirstSyncDirMissing(); // 首配子目录缺失：PROPFIND 404 → 自动 MKCOL → 重试
@@ -308,6 +310,317 @@ internal static class Program
     //   ② 合并：多设备合并规则（元数据近似只增不改，所以规则能这么简单，方案 §4.3）
     //   ③ 保护：还没传上去的文件绝不能被本地淘汰清掉 —— 那是真丢数据（方案 §5.4）
     // 全程跑在主流程已建好的临时沙箱里（RootOverride），绝不触碰真实数据目录。
+
+    // ══════════════════ Agent 工具（2026-09-17） ══════════════════
+    //
+    // 本组守护的是三件"看代码看不出来、但用户会直接受害"的事：
+    //   ① 红线：文档类工具的来源只能是「用户签发的牌号 handle」或「本地元数据编号 file_id」——
+    //      模型编不出来，所以它读不到没被授权过的本机文件
+    //   ② 原地改行必须留后路：AI 把笔记改错了，旧内容得能从回收站捞回来
+    //   ③ 解析正确性：xlsx 的**日期是序列号**（44927 而不是 2023-01-01）、文本在共享字符串表里 ——
+    //      这两处弄错不会报错，只会给出一堆错数字，用户根本看不出来
+    //
+    // 边界（诚实标注）：本组直接调工具类的 ExecuteAsync，**不经过真实模型**；
+    // "模型会不会挑对工具、会不会谎报" 要靠真实对话验收（见 REGRESSION 里的人工清单）。
+
+    private static void TestAgentTools()
+    {
+        Console.WriteLine("[Agent 工具] 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文");
+
+        var root = Path.Combine(_sandbox, "agent-tools");
+        var notesDir = Path.Combine(root, "notes");
+        Directory.CreateDirectory(notesDir);
+
+        var settings = new AppSettings
+        {
+            NotesPath = notesDir,
+            ExportFolderPath = Path.Combine(root, "export"),
+        };
+        var notes = new NoteService(settings, Path.Combine(root, "deleted.json"));
+
+        // ── ① 时间上下文：模型必须拿到"今天几号" ──
+
+        var fixedNow = new DateTime(2026, 9, 17, 14, 30, 0);
+        Check(PromptBuilder.DescribeNow(fixedNow) == "2026-09-17 14:30 星期四",
+              "当前时间描述：日期格式与星期必须正确（2026-09-17 是星期四）",
+              PromptBuilder.DescribeNow(fixedNow));
+
+        var parseMessages = PromptBuilder.BuildTimeParseMessages("明天中午12点提醒我", fixedNow);
+        Check(parseMessages[0].Content != null && parseMessages[0].Content!.Contains("2026-09-17"),
+              "时间解析提示词必须带上当前日期（少了基准点，'明天'只能靠猜 → 提醒时间会错）");
+
+        // ── ② 原地改行 + 回收站兜底：笔记 ──
+
+        var note = notes.SaveNote("原始内容ABC");
+        Check(note != null, "准备：写入一条笔记");
+
+        var noteUpdated = notes.UpdateNote(note!, "改后内容XYZ");
+        var mdAfterNote = ReadAllMd(notesDir);
+        Check(noteUpdated && mdAfterNote.Contains("改后内容XYZ") && !mdAfterNote.Contains("原始内容ABC"),
+              "笔记原地改：新内容进文件、旧内容从文件里消失（用户要的'直接改'）");
+
+        Check(notes.RecycleBin.List().Any(x => x.Entry.Lines.Any(l => l.Contains("原始内容ABC"))),
+              "改笔记时旧内容必须先进回收站（AI 改错要能捞回来）—— 这是用户拍板要的兜底");
+
+        // ── ③ 原地改行 + 回收站兜底：待办（2026-09-17 起也补上兜底） ──
+
+        var todo = notes.SaveNote("待办原内容", "AI 对话", NoteType.Todo);
+        Check(todo != null && todo!.Type == NoteType.Todo, "准备：写入一条待办");
+
+        var todoUpdated = notes.UpdateTodo(todo!, newContent: "待办新内容");
+        var mdAfterTodo = ReadAllMd(notesDir);
+        Check(todoUpdated && mdAfterTodo.Contains("待办新内容") && !mdAfterTodo.Contains("待办原内容"),
+              "待办原地改：旧内容从文件消失、新内容写入");
+
+        Check(notes.RecycleBin.List().Any(x => x.Entry.Lines.Any(l => l.Contains("待办原内容"))),
+              "改待办时旧内容也要进回收站（此前是直接消失，改造后与笔记行为一致）");
+
+        // ── ④ 删除 → 列出 → 恢复 闭环 ──
+
+        var toDelete = notes.SaveNote("会被删掉的笔记");
+        Check(toDelete != null && notes.DeleteNote(toDelete!), "准备：删除一条笔记（进回收站）");
+
+        var listTool = new ListRecycleBinTool(notes);
+        var listOut = listTool.ExecuteAsync("{}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(listOut.Contains("会被删掉的笔记"), "list_recycle_bin 能列出被删条目（AI 这才看得见回收站）");
+
+        var target = notes.RecycleBin.List().First(x => x.Entry.Preview.Contains("会被删掉的笔记"));
+        var restoreTool = new RestoreDeletedTool(notes);
+        var deletedAtArg = target.Entry.DeletedAt.ToString("yyyy-MM-dd HH:mm");
+
+        // 同一分钟内改了两条 + 删了一条 → 三条回收站记录的删除时间（分钟精度）完全一样。
+        // 这是真实使用中最容易撞上的情形：不带关键词就恢复 = 让 AI 自己挑一条，必须要求消歧。
+        var ambiguous = restoreTool.ExecuteAsync(
+            "{\"deleted_at\":\"" + deletedAtArg + "\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(ambiguous.Contains("content_hint"),
+              "同一分钟有多条回收站记录时必须要求消歧，绝不能自己猜一条恢复", ambiguous);
+
+        var restoreOut = restoreTool.ExecuteAsync(
+            "{\"deleted_at\":\"" + deletedAtArg + "\",\"content_hint\":\"会被删掉\"}",
+            CancellationToken.None).GetAwaiter().GetResult();
+
+        Check(restoreOut.Contains("已从回收站恢复") && ReadAllMd(notesDir).Contains("会被删掉的笔记"),
+              "restore_deleted 带消歧关键词后能把条目恢复回笔记文件", restoreOut);
+
+        var restoreAgain = restoreTool.ExecuteAsync(
+            "{\"deleted_at\":\"2000-01-01 00:00\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(restoreAgain.StartsWith("错误："), "恢复不存在的删除时间必须报错，不能假装成功");
+
+        // ── ⑤ 按日期查询 ──
+
+        var dateTool = new ListNotesByDateTool(notes);
+        var todayOut = dateTool.ExecuteAsync("{}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(todayOut.Contains("改后内容XYZ") && todayOut.Contains("待办新内容") && todayOut.Contains("会被删掉的笔记"),
+              "list_notes_by_date 默认返回今天的全部条目（含刚恢复的那条）");
+
+        var oldDateOut = dateTool.ExecuteAsync("{\"date\":\"2000-01-01\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(oldDateOut.Contains("没有记录"), "查一个没有记录的日期要如实说没有，不能编");
+
+        // ── ⑥ 统计：已知输入 → 精确期望 ──
+        // 本沙箱到这一步为止，今天共有 3 条（笔记 1 + 待办 1 + 恢复回来的笔记 1）
+        // 注意口径：待办按 TodoDisplayTime 归类，这条待办没有提醒时间 → 归到创建当天
+
+        var statsTool = new NoteStatsTool(notes);
+        var statsOut = statsTool.ExecuteAsync("{}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(statsOut.Contains($"共记录 3 条"), "note_stats 的条数必须与已知输入精确一致（本沙箱今天 3 条）",
+              statsOut.Replace("\n", " / "));
+        Check(statsOut.Contains("未完成 1 条"), "note_stats 的待办计数：本沙箱未完成待办 1 条");
+
+        // ── ⑦ 导出：落到设置的导出文件夹，不上网盘 ──
+
+        var exportTool = new ExportNotesTool(notes, settings);
+        var exportOut = exportTool.ExecuteAsync("{}", CancellationToken.None).GetAwaiter().GetResult();
+        var exported = Directory.Exists(settings.ExportFolderPath)
+            ? Directory.GetFiles(settings.ExportFolderPath)
+            : Array.Empty<string>();
+
+        Check(exportOut.Contains("已导出 3 条") && exported.Length == 1,
+              "export_notes 导出条数正确，且文件落在设置的导出文件夹",
+              exportOut);
+        Check(exported.Length == 1 && File.ReadAllText(exported[0]).Contains("改后内容XYZ"),
+              "导出文件里确实含有笔记正文（不是空文件）");
+        Check(exportOut.Contains("未上传网盘"), "导出结果必须说清'没上网盘'（用户明确要求导出不上云）");
+
+        // ── ⑧ 表格解析：共享字符串 / 日期序列号 / 稀疏列 ──
+
+        var xlsxPath = Path.Combine(root, "测试表.xlsx");
+        BuildTestXlsx(xlsxPath);
+
+        var sheets = XlsxTextExtractor.Read(xlsxPath);
+        Check(sheets.Count == 2, "xlsx 能识别出 2 个工作表（多 sheet）", $"实际 {sheets.Count}");
+        Check(sheets[0].Name == "表一" && sheets[1].Name == "表二", "工作表名称取自 workbook.xml，不是文件名");
+        Check(sheets[0].RowCount == 3, "行数正确（3 行）");
+
+        var row2 = sheets[0].Rows[1];
+        Check(row2.Count >= 3 && row2[0] == "张三" && row2[1] == "1234.5",
+              "共享字符串列 + 数字列解析正确（文本单元格存的是索引，不查表就是一堆数字）",
+              string.Join(" | ", row2));
+        Check(row2.Count >= 3 && row2[2] == "2023-01-01",
+              "日期列必须按序列号还原成日期（44927 → 2023-01-01）—— 直接输出数字等于给用户错数据",
+              row2.Count >= 3 ? row2[2] : "(缺列)");
+
+        var row3 = sheets[0].Rows[2];
+        Check(row3.Count >= 3 && row3[0] == "李四" && row3[1] == "" && row3[2] == "7",
+              "稀疏行按列号落位（B 列空缺不能把 C 列顶到 B 列去）",
+              string.Join(" | ", row3));
+
+        // ── ⑨ 表格工具：走牌号读取 ──
+
+        FileHandleStore.Clear();
+        var xlsxHandle = FileHandleStore.Register(xlsxPath);
+        var sheetTool = new ReadSpreadsheetTool();
+        var sheetOut = sheetTool.ExecuteAsync(
+            "{\"handle\":\"" + xlsxHandle.Id + "\"}", CancellationToken.None).GetAwaiter().GetResult();
+
+        Check(sheetOut.Contains("表一") && sheetOut.Contains("2023-01-01") && sheetOut.Contains("1234.5"),
+              "read_spreadsheet：表名 / 日期 / 数字都要正确出现在输出里",
+              sheetOut.Replace("\n", " / "));
+        Check(sheetOut.Contains("共 3 行"), "read_spreadsheet 报出总行数（让模型知道有没有被截断）");
+
+        var badSheetOut = sheetTool.ExecuteAsync(
+            "{\"handle\":\"" + xlsxHandle.Id + "\",\"sheet\":\"不存在的表\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(badSheetOut.StartsWith("错误：") && badSheetOut.Contains("表二"),
+              "指定不存在的工作表要报错并列出可选项，不能悄悄换一个表读");
+
+        // ── ⑩ PDF：能读文字层，扫描件如实说读不了 ──
+
+        var textPdf = Path.Combine(root, "有文字.pdf");
+        BuildTestPdf(textPdf, "Hello PdfProbe extraction works");
+
+        var pdfTool = new ReadPdfTool();
+        var textPdfHandle = FileHandleStore.Register(textPdf);
+        var pdfOut = pdfTool.ExecuteAsync(
+            "{\"handle\":\"" + textPdfHandle.Id + "\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(pdfOut.Contains("Hello PdfProbe extraction works"),
+              "read_pdf 能从有文字层的 PDF 里读出文字", pdfOut);
+
+        var scanPdf = Path.Combine(root, "扫描件样式.pdf");
+        BuildTestPdf(scanPdf, null);   // 页面里没有文字（模拟扫描件）
+        var scanHandle = FileHandleStore.Register(scanPdf);
+        var scanOut = pdfTool.ExecuteAsync(
+            "{\"handle\":\"" + scanHandle.Id + "\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(scanOut.StartsWith("错误：") && scanOut.Contains("扫描件"),
+              "**扫描件/图片版 PDF 必须如实说读不了**，绝不能返回空内容让模型自己去编",
+              scanOut);
+
+        // ── ⑪ 红线：文档来源不可伪造 ──
+
+        var fakeHandle = pdfTool.ExecuteAsync("{\"handle\":\"file:20200101-99\"}", CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check(fakeHandle.StartsWith("错误："),
+              "凭空编造的牌号必须被拒绝（AI 读不到没被用户选过的本机文件）", fakeHandle);
+
+        var pathAsHandle = pdfTool.ExecuteAsync("{\"handle\":\"C:\\\\Windows\\\\win.ini\"}", CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check(pathAsHandle.StartsWith("错误："),
+              "把本机路径当牌号传进来必须被拒绝（路径不是牌号）", pathAsHandle);
+
+        var noSource = pdfTool.ExecuteAsync("{}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(noSource.Contains("handle") && noSource.Contains("file_id"),
+              "既没给 handle 也没给 file_id 时，要给出可执行的指引（让用户去点『选择文件』）", noSource);
+
+        FileHandleStore.Clear();
+    }
+
+    private static string ReadAllMd(string dir) =>
+        Directory.Exists(dir)
+            ? string.Join("\n", Directory.GetFiles(dir, "*.md").Select(File.ReadAllText))
+            : "";
+
+    /// <summary>手工构造一个最小 xlsx（含 2 个工作表 / 共享字符串 / 日期样式 / 稀疏行），用于验证解析正确性</summary>
+    private static void BuildTestXlsx(string path)
+    {
+        const string ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        const string relNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+
+        void Add(string name, string xml)
+        {
+            var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+            using var stream = entry.Open();
+            var bytes = new UTF8Encoding(false).GetBytes(xml);
+            stream.Write(bytes, 0, bytes.Length);
+        }
+
+        Add("[Content_Types].xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/></Types>");
+
+        Add("xl/workbook.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"" + ns + "\" xmlns:r=\"" + relNs + "\"><sheets>" +
+            "<sheet name=\"表一\" sheetId=\"1\" r:id=\"rId1\"/><sheet name=\"表二\" sheetId=\"2\" r:id=\"rId2\"/>" +
+            "</sheets></workbook>");
+
+        Add("xl/_rels/workbook.xml.rels",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+            "<Relationship Id=\"rId1\" Type=\"" + relNs + "/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
+            "<Relationship Id=\"rId2\" Type=\"" + relNs + "/worksheet\" Target=\"worksheets/sheet2.xml\"/>" +
+            "<Relationship Id=\"rId3\" Type=\"" + relNs + "/sharedStrings\" Target=\"sharedStrings.xml\"/>" +
+            "</Relationships>");
+
+        // 文本单元格只存索引，必须靠这张表还原 —— 索引错位就是全表内容错
+        Add("xl/sharedStrings.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><sst xmlns=\"" + ns + "\" count=\"5\" uniqueCount=\"5\">" +
+            "<si><t>姓名</t></si><si><t>金额</t></si><si><t>日期</t></si><si><t>张三</t></si><si><t>李四</t></si></sst>");
+
+        // cellXfs[1] 用内置日期格式 14（mm-dd-yy）→ 该样式的数字单元格必须当日期解释
+        Add("xl/styles.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><styleSheet xmlns=\"" + ns + "\"><cellXfs count=\"2\">" +
+            "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
+            "<xf numFmtId=\"14\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>" +
+            "</cellXfs></styleSheet>");
+
+        Add("xl/worksheets/sheet1.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"" + ns + "\"><sheetData>" +
+            "<row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c><c r=\"C1\" t=\"s\"><v>2</v></c></row>" +
+            "<row r=\"2\"><c r=\"A2\" t=\"s\"><v>3</v></c><c r=\"B2\"><v>1234.5</v></c><c r=\"C2\" s=\"1\"><v>44927</v></c></row>" +
+            "<row r=\"3\"><c r=\"A3\" t=\"s\"><v>4</v></c><c r=\"C3\"><v>7</v></c></row>" +
+            "</sheetData></worksheet>");
+
+        Add("xl/worksheets/sheet2.xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"" + ns + "\"><sheetData>" +
+            "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>第二表</t></is></c></row>" +
+            "</sheetData></worksheet>");
+    }
+
+    /// <summary>手工构造最小 PDF（含 xref）；text 传 null = 页面里没有任何文字（模拟扫描件）</summary>
+    private static void BuildTestPdf(string path, string? text)
+    {
+        var content = text == null ? "" : "BT /F1 24 Tf 72 700 Td (" + text + ") Tj ET";
+        var bodies = new[]
+        {
+            "<</Type /Catalog /Pages 2 0 R>>",
+            "<</Type /Pages /Kids [3 0 R] /Count 1>>",
+            "<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources <</Font <</F1 5 0 R>>>>>>",
+            "<</Length " + content.Length + ">>\nstream\n" + content + "\nendstream",
+            "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>",
+        };
+
+        using var ms = new MemoryStream();
+        void Write(string s)
+        {
+            var bytes = Encoding.Latin1.GetBytes(s);
+            ms.Write(bytes, 0, bytes.Length);
+        }
+
+        Write("%PDF-1.4\n");
+        var offsets = new long[bodies.Length + 1];
+        for (var i = 0; i < bodies.Length; i++)
+        {
+            offsets[i + 1] = ms.Position;
+            Write((i + 1) + " 0 obj\n" + bodies[i] + "\nendobj\n");
+        }
+
+        var xrefPos = ms.Position;
+        Write("xref\n0 " + (bodies.Length + 1) + "\n");
+        Write("0000000000 65535 f \n");
+        for (var i = 1; i <= bodies.Length; i++)
+            Write(offsets[i].ToString("D10") + " 00000 n \n");
+        Write("trailer\n<</Size " + (bodies.Length + 1) + " /Root 1 0 R>>\nstartxref\n" + xrefPos + "\n%%EOF\n");
+
+        File.WriteAllBytes(path, ms.ToArray());
+    }
 
     private static void TestFileRepository()
     {
@@ -1230,11 +1543,13 @@ internal static class Program
     {
         Console.WriteLine("[H] AI 附件（格式判定 / 抽文本 / 压缩档位 / 会话引用 / 孤儿清理）");
 
-        // H1 格式判定：PDF 本期明确不做，压缩包等二进制一律拒绝
+        // H1 格式判定：2026-09-17 起 PDF / xlsx 纳入支持（走文档抽文本，不要求模型有视觉能力）；
+        // 压缩包等二进制仍然一律拒绝
         Check(ChatAttachmentService.IsSupported("a.png") && ChatAttachmentService.IsSupported("a.docx")
-              && ChatAttachmentService.IsSupported("b.py") && !ChatAttachmentService.IsSupported("c.pdf")
-              && !ChatAttachmentService.IsSupported("d.zip") && !ChatAttachmentService.IsSupported("e.exe"),
-              "H1 格式判定：图片/文档/代码支持；PDF（本期不做）/压缩包/可执行文件拒绝");
+              && ChatAttachmentService.IsSupported("b.py") && ChatAttachmentService.IsSupported("c.pdf")
+              && ChatAttachmentService.IsSupported("d.xlsx") && !ChatAttachmentService.IsSupported("d.zip")
+              && !ChatAttachmentService.IsSupported("e.exe"),
+              "H1 格式判定：图片/文档/代码/PDF/Excel 支持；压缩包/可执行文件拒绝");
 
         // H2 Markdown 抽正文
         var mdPath = Path.Combine(_sandbox, "sample.md");
@@ -1249,6 +1564,21 @@ internal static class Program
         var (docxAtt, docxErr) = ChatAttachmentService.CreateFromFileAsync(docxPath, 1).GetAwaiter().GetResult();
         Check(docxAtt?.ExtractedText?.Contains("Word 里的段落文字") == true,
               $"H3 docx 抽正文成功（错误：{docxErr ?? "无"}）");
+
+        // H3b PDF 附件抽正文（2026-09-17：以前这里是被明确拒绝的）
+        var pdfPath = Path.Combine(_sandbox, "sample.pdf");
+        BuildTestPdf(pdfPath, "PDF attachment extraction works");
+        var (pdfAtt, pdfErr) = ChatAttachmentService.CreateFromFileAsync(pdfPath, 1).GetAwaiter().GetResult();
+        Check(pdfAtt?.ExtractedText?.Contains("PDF attachment extraction works") == true
+              && pdfAtt.Kind == ChatAttachmentKind.Document,
+              $"H3b PDF 附件能抽出文字并发给模型（错误：{pdfErr ?? "无"}）");
+
+        // H3c 扫描件 PDF：必须明确报错，绝不能产出一个"空文档"让模型自己去编内容
+        var scanPath = Path.Combine(_sandbox, "scan.pdf");
+        BuildTestPdf(scanPath, null);
+        var (scanAtt, scanErr) = ChatAttachmentService.CreateFromFileAsync(scanPath, 1).GetAwaiter().GetResult();
+        Check(scanAtt == null && !string.IsNullOrEmpty(scanErr) && scanErr!.Contains("扫描件"),
+              $"H3c 扫描件 PDF 明确拒绝并说明原因（实际：{scanErr ?? "却成功了"}）");
 
         // H4 非 UTF-8 文本要明确报错，不能把乱码喂给模型
         var gbkPath = Path.Combine(_sandbox, "gbk.txt");
