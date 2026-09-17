@@ -105,7 +105,8 @@
 ## 四、放弃 / 未完全并入归档（本表核心价值）
 
 > 这些分支的末位提交**没有**完全进 main，功能 main 里没有完整版，丢了就真丢了，故永久登记。
-> 找回：`git branch <name> <hash>`（reflog 90 天内兜底）。
+> 找回：`git branch <name> <hash>` —— ⚠ **只靠 `git reflog` 兜底，能撑多久不确定**（受 `gc.reflogExpire` / `gc.pruneExpire` 策略影响，可能短到 2 周）。
+> 想让它**永久**可恢复，唯一可靠办法是 `git tag <tag> <hash>`（tag 会让对象永不被 gc 回收）。
 > 末位提交是否已并入 main 以 `git merge-base --is-ancestor <hash> main` 实测为准（2026-09-09 全部实测过，此前文档 5 处「功能已在 main」的记载是错的）。
 
 | 原分支 | 功能板块 | 备注 | 最后提交 |
@@ -118,7 +119,13 @@
 | feature/website-landing | 官网落地页 v1（被 v2 替代） | 有独有提交未并入 | 349f767 |
 | feature/inspiration-sync-buttons | 灵感速览云同步入口 / 回收站多选（早期并行版） | 有独有提交未并入 | e2df13b |
 | feature/sync-line-identity | 行身份改造：行 ID 去路径 / 原地改行补墓碑 / 未到期待办全库扫行 / 空上传时刻补齐 | **代码已并入 main（2026-09-12）**；独有内容是 `MIGRATION.md`（含本机绝对路径的一次性迁移指引，已加入 .gitignore，**不推送远端**，只留本机工作区） | 9ada255 |
-| feature/quark-cloud-drive | 夸克网盘适配器（较早试点：fid 每次变 → 不缓存按名字现场搜；判成败只看 stdout 的 NDJSON） | **搁置存档（2026-09-14），不合并不推送**。官方 CLI 校验宿主白名单，第三方无门（假绿实验见 §一 第 15 条同源结论）；**本地分支仍在**，落后 main 19 个提交。⚠ 2026-09-17 补登：此前 9-09「瘦身定稿」重写本表时把它漏掉了，是一处登记缺口 | aa96192 |
+| feature/quark-cloud-drive | 夸克网盘适配器（借道官方 CLI）：`Services/Destinations/Quark/` 四文件（CliRunner / Destination / NodeLocator / RuntimeManager，约 1200 行）+ 设置页安装与授权 + AI 问答工具化，合计 **13 文件 / +1931 −2** | **2026-09-17 按用户指令彻底删除本地分支**（从未推送 → 无远程副本，也无 tag，**已无任何 ref 指向**）。搁置原因：官方 CLI 校验宿主白名单、第三方无门（假绿实验见 §一 第 15 条）。**恢复只能靠 reflog，过期即永久丢失**。⚠ 补登缘由：9-09「瘦身定稿」重写本表时把它漏掉了 | aa96192 |
+
+> **`feature/quark-cloud-drive` 删除留档（2026-09-17）** —— 丢了什么，记清楚：
+> 5 个提交（`2a5ff50` 接入夸克网盘 → `cc1793f` 支持上传对话附件 → `e5f854f` 登记 → `8cdc1a7` 方案文档补「可行性结论：本方案不成立」→ `aa96192` 标注搁置），
+> 内容含 **`docs/夸克网盘接入方案.md`（285 行）** —— 那份文档的结论「本方案不成立」本身有价值（负面结论也是结论）。
+> **结论层已另有留存**（项目 MEMORY.md §三 第 15 条「夸克适配器三特性」+ skill `platform-integration-recon`），
+> 但**文档正文随分支一起没了**。若要救回：`git branch tmp-quark aa96192`（趁 reflog 还在），或先打 tag 保永久。
 
 ## 五、远程分支状态
 
