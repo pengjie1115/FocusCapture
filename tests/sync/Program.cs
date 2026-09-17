@@ -441,6 +441,64 @@ internal static class Program
               "导出文件里确实含有笔记正文（不是空文件）");
         Check(exportOut.Contains("未上传网盘"), "导出结果必须说清'没上网盘'（用户明确要求导出不上云）");
 
+        // ── ⑦-2 精选导出：用户反馈「只能导整天，包容度不够」→ 必须能只导指定的几条 ──
+        // 原来的死结：用户说「我只要那两条」，工具只能整段导（夹带当天其它内容）或宣告做不到。
+        //
+        // 沙箱现状恰好是最难的情形：今天这几条**都落在同一分钟**（脚本连续写入）。
+        // 这不是巧合而是真实约束 —— 笔记落盘时间只到分钟（NoteEntry.ToMarkdownLine 用 yyyy-MM-dd HH:mm），
+        // 同一分钟记的多条在时间戳上完全一样。所以本组守护两件事：
+        //   ① 撞车时必须报错 + 给出可执行出路（补 hint），绝不自己猜一条
+        //   ② 带 hint 后必须能精确导指定的条目、不夹带当天其它内容
+
+        var allEntries = notes.LoadAllEntries();
+        var pickNote = allEntries.First(e => e.Content.Contains("改后内容XYZ"));
+        var minute = pickNote.Timestamp.ToString("yyyy-MM-dd HH:mm");
+
+        var filesBeforePick = Directory.GetFiles(settings.ExportFolderPath).Length;
+        var ambiguousOut = exportTool.ExecuteAsync(
+            "{\"ref_times\":[\"" + minute + "\"]}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(ambiguousOut.StartsWith("错误：") && ambiguousOut.Contains("hint")
+              && Directory.GetFiles(settings.ExportFolderPath).Length == filesBeforePick,
+              "同一分钟有多条时，纯时间戳必须报错不猜，且给出可执行出路（补 hint）",
+              ambiguousOut.Replace("\n", " / "));
+
+        var pickOut = exportTool.ExecuteAsync(
+            "{\"ref_times\":[{\"time\":\"" + minute + "\",\"hint\":\"改后内容\"}," +
+            "{\"time\":\"" + minute + "\",\"hint\":\"待办新内容\"}]}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(pickOut.Contains("已导出 2 条") && Directory.GetFiles(settings.ExportFolderPath).Length == filesBeforePick + 1,
+              "ref_times 带 hint 的精选：只导指定的 2 条（用户说的'我只要这两条'）", pickOut);
+
+        var pickFiles = Directory.GetFiles(settings.ExportFolderPath, "*精选*");
+        var pickText = pickFiles.Length == 1 ? File.ReadAllText(pickFiles[0]) : "";
+        Check(pickText.Contains("改后内容XYZ") && pickText.Contains("待办新内容") && !pickText.Contains("会被删掉的笔记"),
+              "精选导出的文件里**只有那 2 条，不夹带当天其它内容** —— 这正是原来做不到的事");
+
+        // 找不到的时间戳：必须报错且一个文件都不写（不能让用户拿到半份自己去核）
+        var filesBeforeMiss = Directory.GetFiles(settings.ExportFolderPath).Length;
+        var pickMissing = exportTool.ExecuteAsync(
+            "{\"ref_times\":[\"2000-01-01 00:00\"]}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(pickMissing.StartsWith("错误：") && Directory.GetFiles(settings.ExportFolderPath).Length == filesBeforeMiss,
+              "ref_times 找不到条目时必须报错且不写文件，不能导半份更不能假装成功", pickMissing);
+
+        // 兜底：模型偶尔给逗号分隔的复合字符串，只认 JSON 数组必然踩空
+        var commaOut = exportTool.ExecuteAsync(
+            "{\"ref_times\":\"2000-01-01 00:00,2000-01-02 00:00\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(commaOut.Contains("2000-01-01 00:00 找不到") && commaOut.Contains("2000-01-02 00:00 找不到"),
+              "ref_times 传逗号分隔字符串也要能解析（不能只认 JSON 数组）", commaOut.Replace("\n", " / "));
+
+        // query：按关键词只导命中的条目
+        var queryOut = exportTool.ExecuteAsync("{\"query\":\"改后内容\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(queryOut.Contains("已导出 1 条"), "export_notes 的 query：按关键词只导命中的那 1 条", queryOut);
+
+        var queryScoped = exportTool.ExecuteAsync(
+            "{\"query\":\"改后内容\",\"date\":\"2000-01-01\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(queryScoped.Contains("没有找到"), "query 配日期时只在该日期内找，别的日子的命中不能算进来");
+
+        var queryMiss = exportTool.ExecuteAsync(
+            "{\"query\":\"绝对不存在的词zzz\"}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(queryMiss.Contains("没有找到"), "query 无命中要如实说没有，不能导出一份空文件");
+
         // ── ⑧ 表格解析：共享字符串 / 日期序列号 / 稀疏列 ──
 
         var xlsxPath = Path.Combine(root, "测试表.xlsx");
