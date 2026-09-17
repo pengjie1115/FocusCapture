@@ -288,12 +288,12 @@ public partial class MainWindow : Window
 
     // ══════════════════ 悬浮球拖放保存（2026-09-16）══════════════════
     //
-    // 设计依据 docs/悬浮球拖放保存方案.md。三条最容易在维护中被破坏的纪律，先写在这里：
+    // 三条最容易在维护中被破坏的纪律，先写在这里：
     //
     //  ① **拖入不做任何落地**：文件拖进来"什么都不做"是正确行为，没有暂存区、不复制、不入仓。
-    //     「不点任何选项 → 零副作用」是这块设计的底线（方案 §3 第 5 条 / §11-8）。
-    //  ② **不可撤回的动作只能由显式点击触发**：绝不用"悬停 N 秒"这类时间阈值触发上传（方案 §3 第 1 条）。
-    //  ③ **浮层必须是独立窗口**：球窗口的透明区穿透，画在球里的按钮既收不到拖放也点不到（方案 §3 第 3 条）。
+    //     「不点任何选项 → 零副作用」是这块设计的底线。
+    //  ② **不可撤回的动作只能由显式点击触发**：绝不用"悬停 N 秒"这类时间阈值触发上传。
+    //  ③ **浮层必须是独立窗口**：球窗口的透明区穿透，画在球里的按钮既收不到拖放也点不到。
     //
     // 外发链路不新增机制：「得到大脑」直接调适配器（用户已拍板），与 B-8 按钮直传同一条。
     // 以后新增渠道 = 卡片选项加一行 + 适配器注册一行，**卡片不硬编码渠道名**。
@@ -313,7 +313,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>文字拖入：立即存本地笔记 + 球闪绿（球在 FloatBall 里已闪）+ 浮出竖向小条（方案 §4.2）。</summary>
+    /// <summary>文字拖入：立即存本地笔记 + 球闪绿（球在 FloatBall 里已闪）+ 浮出竖向小条。</summary>
     private void HandleTextDrop(DragPayload payload)
     {
         var text = (payload.Text ?? "").Trim();
@@ -342,8 +342,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 文件拖入：**什么都不做**（不复制、不入仓、不上传），只弹紧凑卡片（方案 §4.3）。
-    /// 看到这里想"顺手复制一份保命"的话，先回读方案 §3 第 5 条 —— 那个方案已经被否掉了。
+    /// 文件拖入：**什么都不做**（不复制、不入仓、不上传），只弹紧凑卡片。
+    /// 看到这里想"顺手复制一份保命"的话，先看清禁区清单（REGRESSION B-15 段的「改这块前必读」）—— "新增暂存区"那条已经被否掉了。
     /// </summary>
     private void HandleFileDrop(DragPayload payload)
     {
@@ -399,7 +399,7 @@ public partial class MainWindow : Window
         !string.IsNullOrWhiteSpace(_settings.GetNoteApiKey)
         && !string.IsNullOrWhiteSpace(_settings.GetNoteClientId);
 
-    /// <summary>卡片「用 AI 问答打开」：把文件带进对话（方案 §10 第 1 项：Open 扩展了附件参数）。</summary>
+    /// <summary>卡片「用 AI 问答打开」：把文件带进对话（Open 扩展了附件参数）。</summary>
     private void OpenAiWithFiles(List<string> paths)
     {
         var usable = DragDropSaveService.ExistingFiles(paths);
@@ -417,7 +417,7 @@ public partial class MainWindow : Window
         if (missing.Count > 0) WarnMissingFiles(missing);
     }
 
-    /// <summary>卡片「存到网盘」：现有链路原样 —— RegisterLocalFile 入仓 + UploadQueue.Kick（方案 §4.3）。</summary>
+    /// <summary>卡片「存到网盘」：现有链路原样 —— RegisterLocalFile 入仓 + UploadQueue.Kick。</summary>
     private void SaveFilesToCloud(List<string> paths)
     {
         var usable = DragDropSaveService.ExistingFiles(paths);
@@ -472,7 +472,7 @@ public partial class MainWindow : Window
         _ = ExecuteGetNoteSaveAsync(title, text);
     }
 
-    /// <summary>卡片「发到得到大脑」：文本类文件读出来直传（方案 §4.3；该行只对文本类显示）。</summary>
+    /// <summary>卡片「发到得到大脑」：文本类文件读出来直传（该行只对文本类显示）。</summary>
     private void PushFilesToGetNote(List<string> paths)
     {
         var usable = DragDropSaveService.ExistingFiles(paths)
@@ -516,7 +516,7 @@ public partial class MainWindow : Window
         _ = ExecuteGetNoteSaveAsync(title, sb.ToString());
     }
 
-    /// <summary>调得到大脑适配器保存一篇笔记。这是**绕过 AI** 的直传路径（方案 §8 架构纪律）。</summary>
+    /// <summary>调得到大脑适配器保存一篇笔记。这是**绕过 AI** 的直传路径（架构纪律）。</summary>
     private async Task ExecuteGetNoteSaveAsync(string title, string content)
     {
         try
@@ -580,7 +580,7 @@ public partial class MainWindow : Window
                 ApplyAssistantNameToAllEntries();
 
                 // 拖放保存（2026-09-16）：开关关掉要立刻收回球上的 AllowDrop，并收掉已经浮着的浮层；
-                // 透明度要**实时**作用到已打开的小条/卡片（方案 §11-7 验收的就是这件事）。
+                // 透明度要**实时**作用到已打开的小条/卡片（验收清单里就有这一条）。
                 _floatBall?.SetDragToSaveEnabled(_settings.DragToSaveEnabled);
                 if (!_settings.DragToSaveEnabled) CloseDropOverlays();
                 _dropStrip?.SetOpacity(_settings.DropActionOpacity);

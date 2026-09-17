@@ -5,7 +5,7 @@ using System.Windows.Threading;
 namespace FocusCapture.Windows;
 
 /// <summary>
-/// 文字拖到悬浮球后浮出的**竖向小条**（方案 §4.2 / §5.1）。
+/// 文字拖到悬浮球后浮出的**竖向小条**。
 ///
 /// 生命周期：拖入 → 存笔记 + 球闪绿 → 弹本窗口 → 停留 DropActionStripSeconds 秒（默认 3）→ 自动消失。
 /// **不点也会自己走**：笔记已经稳稳存在本地了，小条只是"要不要顺手做点别的"的出口。
@@ -32,9 +32,9 @@ public partial class DropActionStrip : Window
     /// <summary>点了「得到大脑」。**这是绕过 AI 直接调适配器**（用户已拍板），别在这条链路上再套一层 AI。</summary>
     public event Action? GetNoteRequested;
 
-    /// <param name="staySeconds">停留秒数（方案 §9 的 DropActionStripSeconds，2~10）。</param>
+    /// <param name="staySeconds">停留秒数（对应设置项 DropActionStripSeconds，2~10）。</param>
     /// <param name="getNoteAvailable">得到大脑凭证是否已配置；未配置 → 该项置灰并提示去设置。</param>
-    /// <param name="opacity">方案 §9 的 DropActionOpacity。</param>
+    /// <param name="opacity">对应设置项 DropActionOpacity。</param>
     public DropActionStrip(int staySeconds, bool getNoteAvailable, double opacity)
     {
         InitializeComponent();

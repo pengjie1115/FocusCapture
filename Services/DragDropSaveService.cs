@@ -31,8 +31,8 @@ public sealed record DragPayload(
 }
 
 /// <summary>
-/// 悬浮球拖放保存的**判定与取值逻辑**（方案 §6）。
-/// 设计依据：<c>docs/悬浮球拖放保存方案.md</c>；探针实测数据见该文档 §7。
+/// 悬浮球拖放保存的**判定与取值逻辑**。
+/// 下面每条规则的取值口径都来自真机拖放探针的实测记录（微信 / 浏览器 / 文件管理器 / WPS 四类源都跑过）。
 ///
 /// 本类刻意做成静态纯函数集合（除前台窗口查询外无 IO、无 UI），
 /// 目的是让「判定顺序」「取值口径」「命名规则」这些**踩过坑的规则**能被检查点直接断言。
@@ -40,10 +40,10 @@ public sealed record DragPayload(
 /// </summary>
 public static class DragDropSaveService
 {
-    /// <summary>识别不出来源程序时的兜底来源名（方案 §4.2）。</summary>
+    /// <summary>识别不出来源程序时的兜底来源名。</summary>
     public const string FallbackSourceApp = "拖动";
 
-    /// <summary>得到大脑标题的取字上限（方案 §4.2，**推定未与用户确认**）。</summary>
+    /// <summary>得到大脑标题的取字上限（**推定规则，未与用户确认**）。</summary>
     public const int GetNoteTitleMaxChars = 30;
 
     /// <summary>
@@ -59,7 +59,7 @@ public static class DragDropSaveService
         ".html", ".htm", ".css", ".scss", ".less", ".vue", ".srt", ".vtt",
     };
 
-    // ══════════════════ 内容判定与取值（方案 §6.1 / §6.2）══════════════════
+    // ══════════════════ 内容判定与取值 ══════════════════
 
     /// <summary>
     /// 解析拖放数据。**判定顺序不可颠倒**：
@@ -134,7 +134,7 @@ public static class DragDropSaveService
         }
     }
 
-    // ══════════════════ 来源程序识别（方案 §6.4）══════════════════
+    // ══════════════════ 来源程序识别 ══════════════════
 
     /// <summary>
     /// 用前台窗口反查来源程序。**拖放期间返回的就是源程序**（探针四轮实测稳定：
@@ -161,7 +161,7 @@ public static class DragDropSaveService
         }
     }
 
-    /// <summary>进程名 → 显示名（方案 §6.4 的映射表；表外一律去掉 <c>.exe</c> 原样显示）。</summary>
+    /// <summary>进程名 → 显示名（表外一律去掉 <c>.exe</c> 原样显示）。</summary>
     public static string MapProcessName(string? processName)
     {
         if (string.IsNullOrWhiteSpace(processName)) return FallbackSourceApp;
@@ -180,7 +180,7 @@ public static class DragDropSaveService
         };
     }
 
-    // ══════════════════ 文件名与卡片头部（方案 §6.3 / §4.3）══════════════════
+    // ══════════════════ 文件名与卡片头部 ══════════════════
 
     /// <summary>
     /// 生成用于显示/登记的**显示名**。
@@ -219,7 +219,7 @@ public static class DragDropSaveService
     }
 
     /// <summary>
-    /// 卡片头部（方案 §4.3）：单文件 → 真实文件名（微信图片为生成名）；多文件 → 「N 个文件」。
+    /// 卡片头部：单文件 → 真实文件名（微信图片为生成名）；多文件 → 「N 个文件」。
     /// 副行统一 <c>{大小} · 来自{来源程序}</c>（**不是**旧版的"已复制到本机" —— 新逻辑下拖入不复制）。
     /// </summary>
     public static (string Title, string Subtitle) BuildCardHeader(IReadOnlyList<string> paths, string sourceApp)
@@ -276,7 +276,7 @@ public static class DragDropSaveService
     /// <summary>这批文件里有没有**文本类**文件（决定卡片是否显示「发到得到大脑」）。</summary>
     public static bool HasAnyTextFile(IReadOnlyList<string> paths) => paths.Any(IsTextFile);
 
-    /// <summary>可当文本读的扩展名（方案 §4.3：「仅文本类文件显示」，用户拍板）。</summary>
+    /// <summary>可当文本读的扩展名（「仅文本类文件显示」，用户拍板）。</summary>
     public static bool IsTextFile(string path)
     {
         try { return TextExts.Contains(Path.GetExtension(path)); }
@@ -288,12 +288,12 @@ public static class DragDropSaveService
     ///
     /// 存在的意义：微信图片躺在 <c>temp\RWTemp\</c> 里，**微信随时会清**。
     /// 用户拖进来之后如果隔很久才点动作，文件可能已经不在 ——
-    /// 那种情况下必须给出明确提示，不能静默失败（方案 §6.3 硬要求）。
+    /// 那种情况下必须给出明确提示，不能静默失败（硬要求）。
     /// </summary>
     public static List<string> ExistingFiles(IReadOnlyList<string> paths) =>
         paths.Where(p => { try { return File.Exists(p); } catch { return false; } }).ToList();
 
-    /// <summary>"文件已不在"的提示文案（方案 §10 第 6 项：实施时定稿）。</summary>
+    /// <summary>"文件已不在"的提示文案（实施时定稿）。</summary>
     public static string BuildMissingFileMessage(IReadOnlyList<string> missing)
     {
         if (missing.Count == 0) return "";
@@ -308,7 +308,7 @@ public static class DragDropSaveService
     }
 
     /// <summary>
-    /// 得到大脑的标题策略（方案 §4.2，**推定未与用户确认**）：取正文首行前 30 字；无换行则取前 30 字。
+    /// 得到大脑的标题策略（**推定规则，未与用户确认**）：取正文首行前 30 字；无换行则取前 30 字。
     /// 首行为空则往下找到第一个非空行 —— 空标题建不出笔记。
     /// </summary>
     public static string MakeGetNoteTitle(string text)

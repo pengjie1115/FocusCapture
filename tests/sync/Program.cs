@@ -152,16 +152,16 @@ internal static class Program
 
     // ══════════════════ 悬浮球拖放保存（2026-09-16） ══════════════════
     //
-    // 方案 docs/悬浮球拖放保存方案.md §6。本组守护的是"靠真机事故换来的规则"——
+    // 本组守护的是"靠真机事故换来的规则"——
     // 这些规则看代码都"很合理"，随手改一下也很像优化，改了却只在真实拖放场景下才炸：
     //   ① 判定顺序：FileDrop 必须优先于文字（微信拖 xlsx 时 Text 里装的是**文件名**，
     //      顺序一反就会把 JD-260911.xlsx 当成正文存成一条笔记）
     //   ② 取值口径：只认 UnicodeText（Chromium 的 CF_TEXT 中文是乱码 搴旂敤鍑瘉）
     //   ③ 命名规则：微信图片的哈希名必须换成"微信图片_日期_时间"
-    //   ④ 零副作用：判定过程既不改源文件，也不凭空落地任何东西（方案 §11-8 的机器可验部分）
+    //   ④ 零副作用：判定过程既不改源文件，也不凭空落地任何东西
     //
     // 边界（诚实标注）：真实的 OLE 拖放（鼠标拖起来、松手）**本组覆盖不到** ——
-    // 那需要在真实宿主里用真人手拖，见 REGRESSION B-15 的人工清单。
+    // 那需要在真实宿主里用真人手拖，属于人工验收范围。
 
     private static void TestDragDropSave()
     {
@@ -261,7 +261,7 @@ internal static class Program
         Check(DragDropSaveService.MapProcessName("") == DragDropSaveService.FallbackSourceApp,
               "识别不出来源时必须兜底为「拖动」（不能留空把界面撑坏）");
 
-        // ── ⑤ 得到大脑标题策略（方案 §4.2 推定规则）──
+        // ── ⑤ 得到大脑标题策略（推定规则）──
 
         Check(DragDropSaveService.MakeGetNoteTitle("第一行\n第二行") == "第一行",
               "标题取正文首行");
@@ -318,7 +318,7 @@ internal static class Program
               "副行必须是「大小 · 来自来源」（不是旧版的「已复制到本机」）", $"实际「{sub1}」");
 
         var (title2, sub2) = DragDropSaveService.BuildCardHeader(new[] { xlsx, utf8File }, "文件管理器");
-        Check(title2 == "2 个文件", "多文件标题必须是「N 个文件」（方案 §4.3 推定规则）", $"实际「{title2}」");
+        Check(title2 == "2 个文件", "多文件标题必须是「N 个文件」（推定规则）", $"实际「{title2}」");
 
         // 总大小用**已知字节数**的两个文件来验，别拿随手造的小文件去 Contains("2 ") 这种模糊匹配——
         // 24 字节的文件会被格式化成「24 字节」，模糊匹配必然误红（本检查点第一版就栽在这）。
@@ -350,7 +350,7 @@ internal static class Program
         Check(msg.Contains("重新拖入"),
               "提示里必须给出下一步动作（否则用户只能干瞪眼）");
 
-        // ── ⑪ 零副作用（方案 §11-8 的机器可验部分）──
+        // ── ⑪ 零副作用（机器可验部分）──
 
         var beforeFiles = Directory.GetFiles(dir).OrderBy(x => x).ToArray();
         var beforeContent = File.ReadAllText(utf8File);

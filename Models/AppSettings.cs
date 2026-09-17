@@ -111,7 +111,7 @@ public class AppSettings
     // ── 外观 ──
     public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
 
-    // ── 悬浮球拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §9）──
+    // ── 悬浮球拖放保存（2026-09-16）──
     /// <summary>
     /// 拖到悬浮球触发保存的总开关。**默认关**：关闭时悬浮球 AllowDrop=false，
     /// 拖放完全无反应（连光标都不变），与改造前行为完全一致。

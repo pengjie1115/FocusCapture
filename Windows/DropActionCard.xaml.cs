@@ -5,9 +5,9 @@ using System.Windows.Threading;
 namespace FocusCapture.Windows;
 
 /// <summary>
-/// 文件拖到悬浮球后浮出的**紧凑卡片**（方案 §4.3 / §5.2）。
+/// 文件拖到悬浮球后浮出的**紧凑卡片**。
 ///
-/// 关键前提（方案 §3 第 2 条）：拖拽期间鼠标左键被 OLE 拖放循环独占，目标窗口上任何按钮、菜单都点不动。
+/// 关键前提：拖拽期间鼠标左键被 OLE 拖放循环独占，目标窗口上任何按钮、菜单都点不动。
 /// 所以卡片**只能在松手之后**弹 —— 绝不要在 DragEnter/DragOver 里弹。
 ///
 /// 关掉这张卡片的四条路径：点了某个选项 / 点了卡片外面 / 按 Esc / 兜底超时。
@@ -55,7 +55,7 @@ public partial class DropActionCard : Window
     /// <param name="subtitle">副行：<c>{大小} · 来自{来源程序}</c>。</param>
     /// <param name="showGetNote">是否显示「发到得到大脑」（**仅文本类文件**显示，用户拍板）。</param>
     /// <param name="getNoteAvailable">得到大脑凭证是否已配置；未配置 → 置灰并提示去设置。</param>
-    /// <param name="opacity">方案 §9 的 DropActionOpacity。</param>
+    /// <param name="opacity">对应设置项 DropActionOpacity。</param>
     public DropActionCard(string title, string subtitle, bool showGetNote,
         bool getNoteAvailable, double opacity)
     {

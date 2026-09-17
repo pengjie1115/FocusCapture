@@ -29,14 +29,14 @@ public partial class FloatBall : Window
     public event Action? BadgeClicked;   // v3.5：点击角标 → 打开待办汇总窗
 
     /// <summary>
-    /// 拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §4.3）：松手后把解析结果交出去。
+    /// 拖放保存（2026-09-16）：松手后把解析结果交出去。
     /// 本窗口**只负责判定与反馈**（展开 / 闪绿 / 原子），不落地任何数据 ——
-    /// 「什么都不做」是文件拖入的正确行为，别在这里偷偷复制或上传（方案 §3 第 5 条：无暂存区）。
+    /// 「什么都不做」是文件拖入的正确行为，别在这里偷偷复制或上传（本功能**没有暂存区**）。
     /// </summary>
     public event Action<DragPayload>? DropReceived;
 
     /// <summary>
-    /// 拖放保存总开关（方案 §4.1）。**关闭时 AllowDrop=false**：拖放完全无反应，连光标都不变，
+    /// 拖放保存总开关。**关闭时 AllowDrop=false**：拖放完全无反应，连光标都不变，
     /// 与改造前行为完全一致。这是"默认关"这条设计能被用户验证的唯一落点。
     /// </summary>
     public void SetDragToSaveEnabled(bool enabled)
@@ -70,7 +70,7 @@ public partial class FloatBall : Window
             return;
         }
 
-        // 吸附态只有 8×36，不展开用户根本瞄不准（方案 §4.2）
+        // 吸附态只有 8×36，不展开用户根本瞄不准
         if (!_dragExpanded)
         {
             _dragExpanded = true;

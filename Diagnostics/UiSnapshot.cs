@@ -160,7 +160,7 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
-            // ── 悬浮球拖放保存（2026-09-16，方案 docs/悬浮球拖放保存方案.md §5）──
+            // ── 悬浮球拖放保存（2026-09-16）──
             // 这两个浮层是**独立窗口**（球窗口的透明区穿透，画在球里收不到鼠标事件），
             // 尺寸/配色/悬停都是线框数值，必须出图对照判读：小条宽 96 竖向；卡片宽 ≤276 **贴合内容**
             // （旧版卡片右侧留一大片空白，已否）；两者均**无图标**。
@@ -182,13 +182,13 @@ internal static class UiSnapshot
                 () => new DropActionCard("微信图片_20260916_231045.jpg", "320 KB · 来自微信",
                     showGetNote: true, getNoteAvailable: true, opacity: 1.0), outDir, log);
 
-            // 多文件：标题「N 个文件」+ 总大小（方案 §4.3，**推定未与用户确认**，出图确认形态）
+            // 多文件：标题「N 个文件」+ 总大小（**推定规则，未与用户确认**，出图确认形态）
             Capture("23-拖放卡片（多文件）",
                 () => new DropActionCard("3 个文件", "5.2 MB · 来自文件管理器",
                     showGetNote: false, getNoteAvailable: true, opacity: 1.0), outDir, log);
 
             // 设置「显示」板块（3 = 显示：0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览）。
-            // ⚠ 方案 §9 写的「外观」板块（PanelAppearance）与实际不符 —— 三个透明度滑块其实都在
+            // ⚠ 设计稿原写「外观」板块（PanelAppearance），与实际不符 —— 三个透明度滑块其实都在
             //   「显示」（PanelDisplay）里，拖放这三项也落在同一板块（理由见 SettingsWindow.xaml 的注释）。
             //   新增设置项属 REGRESSION 维护触发条件，这里出图核验控件没被挤出可视区、默认值正确。
             Capture("24-设置-显示板块（含拖放设置）", () =>
