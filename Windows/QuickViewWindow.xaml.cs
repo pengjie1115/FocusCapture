@@ -779,39 +779,21 @@ public partial class QuickViewWindow : Window
         }
     }
 
+    /// <summary>
+    /// 笔记行的鼠标手势（2026-09-18 语义变更，用户拍板）：**只保留「双击 → 进入编辑」**。
+    /// 原先单击即复制内容到剪贴板，导致双击的第一下（ClickCount==1）必然先写一次剪贴板 ——
+    /// 同步 OLE 写入阻塞 UI 线程、被其他程序占用时还要退避重试，双击进编辑因此明显变慢。
+    /// 复制改由右键菜单「复制」承担（CtxCopy_Click，仍走 SafeClipboard 容错）。
+    /// </summary>
     private void NoteItem_Click(object sender, MouseButtonEventArgs e)
     {
-        // 防止点击 CheckBox 区域时也触发复制
+        // 防止点击 CheckBox 区域时误触发（勾选框有自己的单击/双击语义）
         if (IsClickFromCheckBox(e.OriginalSource as DependencyObject)) return;
 
-        if (sender is Border b && b.DataContext is NoteEntryViewModel vm)
+        if (sender is Border { DataContext: NoteEntryViewModel vm })
         {
-            // 双击 → 进入编辑态
-            if (e.ClickCount == 2)
-            {
-                BeginEditNote(vm);
-                return;
-            }
-
-            // 编辑态内的点击不触发复制
-            if (vm.IsEditing) return;
-
-            if (string.IsNullOrEmpty(vm.Content)) return; // 空内容不复制（Clipboard.SetText 对空串会抛参数异常）
-
-            ClipboardHookService.MarkSelfCopy(); // 抑制剪贴板监控反馈
-            // 复制展示内容（编辑过则复制编辑后内容）。
-            // 必须走 SafeClipboard：剪贴板被其他进程占用时，Clipboard.SetText 内部的 OleFlushClipboard
-            // 会抛 CLIPBRD_E_CANT_OPEN；若在此处冒泡到全局异常处理会弹模态框，把双击的第二下点击吃掉
-            // —— 用户表现就是「双击笔记进不了编辑状态」。此处绝不弹模态框。
-            if (!SafeClipboard.TrySetText(vm.Content, WpfClipboard.SetText))
-            {
-                ShowSyncStatus("复制失败：剪贴板被其他程序占用，请稍后重试", error: true);
-                return;
-            }
-            b.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x50, 0x3A));
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
-            t.Tick += (_, _) => { b.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)); t.Stop(); };
-            t.Start();
+            if (vm.IsEditing) return;              // 编辑态内不响应，避免重入打断框内选词
+            if (e.ClickCount == 2) BeginEditNote(vm);
         }
     }
 
@@ -1259,7 +1241,11 @@ public partial class QuickViewWindow : Window
 
         vm.BeginEdit();
         _activeEditVm = vm;
-        // 等模板切换完成后聚焦编辑框
+        // 等模板切换完成后聚焦编辑框。
+        // 优先级用 Loaded 而非原先的 Background（2026-09-18）：Dispatcher 优先级由高到低为
+        // DataBind(9) > Render(8) > Loaded(7) > Input(6) > Background(5)。模板切换由绑定（DataBind）
+        // 与布局渲染（Render）驱动，两者仍都早于 Loaded，所以不会拿到旧模板；
+        // 而 Background 表示"等所有任务都空闲"，列表刷新/输入排队时聚焦会明显延后。
         Dispatcher.BeginInvoke(new Action(() =>
         {
             if (NotesList.ItemContainerGenerator.ContainerFromItem(vm) is FrameworkElement container)
@@ -1278,7 +1264,7 @@ public partial class QuickViewWindow : Window
                     NotesScroll?.ScrollToVerticalOffset(_scrollOffsetBeforeEdit);
                 }), DispatcherPriority.Background);
             }
-        }), DispatcherPriority.Background);
+        }), DispatcherPriority.Loaded);
     }
 
     private void BtnEditSave_Click(object sender, RoutedEventArgs e)
