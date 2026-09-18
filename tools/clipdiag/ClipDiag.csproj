@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FocusCapture.ClipDiag</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 纯 Win32 P/Invoke，刻意不引用主项目：编译秒级，且能在主项目编译失败时照常使用 -->
+  </PropertyGroup>
+
+</Project>
