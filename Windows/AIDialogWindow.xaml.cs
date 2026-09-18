@@ -453,9 +453,16 @@ public partial class AIDialogWindow : Window
 
         try
         {
-            Clipboard.SetText(text);
-            ClipboardHookService.MarkSelfCopy();   // 别让"剪贴板监控自动存笔记"把这次当成用户复制
-            AppLog.Info("AI", $"复制选区（含附件卡片）：已降级为纯文本，{text.Length} 字");
+            // 剪贴板被其他程序占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN，统一走 SafeClipboard 退避重试（失败不抛）
+            if (!SafeClipboard.TrySetText(text, Clipboard.SetText))
+            {
+                AppLog.Error("AI", "复制选区失败：内容为空或剪贴板被其他程序占用（已退避重试）");
+            }
+            else
+            {
+                ClipboardHookService.MarkSelfCopy();   // 别让"剪贴板监控自动存笔记"把这次当成用户复制
+                AppLog.Info("AI", $"复制选区（含附件卡片）：已降级为纯文本，{text.Length} 字");
+            }
         }
         catch (Exception ex)
         {
@@ -475,8 +482,10 @@ public partial class AIDialogWindow : Window
         e.CancelCommand();
         try
         {
-            Clipboard.SetText(InputBox.Selection.Text);
-            ClipboardHookService.MarkSelfCopy();
+            if (SafeClipboard.TrySetText(InputBox.Selection.Text, Clipboard.SetText))
+                ClipboardHookService.MarkSelfCopy();
+            else
+                AppLog.Error("AI", "复制兜底处理失败：内容为空或剪贴板被其他程序占用（已退避重试）");
         }
         catch (Exception ex)
         {

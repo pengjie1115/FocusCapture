@@ -796,8 +796,18 @@ public partial class QuickViewWindow : Window
             // 编辑态内的点击不触发复制
             if (vm.IsEditing) return;
 
+            if (string.IsNullOrEmpty(vm.Content)) return; // 空内容不复制（Clipboard.SetText 对空串会抛参数异常）
+
             ClipboardHookService.MarkSelfCopy(); // 抑制剪贴板监控反馈
-            WpfClipboard.SetText(vm.Content); // 复制展示内容（编辑过则复制编辑后内容）
+            // 复制展示内容（编辑过则复制编辑后内容）。
+            // 必须走 SafeClipboard：剪贴板被其他进程占用时，Clipboard.SetText 内部的 OleFlushClipboard
+            // 会抛 CLIPBRD_E_CANT_OPEN；若在此处冒泡到全局异常处理会弹模态框，把双击的第二下点击吃掉
+            // —— 用户表现就是「双击笔记进不了编辑状态」。此处绝不弹模态框。
+            if (!SafeClipboard.TrySetText(vm.Content, WpfClipboard.SetText))
+            {
+                ShowSyncStatus("复制失败：剪贴板被其他程序占用，请稍后重试", error: true);
+                return;
+            }
             b.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x50, 0x3A));
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
             t.Tick += (_, _) => { b.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)); t.Stop(); };
@@ -993,8 +1003,12 @@ public partial class QuickViewWindow : Window
     {
         var vm = GetContextTarget(sender);
         if (vm == null) return;
+        if (string.IsNullOrEmpty(vm.Content)) return;
+
         ClipboardHookService.MarkSelfCopy();
-        WpfClipboard.SetText(vm.Content);
+        // 与单击复制同一路径：失败只提示，不把 CLIPBRD_E_CANT_OPEN 抛到全局异常处理弹模态框
+        if (!SafeClipboard.TrySetText(vm.Content, WpfClipboard.SetText))
+            ShowSyncStatus("复制失败：剪贴板被其他程序占用，请稍后重试", error: true);
     }
 
     private void CtxEdit_Click(object sender, RoutedEventArgs e)

@@ -1707,7 +1707,13 @@ public partial class SettingsWindow : Window
         try
         {
             var path = FileRepository.NetAttachmentsDir;
-            System.Windows.Clipboard.SetText(path);
+            // 剪贴板被其他程序占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN，统一走 SafeClipboard 退避重试
+            if (!SafeClipboard.TrySetText(path, System.Windows.Clipboard.SetText))
+            {
+                System.Windows.MessageBox.Show(this, "复制失败：剪贴板被其他程序占用，请稍后重试", "提示",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             System.Windows.MessageBox.Show(this,
                 $"已复制网盘路径：\n{path}\n\n在百度网盘里进入这个目录即可统一清理" +
                 "（附件按月分子目录，删掉对应月份文件夹就算清完）。",

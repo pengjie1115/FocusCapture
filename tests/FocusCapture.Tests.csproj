@@ -24,6 +24,7 @@
     <Compile Include="..\Services\Sync\CryptoService.cs" Link="Src\CryptoService.cs" />
     <Compile Include="..\Services\TimeParser.cs" Link="Src\TimeParser.cs" />
     <Compile Include="..\Services\QuickViewToolbarCatalog.cs" Link="Src\QuickViewToolbarCatalog.cs" />
+    <Compile Include="..\Services\SafeClipboard.cs" Link="Src\SafeClipboard.cs" />
   </ItemGroup>
 
 </Project>

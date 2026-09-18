@@ -12,6 +12,7 @@
 
 using System;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using FocusCapture.Services;
 using FocusCapture.Services.Sync;
@@ -152,6 +153,68 @@ Check(QuickViewToolbarCatalog.CanAdd(1280, QuickViewToolbarCatalog.DefaultLeft.T
 // 原因：本工程刻意不引用主项目（只链接少数无依赖的源文件，以保持秒级编译），
 //       而文件仓库必然依赖日志/设置/附件服务，链进来会把这层轻量结构毁掉。
 // 红线守卫（句柄不可伪造）与淘汰保护都在慢层，交付前必跑。
+
+// ── [5] 剪贴板写入容错 SafeClipboard ──
+// 用户可见性质：剪贴板被其他程序占用时，复制动作**不得弹出界面错误框**。
+// 真实事故（2026-09-18）：灵感速览面板「单击复制」未捕获 CLIPBRD_E_CANT_OPEN，
+// 异常冒泡到全局处理弹模态框；双击笔记时第一下先走复制 → 弹框吃掉第二下点击
+// → 用户表现「双击笔记进不了编辑状态」。
+Console.WriteLine("[5] 剪贴板写入容错 SafeClipboard");
+
+var busyAttempts = 0;
+var busySleeps = new List<int>();
+var recovered = SafeClipboard.TrySetText("内容", _ =>
+{
+    busyAttempts++;
+    if (busyAttempts < 3) throw new COMException("OpenClipboard 失败", unchecked((int)0x800401D0));
+}, 3, 25, null, ms => busySleeps.Add(ms));
+
+Check(recovered, "前两次被占用、第三次可用时必须返回 true（临时占用不得被当成失败）");
+Check(busyAttempts == 3, "临时占用必须重试到成功（共 3 次尝试）", $"实际尝试 {busyAttempts} 次");
+Check(busySleeps.SequenceEqual(new[] { 25, 50 }),
+      "重试间隔必须指数退避 25/50ms（不退避会在几十毫秒内烧完全部次数）",
+      $"实际间隔 {string.Join("/", busySleeps)}ms");
+
+var alwaysBusyAttempts = 0;
+var threwOut = false;
+var allBusyResult = true;
+try
+{
+    allBusyResult = SafeClipboard.TrySetText("内容", _ =>
+    {
+        alwaysBusyAttempts++;
+        throw new COMException("剪贴板被占用", unchecked((int)0x800401D0));
+    }, 3, 0, null, _ => { });
+}
+catch { threwOut = true; }
+
+Check(!threwOut, "始终被占用时**不得抛异常**（抛出去就是那个界面错误框，双击手势会被吃掉）");
+Check(!allBusyResult, "始终被占用时必须返回 false，好让调用方给出提示而不是假装成功");
+Check(alwaysBusyAttempts == 3, "耗尽尝试次数后必须停止重试", $"实际尝试 {alwaysBusyAttempts} 次");
+
+var hardFailAttempts = 0;
+var nonTransient = SafeClipboard.TrySetText("内容", _ =>
+{
+    hardFailAttempts++;
+    throw new InvalidOperationException("调用线程不是 STA");
+}, 5, 0, null, _ => { });
+Check(!nonTransient && hardFailAttempts == 1,
+      "确定性失败（非剪贴板占用类异常）不得重试 —— 重试也不可能成功",
+      $"实际尝试 {hardFailAttempts} 次");
+
+var wroteAnything = false;
+var emptyResult = SafeClipboard.TrySetText("", _ => wroteAnything = true);
+var nullResult = SafeClipboard.TrySetText(null, _ => wroteAnything = true);
+Check(!emptyResult && !nullResult && !wroteAnything,
+      "空内容 / null 不得写入剪贴板（Clipboard.SetText 对空串会抛参数异常）");
+
+var normalSleeps = 0;
+var normalResult = SafeClipboard.TrySetText("正常内容", _ => { }, 3, 25, null, _ => normalSleeps++);
+Check(normalResult && normalSleeps == 0, "首次即成功时不得有任何退避等待（正常路径零额外延迟）");
+
+Check(SafeClipboard.DefaultAttempts == 3 && SafeClipboard.DefaultBaseDelayMs == 25,
+      "默认参数必须是 3 次尝试 / 25ms 退避基数（改动会同时改变所有调用点行为）",
+      $"实际 {SafeClipboard.DefaultAttempts} 次 / {SafeClipboard.DefaultBaseDelayMs}ms");
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
