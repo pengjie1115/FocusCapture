@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private QuickViewWindow? _quickViewWindow;
     private VoiceInputWindow? _voiceWindow;
     private System.Windows.Forms.NotifyIcon? _notifyIcon;
+    private System.Drawing.Icon? _trayIconHandle;   // 托盘图标的 GDI 句柄（它自己拥有，重建/退出时必须 Dispose）
     private ClipboardHookService? _clipboardHook;
     private ReminderService? _reminderService;                    // v3.5 Phase3：提醒定时器/弹窗调度/角标
     private ReminderPopupWindow? _reminderPopup;                  // v3.5 Phase3：单条/多条到点弹窗
@@ -36,6 +37,13 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _settings = Models.AppSettings.Load();
+
+        // 应用图标（2026-09-19）：注册全局窗口钩子 + 载入自定义图标。
+        // 位置很要紧 —— 钩子必须赶在**任何窗口 Show 之前**注册，否则先显示的那个窗口
+        // （主窗口自己、悬浮球）会漏掉，任务栏上继续显示 exe 编译期图标。
+        // 钩子一处注册覆盖全部窗口（含以后新增的），这也是不用逐个窗口去设的理由。
+        AppIconService.HookWindowIcon();
+        AppIconService.Reload(_settings.CustomIconPath);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -577,7 +585,12 @@ public partial class MainWindow : Window
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 _quickViewWindow?.ApplySettings();   // v3.9：宽度/置顶/标题栏按钮即时生效
+                // 应用图标（2026-09-19）：换/清自定义图标 → 任务栏窗口图标与托盘图标同时换。
+                // 顺序要紧：先换图标源（Reload）→ 再重建托盘（吃新源，在下面那行里）→ 最后刷新已打开窗口。
+                // 三步都跑完两处才同源；全在同一个事件里完成，所以不必重启应用。
+                AppIconService.Reload(_settings.CustomIconPath);
                 ApplyAssistantNameToAllEntries();
+                AppIconService.RefreshOpenWindows();
 
                 // 拖放保存（2026-09-16）：开关关掉要立刻收回球上的 AllowDrop，并收掉已经浮着的浮层；
                 // 透明度要**实时**作用到已打开的小条/卡片（验收清单里就有这一条）。
@@ -809,12 +822,9 @@ public partial class MainWindow : Window
         try { CreateTrayIcon(); } catch { /* 托盘重建失败不阻塞设置窗口 */ }
     }
 
-    [DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr handle);
-
     /// <summary>
-    /// 托盘图标：优先加载自定义图标（%AppData%\FocusCapture\custom_icon.png），
-    /// 否则回退到默认深灰方块（v0.1 兜底逻辑保留）。
+    /// 托盘图标：与任务栏窗口图标**同源** —— 两处都取自 <see cref="AppIconService"/> 载入的自定义图标
+    /// （%AppData%\FocusCapture\custom_icon.png），没有自定义时回退默认深灰方块（v0.1 兜底逻辑保留）。
     /// </summary>
     private void CreateTrayIcon()
     {
@@ -826,37 +836,14 @@ public partial class MainWindow : Window
             _notifyIcon = null;
         }
 
-        System.Drawing.Icon icon;
-        var hIcon = IntPtr.Zero;
-        try
-        {
-            var customPath = _settings.CustomIconPath;
-            if (!string.IsNullOrEmpty(customPath) && File.Exists(customPath))
-            {
-                // 用户自定义图标：png/jpg 转 HICON（System.Drawing 加载后 GetHicon）
-                using var img = System.Drawing.Image.FromFile(customPath);
-                hIcon = new System.Drawing.Bitmap(img).GetHicon();
-                icon = System.Drawing.Icon.FromHandle(hIcon);
-            }
-            else
-            {
-                // 兜底：默认深灰方块
-                using var bmp = new System.Drawing.Bitmap(32, 32);
-                using var g = System.Drawing.Graphics.FromImage(bmp);
-                g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
-                hIcon = bmp.GetHicon();
-                icon = System.Drawing.Icon.FromHandle(hIcon);
-            }
-        }
-        catch
-        {
-            // 自定义图标损坏等异常 → 回退默认深灰方块
-            using var bmp = new System.Drawing.Bitmap(32, 32);
-            using var g = System.Drawing.Graphics.FromImage(bmp);
-            g.Clear(System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
-            hIcon = bmp.GetHicon();
-            icon = System.Drawing.Icon.FromHandle(hIcon);
-        }
+        // 图标句柄归它自己所有，重建时必须显式释放。
+        // 旧写法是「交给托盘之后立刻 DestroyIcon」——托盘长期握着已失效的句柄（use-after-free），
+        // 图标可能变空白或画错却不报错，属很难当场发现的隐患，已随本次改造去掉。
+        _trayIconHandle?.Dispose();
+        _trayIconHandle = null;
+
+        var icon = AppIconService.BuildTrayIcon(_settings.CustomIconPath, System.Drawing.Color.FromArgb(0x3A, 0x3A, 0x3A));
+        _trayIconHandle = icon;
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         { Icon = icon, Visible = true, Text = "FocusCapture - 专注力捕捉" };
@@ -870,9 +857,6 @@ public partial class MainWindow : Window
         cm.Items.Add("退出", null, (_, _) => ExitApp());
         _notifyIcon.ContextMenuStrip = cm;
         _notifyIcon.DoubleClick += (_, _) => OpenSettings();
-
-        // 释放原始 HICON 句柄，防止 GDI 泄漏
-        if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
     }
 
     /// <summary>系统关机/注销：无法弹窗拦截，静默尽力一传（带超时，会话同步搭车收尾），失败由下次启动对账补传。</summary>
@@ -927,5 +911,5 @@ public partial class MainWindow : Window
         }
     }
 
-    protected override void OnClosed(EventArgs e) { _hotkeyService?.Dispose(); _notifyIcon?.Dispose(); base.OnClosed(e); }
+    protected override void OnClosed(EventArgs e) { _hotkeyService?.Dispose(); _notifyIcon?.Dispose(); _trayIconHandle?.Dispose(); base.OnClosed(e); }
 }

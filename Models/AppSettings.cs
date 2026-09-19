@@ -109,7 +109,7 @@ public class AppSettings
     public bool LocalCacheEvictEnabled { get; set; } = true;
 
     // ── 外观 ──
-    public string CustomIconPath { get; set; } = ""; // 自定义托盘图标（%AppData%\FocusCapture\custom_icon.png）
+    public string CustomIconPath { get; set; } = ""; // 自定义应用图标：托盘与任务栏窗口共用（%AppData%\FocusCapture\custom_icon.png）
 
     // ── 悬浮球拖放保存（2026-09-16）──
     /// <summary>

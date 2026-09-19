@@ -20,6 +20,7 @@ public partial class VoiceInputWindow : Window
 
     // ── 任务栏图标 ──
     private System.Windows.Forms.NotifyIcon? _taskbarIcon;
+    private System.Drawing.Icon? _taskbarIconHandle;   // 图标句柄（它自己拥有，Dispose 时必须释放）
     private IntPtr _hwnd;
 
     // ── 保存位置/大小（最小化和最大化前） ──
@@ -352,18 +353,14 @@ public partial class VoiceInputWindow : Window
         Hide();
     }
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr handle);
-
     private void CreateTaskbarIcon()
     {
         if (_taskbarIcon != null) return;
 
-        using var bmp = new System.Drawing.Bitmap(32, 32);
-        using var g = System.Drawing.Graphics.FromImage(bmp);
-        g.Clear(System.Drawing.Color.FromArgb(0x4C, 0xAF, 0x50));
-        var hIcon = bmp.GetHicon();
-        var icon = System.Drawing.Icon.FromHandle(hIcon);
+        // 图标与托盘 / 任务栏窗口同源（2026-09-19）：设了自定义图标就用它；
+        // 没设则沿用原来的绿色方块（沉浸记录的识别色，保持不变）。
+        var icon = AppIconService.BuildTrayIcon(_settings.CustomIconPath, System.Drawing.Color.FromArgb(0x4C, 0xAF, 0x50));
+        _taskbarIconHandle = icon;
 
         _taskbarIcon = new System.Windows.Forms.NotifyIcon
         {
@@ -372,9 +369,6 @@ public partial class VoiceInputWindow : Window
             Text = "FocusCapture - 沉浸记录"
         };
         _taskbarIcon.Click += TaskbarIcon_Click;
-
-        // 释放原始 HICON 句柄，防止 GDI 泄漏
-        DestroyIcon(hIcon);
     }
 
     private void TaskbarIcon_Click(object? sender, EventArgs e)
@@ -398,6 +392,8 @@ public partial class VoiceInputWindow : Window
             _taskbarIcon.Dispose();
             _taskbarIcon = null;
         }
+        _taskbarIconHandle?.Dispose();   // 句柄归它自己所有，不释放就是 GDI 泄漏
+        _taskbarIconHandle = null;
     }
 
     private void BtnMaximize_Click(object sender, RoutedEventArgs e)

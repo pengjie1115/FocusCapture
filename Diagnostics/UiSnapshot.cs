@@ -197,6 +197,17 @@ internal static class UiSnapshot
                 w.NavList.SelectedIndex = 3;
                 return w;
             }, outDir, log);
+
+            // ── 悬浮球角标（2026-09-19）──
+            // 起因：用户实测「角标圆被窗口边界裁掉一块、数字在圈里偏上」。
+            // 分工：「数字是否居中」靠出图判读；「角标是否完整落在窗口内」靠 LogBadgeBounds 打的数字判读 ——
+            // 本工具的渲染不含窗口矩形的裁切，只看图会把"溢出窗口"误判成没问题（见该方法注释）。
+            Capture("25-悬浮球（带角标）", () => new FloatBall(), outDir, log, afterShow: win =>
+            {
+                if (win is not FloatBall ball) return;
+                ball.SetBadge(1, hasRead: false);   // 必须在 Show 之后调：SetBadge 内部检查 IsLoaded
+                LogBadgeBounds(ball, log);
+            }, scale: 6);   // 6 倍放大：角标只有 18 像素，不放大看不出数字有没有偏
         }
         catch (Exception ex)
         {
@@ -215,7 +226,17 @@ internal static class UiSnapshot
     }
 
     /// <summary>渲染单个窗口为 PNG。任一环节失败只记日志，不影响其余窗口。</summary>
-    private static void Capture(string name, Func<Window> factory, string outDir, StringBuilder log)
+    /// <param name="afterShow">
+    /// 窗口已 Show 且跑完一次布局后的钩子。两个用途：① 补那些**必须窗口已加载才生效**的状态
+    /// （如悬浮球 <c>SetBadge</c> 会检查 <c>IsLoaded</c>，在 Show 之前调用会被它自己忽略，角标根本不出现）；
+    /// ② 把实测尺寸打进日志（角标边界这类"看图会误判"的量必须落成数字）。
+    /// </param>
+    /// <param name="scale">
+    /// 出图放大倍数（默认 1）。给小控件（几十像素的悬浮球角标）出放大图用 ——
+    /// WPF 按 DPI 缩放渲染，矢量与文字都是高清重绘，不是把位图拉大，所以能看到亚像素级的居中偏差。
+    /// </param>
+    private static void Capture(string name, Func<Window> factory, string outDir, StringBuilder log,
+        Action<Window>? afterShow = null, int scale = 1)
     {
         Window? win = null;
         try
@@ -228,21 +249,24 @@ internal static class UiSnapshot
             win.Opacity = 1.0;          // 见类注释：半透明位图不利于像素比对
             win.Show();
             win.UpdateLayout();
+            afterShow?.Invoke(win);
+            win.UpdateLayout();   // afterShow 若改了状态（如角标可见性），这里再排一次，确保渲染的是新布局
 
             // 布局与渲染管线是异步的，必须各跑完一轮，否则可能截到空白或旧状态
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Render);
 
             var dpi = VisualTreeHelper.GetDpi(win);
-            var w = (int)Math.Ceiling(win.ActualWidth * dpi.DpiScaleX);
-            var h = (int)Math.Ceiling(win.ActualHeight * dpi.DpiScaleY);
+            var w = (int)Math.Ceiling(win.ActualWidth * dpi.DpiScaleX * scale);
+            var h = (int)Math.Ceiling(win.ActualHeight * dpi.DpiScaleY * scale);
             if (w <= 0 || h <= 0)
             {
                 log.AppendLine($"{name}: 尺寸无效 {w}x{h}（窗口未完成布局）");
                 return;
             }
 
-            var rtb = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            // DPI 同步乘以 scale：像素数与 DPI 一起放大，WPF 才会按放大后的比例**重绘**（文字/矢量依旧清晰）
+            var rtb = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX * scale, dpi.PixelsPerInchY * scale, PixelFormats.Pbgra32);
             rtb.Render(win);
 
             var enc = new PngBitmapEncoder();
@@ -259,6 +283,53 @@ internal static class UiSnapshot
         finally
         {
             try { win?.Close(); } catch { /* 关不掉不影响后续 */ }
+        }
+    }
+
+    /// <summary>
+    /// 把悬浮球角标的**实测边界**打进日志（2026-09-19）。
+    ///
+    /// 为什么非得打数字、不能只看图：<see cref="Capture"/> 是用 RenderTargetBitmap 渲染**视觉树**的，
+    /// 而"溢出窗口矩形"这道裁切发生在更外层的窗口边界上 —— 视觉树里根本不存在这道裁切，
+    /// 所以角标即使被切掉一半，快照里也照样完整画出来。**看图会得出"没问题"的错误结论。**
+    /// 判据（数字形态）：Left/Top 不得为负、Right/Bottom 不得超出窗口宽高。
+    /// </summary>
+    private static void LogBadgeBounds(FloatBall ball, StringBuilder log)
+    {
+        try
+        {
+            var badge = ball.Badge;
+            if (badge.Visibility != Visibility.Visible)
+            {
+                log.AppendLine("  角标：不可见（SetBadge 未生效，或窗口尚未加载）");
+                return;
+            }
+
+            ball.UpdateLayout();   // 角标刚被 SetBadge 置为可见，这里必须先重排一次，否则读到的尺寸全是 0
+
+            var origin = badge.TransformToAncestor(ball).Transform(new Point(0, 0));
+            var right = origin.X + badge.ActualWidth;
+            var bottom = origin.Y + badge.ActualHeight;
+
+            log.AppendLine($"  角标边界：Left={origin.X:0.##} Top={origin.Y:0.##} Right={right:0.##} Bottom={bottom:0.##}");
+            log.AppendLine($"  窗口尺寸：{ball.ActualWidth:0.##} × {ball.ActualHeight:0.##}");
+            log.AppendLine(
+                origin.X >= 0 && origin.Y >= 0 && right <= ball.ActualWidth && bottom <= ball.ActualHeight
+                    ? "  角标位置：完整落在窗口内（不会被窗口边界裁切）"
+                    : "  角标位置：⚠ 超出窗口边界 → 会被裁切");
+
+            var text = ball.BadgeText;
+            var tp = text.TransformToAncestor(badge).Transform(new Point(0, 0));
+            log.AppendLine($"  数字「{text.Text}」行框：Left={tp.X:0.##} Top={tp.Y:0.##} " +
+                           $"Right={tp.X + text.ActualWidth:0.##} Bottom={tp.Y + text.ActualHeight:0.##}（字号 {text.FontSize}）");
+            log.AppendLine($"  角标 {badge.ActualWidth:0.##} × {badge.ActualHeight:0.##}｜角标中心 " +
+                           $"({badge.ActualWidth / 2:0.##}, {badge.ActualHeight / 2:0.##})｜行框中心 " +
+                           $"({tp.X + text.ActualWidth / 2:0.##}, {tp.Y + text.ActualHeight / 2:0.##})" +
+                           "（行框中心是布局居中判据；字形视觉重心还要看出图）");
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine("  角标边界读取失败：" + ex.Message);
         }
     }
 

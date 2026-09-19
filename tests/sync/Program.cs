@@ -75,6 +75,7 @@ internal static class Program
             Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
             await RunAsync("首配目录缺失", TestFirstSyncDirMissing);  // PROPFIND 404 → 自动 MKCOL → 重试
@@ -94,6 +95,123 @@ internal static class Program
         }
         Console.WriteLine(_failed == 0 ? "\n===== ALL TESTS PASSED =====" : $"\n===== {_failed} TEST(S) FAILED =====");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ══════════════════ 应用图标与悬浮球角标（2026-09-19） ══════════════════
+    //
+    // 为什么单独起一个 STA 线程：本组要构造真实的 WPF 窗口对象（Window.Icon 是 WPF 属性、
+    // 悬浮球角标是 XAML 布局），而 WPF 要求 STA 线程；慢层主线程是 async（MTA），
+    // 直接在它上面 new Window() 会抛 "The calling thread must be STA"。
+    // 数据隔离沿用慢层沙箱：临时图标文件都写在 _sandbox（它已是 FocusCapturePaths.RootOverride）。
+
+    private static void TestAppIcon()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try { TestAppIconCore(); }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure != null) throw new Exception("应用图标组在 STA 线程里失败：" + failure.Message, failure);
+    }
+
+    private static void TestAppIconCore()
+    {
+        var pngPath = Path.Combine(_sandbox, "probe-icon.png");
+        WriteProbePng(pngPath);
+        var brokenPath = Path.Combine(_sandbox, "broken-icon.png");
+        File.WriteAllText(brokenPath, "这不是图片，只是名字叫 png");
+        var missingPath = Path.Combine(_sandbox, "never-created.png");
+
+        // ── 1. 图标源解析：任何一种坏输入都必须安静回落到默认 ──
+        Check(AppIconService.Reload("") == false, "自定义图标路径为空 → 按默认处理（返回 false）");
+        Check(AppIconService.HasCustomIcon == false, "路径为空时不得留着上一次的图标");
+        Check(AppIconService.Reload(null) == false, "路径为 null → 不得抛异常，按默认处理");
+        Check(AppIconService.Reload(missingPath) == false, "图标文件不存在 → 按默认处理（用户把图删了也不该出错）");
+        Check(AppIconService.Reload(brokenPath) == false, "图标文件损坏 → 按默认处理且绝不抛（抛出去就是启动失败）");
+        Check(AppIconService.Reload(pngPath), "指向真实 png → 必须载入成功");
+        Check(AppIconService.HasCustomIcon, "载入成功后必须记录为「有自定义图标」");
+
+        // ── 2. 套用到窗口：有自定义就设，恢复默认要能清回去 ──
+        var w1 = new System.Windows.Window();
+        AppIconService.Apply(w1);
+        Check(w1.Icon != null, "有自定义图标时，窗口图标必须被设置（任务栏 / Alt+Tab 才会跟着变）");
+
+        AppIconService.Reload("");
+        AppIconService.Apply(w1);
+        Check(w1.Icon == null, "点「恢复默认图标」后，已打开窗口必须立刻清回默认（否则得重启才同步）");
+
+        var w2 = new System.Windows.Window();
+        AppIconService.Apply(w2);
+        Check(w2.Icon == null, "从没设过图标的窗口一律不碰（默认外观必须与改造前完全一致）");
+
+        // ── 3. 托盘图标构造：坏图不能让托盘消失 ──
+        using (var ok = AppIconService.BuildTrayIcon(pngPath, System.Drawing.Color.Gray))
+            Check(ok != null, "托盘图标构造：有自定义图时返回图标");
+        using (var fallback = AppIconService.BuildTrayIcon(brokenPath, System.Drawing.Color.Gray))
+            Check(fallback != null, "托盘图标构造：图损坏时回退方块图标，而不是抛异常");
+
+        // ── 4. 悬浮球角标（用户实测：圆被窗口切一块 + 数字不居中）──
+        var ball = new FocusCapture.Windows.FloatBall
+        {
+            WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+            Left = -32000, Top = -32000,   // 屏幕外，别在用户桌面上闪一个球
+            ShowInTaskbar = false
+        };
+        ball.Show();
+        ball.SetBadge(1, hasRead: false);
+        ball.UpdateLayout();
+
+        var badge = ball.Badge;
+        Check(badge.Visibility == System.Windows.Visibility.Visible,
+            "角标在有未办待办时必须可见（先确认取到的是真角标，否则下面两条等于没测）");
+        if (badge.Visibility == System.Windows.Visibility.Visible)
+        {
+            var origin = badge.TransformToAncestor(ball).Transform(new System.Windows.Point(0, 0));
+            var right = origin.X + badge.ActualWidth;
+            var bottom = origin.Y + badge.ActualHeight;
+            Check(origin.X >= 0 && origin.Y >= 0 && right <= ball.ActualWidth && bottom <= ball.ActualHeight,
+                "角标必须完整落在窗口内（超出窗口边界的部分根本不渲染，圆会被切掉一块）",
+                $"实际：角标 [{origin.X:0.##},{origin.Y:0.##}]-[{right:0.##},{bottom:0.##}]，窗口 {ball.ActualWidth:0.##}×{ball.ActualHeight:0.##}");
+
+            var text = ball.BadgeText;
+            var tp = text.TransformToAncestor(badge).Transform(new System.Windows.Point(0, 0));
+            var dx = Math.Abs(tp.X + text.ActualWidth / 2 - badge.ActualWidth / 2);
+            var dy = Math.Abs(tp.Y + text.ActualHeight / 2 - badge.ActualHeight / 2);
+            Check(dx <= 0.5 && dy <= 0.5,
+                "数字必须居中于角标（文本行框中心与角标中心的偏差不得超过半像素）",
+                $"实际偏差：水平 {dx:0.##}px、垂直 {dy:0.##}px");
+
+            ball.SetBadge(12, hasRead: false);
+            ball.UpdateLayout();
+            Check(text.ActualWidth <= badge.ActualWidth - 2,
+                "两位数时数字不得被角标边框挤住（角标靠 MinWidth 撑成胶囊形）",
+                $"实际：文本宽 {text.ActualWidth:0.##}px，角标宽 {badge.ActualWidth:0.##}px");
+        }
+        ball.Close();
+
+        try { File.Delete(pngPath); File.Delete(brokenPath); } catch { /* 沙箱整体也会删，这里只是不留半成品 */ }
+    }
+
+    /// <summary>写一张 32×32 的真 PNG（用 WPF 自己编码，避免往仓库里塞二进制夹具）。</summary>
+    private static void WriteProbePng(string path)
+    {
+        var bmp = new System.Windows.Media.Imaging.WriteableBitmap(
+            32, 32, 96, 96, System.Windows.Media.PixelFormats.Pbgra32, null);
+        var pixels = new byte[32 * 32 * 4];
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            pixels[i] = 0x50; pixels[i + 1] = 0xAF; pixels[i + 2] = 0x4C; pixels[i + 3] = 0xFF;
+        }
+        bmp.WritePixels(new System.Windows.Int32Rect(0, 0, 32, 32), pixels, 32 * 4, 0);
+
+        var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+        using var fs = File.Create(path);
+        enc.Save(fs);
     }
 
     // ══════════════════ 分组计时（2026-09-17） ══════════════════

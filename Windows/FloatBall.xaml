@@ -44,14 +44,21 @@
                      MouseMove="Ball_MouseMove"/>
 
             <!-- v3.5：未办待办角标（右上角小圆标，count<=0 隐藏；存在已读暂缓 → 红，否则绿；点击打开汇总窗须吞事件防冒泡触发拖拽/唤出） -->
+            <!-- 2026-09-19 修「圆被裁 + 数字不居中」两处，均为纯样式，不牵动 FloatBall.xaml.cs 的任何逻辑：
+                 ① 原 Margin="0,-2,-2,0" 是**负边距**，把角标顶出 48×48 窗口的右边与上边各 2px。
+                    窗口矩形之外的部分一律不渲染（WPF 在这层没有裁切余地），所以角标圆被硬切掉一块。
+                    现收到窗口内（右边留 1px 余量）；角标中心落在球圆周上，视觉依旧是「贴着球右上沿」。
+                 ② 数字原靠 Border 的 Padding="4,0" 撑位，而 TextBlock 默认被拉伸填满角标、文字按行顶对齐
+                    → 看着偏上。现改由 TextBlock 自己 HorizontalAlignment/VerticalAlignment=Center 居中，
+                    Padding 只保留左右一点余量（两位数时 Border 靠 MinWidth 撑成胶囊形，不会挤字）。 -->
             <Border x:Name="Badge"
                     MinWidth="18" Height="18"
                     CornerRadius="9"
                     Background="#4CAF50"
                     BorderBrush="#FFFFFF" BorderThickness="1"
                     HorizontalAlignment="Right" VerticalAlignment="Top"
-                    Margin="0,-2,-2,0"
-                    Padding="4,0"
+                    Margin="0,0,1,0"
+                    Padding="3,0"
                     Cursor="Hand"
                     Visibility="Collapsed"
                     MouseLeftButtonDown="Badge_MouseLeftButtonDown">
@@ -60,6 +67,8 @@
                            Foreground="White"
                            FontSize="10"
                            FontWeight="Bold"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
                            TextAlignment="Center"/>
             </Border>
         </Grid>

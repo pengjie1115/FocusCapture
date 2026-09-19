@@ -1138,7 +1138,8 @@ public partial class SettingsWindow : Window
 
     // ── 外观：自定义托盘图标 ──
 
-    private static string CustomIconPath => FocusCapturePaths.Combine("custom_icon.png");
+    /// <summary>自定义图标落盘位置：与 AppIconService 同源（托盘 + 任务栏窗口图标共用这一张图）。</summary>
+    private static string CustomIconPath => AppIconService.DefaultIconPath;
 
     private void UpdateIconUI()
     {
@@ -1179,7 +1180,7 @@ public partial class SettingsWindow : Window
             File.Copy(dlg.FileName, CustomIconPath, true);
             _settings.CustomIconPath = CustomIconPath;
             _settings.Save();
-            IconStatusText.Text = "已保存，托盘图标立即生效";
+            IconStatusText.Text = "已保存，任务栏与托盘图标立即生效";
             IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             UpdateIconUI();
             _onChanged?.Invoke();
