@@ -14,6 +14,13 @@ public partial class FloatBall : Window
     // 吸附阈值
     private const int SnapThreshold = 12;
 
+    /// <summary>
+    /// 展开态窗口边长。**必须与 FloatBall.xaml 的 Width/Height 一致** —— XAML 与 C# 没法共用常量，
+    /// 只能靠这条注释 + 慢层检查点维持同步。
+    /// 2026-09-19：48 → 56（球四周留白 4px → 8px），这是「角标能往外移」和「投影能淡完」的前提。
+    /// </summary>
+    private const int ExpandedSize = 56;
+
     // 颜色笔刷
     private SolidColorBrush _normalBrush = new(Color.FromRgb(0x3A, 0x3A, 0x3A));
     private SolidColorBrush _hoverBrush = new(Color.FromRgb(0x50, 0x50, 0x50));
@@ -335,7 +342,7 @@ public partial class FloatBall : Window
         CollapsedBar.Visibility = Visibility.Visible;
 
         double targetLeft = Left, targetTop = Top;
-        int targetW = 48, targetH = 48;
+        int targetW = ExpandedSize, targetH = ExpandedSize;
 
         if (left)
         {
@@ -374,7 +381,7 @@ public partial class FloatBall : Window
         CollapsedBar.Visibility = Visibility.Collapsed;
         BallGrid.Visibility = Visibility.Visible;
         StopAnimations();
-        Width = 48; Height = 48;
+        Width = ExpandedSize; Height = ExpandedSize;
         var s = SystemParameters.WorkArea;
         if (Left < s.Left + 5) Left = s.Left + 10;
         if (Left + Width > s.Right - 5) Left = s.Right - Width - 10;

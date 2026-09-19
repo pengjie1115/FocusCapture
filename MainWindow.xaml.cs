@@ -373,7 +373,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>贴着球浮出（球在屏幕左半 → 弹右侧；右半 → 弹左侧）。几何一律取球的**实时**尺寸：
-    /// 吸附态是 8×36、展开后是 48×48，写死会算错位置。</summary>
+    /// 吸附态是 8×36、展开后是 56×56（2026-09-19 由 48×48 改），写死会算错位置。</summary>
     private void ShowOverlayNearBall(Window overlay)
     {
         if (_floatBall == null || !_floatBall.IsVisible)

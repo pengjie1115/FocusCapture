@@ -198,9 +198,10 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
-            // ── 悬浮球角标（2026-09-19）──
-            // 起因：用户实测「角标圆被窗口边界裁掉一块、数字在圈里偏上」。
-            // 分工：「数字是否居中」靠出图判读；「角标是否完整落在窗口内」靠 LogBadgeBounds 打的数字判读 ——
+            // ── 悬浮球角标（2026-09-19，两轮）──
+            // 起因：用户实测「角标圆被窗口边界裁掉一块、数字在圈里偏上」（第一轮），
+            //       改完又反馈「压球的面积太大、观感不好」（第二轮，窗口 48→56 把角标外移）。
+            // 分工：「数字是否居中」「压球压了多少」靠 LogBadgeBounds 打的数字判读；观感靠出图判读 ——
             // 本工具的渲染不含窗口矩形的裁切，只看图会把"溢出窗口"误判成没问题（见该方法注释）。
             Capture("25-悬浮球（带角标）", () => new FloatBall(), outDir, log, afterShow: win =>
             {
@@ -326,6 +327,22 @@ internal static class UiSnapshot
                            $"({badge.ActualWidth / 2:0.##}, {badge.ActualHeight / 2:0.##})｜行框中心 " +
                            $"({tp.X + text.ActualWidth / 2:0.##}, {tp.Y + text.ActualHeight / 2:0.##})" +
                            "（行框中心是布局居中判据；字形视觉重心还要看出图）");
+
+            // 角标与球的重叠深度（2026-09-19 第二轮加）：这是「压球压了多少」唯一的硬证据 ——
+            // 看图只能得出"压得多不多"的模糊印象，说不清 9px 还是 4px；慢层检查点也断这条。
+            // 球心取窗口中心、半径取 FloatBall.xaml 里球的声明尺寸一半（球在 Grid 里居中、恒为 40×40）。
+            const double ballRadius = 20;
+            var bx = origin.X + badge.ActualWidth / 2;
+            var by = origin.Y + badge.ActualHeight / 2;
+            var dist = Math.Sqrt((bx - ball.ActualWidth / 2) * (bx - ball.ActualWidth / 2)
+                               + (by - ball.ActualHeight / 2) * (by - ball.ActualHeight / 2));
+            var badgeRadius = badge.ActualWidth / 2;
+            var overlap = ballRadius - (dist - badgeRadius);
+            log.AppendLine($"  角标圆心距球心 {dist:0.##}px（球半径 {ballRadius}，角标半径 {badgeRadius:0.##}）" +
+                           $" → 与球重叠 {(overlap > 0 ? overlap : 0):0.##}px" +
+                           (dist > ballRadius ? "｜圆心在球外 ✓" : "｜⚠ 圆心在球内"));
+            log.AppendLine("  悬停放大 1.1 倍时球半径 22：角标圆心" +
+                           (dist > 22 ? "仍在球外 ✓（放大瞬间不会陷进球体）" : "⚠ 会陷进球体"));
         }
         catch (Exception ex)
         {

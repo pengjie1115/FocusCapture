@@ -190,6 +190,49 @@ internal static class Program
             Check(text.ActualWidth <= badge.ActualWidth - 2,
                 "两位数时数字不得被角标边框挤住（角标靠 MinWidth 撑成胶囊形）",
                 $"实际：文本宽 {text.ActualWidth:0.##}px，角标宽 {badge.ActualWidth:0.##}px");
+
+            // ── 5. 角标压在球上的面积（用户第二轮反馈：压得太多，2026-09-19）──
+            // 判据盯「圆心到球心的距离」，不盯重叠像素数 —— 因为鼠标悬停时球会放大到 1.1 倍
+            // （半径 20→22），而旧位置的圆心距球心只有 20.5px：平时看着只是"压了一半"，
+            // 放大瞬间圆心直接落进球里、角标像被球咬掉一块。一条断言同时锁住两件事：
+            // 平时压得少（圆心在球外）+ 放大时不陷进去（圆心在放大后的球外）。
+            const double ballRadius = 20;    // 球 40×40，见 FloatBall.xaml
+            const double hoverRadius = 22;   // 悬停 ScaleTransform(1.1) 后
+            var bcx = ball.ActualWidth / 2;
+            var bcy = ball.ActualHeight / 2;
+            var bx = origin.X + badge.ActualWidth / 2;
+            var by = origin.Y + badge.ActualHeight / 2;
+            var dist = Math.Sqrt((bx - bcx) * (bx - bcx) + (by - bcy) * (by - bcy));
+            Check(dist > ballRadius,
+                "角标圆心必须在球外（圆心落在球里＝压掉一大半，用户已明确否掉）",
+                $"实际：圆心距球心 {dist:0.##}px，球半径 {ballRadius}px");
+            Check(dist > hoverRadius,
+                "鼠标悬停球放大 1.1 倍后，角标圆心仍须在球外（否则放大瞬间角标被球咬掉一块）",
+                $"实际：圆心距球心 {dist:0.##}px，放大后球半径 {hoverRadius}px");
+            var overlapDepth = ballRadius - (dist - badge.ActualWidth / 2);
+            Check(overlapDepth <= 5,
+                "角标与球的重叠深度不得超过 5px（窗口扩到 56 就是为了换这个余量）",
+                $"实际：重叠 {overlapDepth:0.##}px（改造前为 9px）");
+
+            // ── 6. 投影必须淡得完（2026-09-19 第二轮）──
+            // 起因：48×48 窗口里球四周只有 4px，而投影要 6px 才淡得完，于是被窗口边界削平 ——
+            // 实测球下方走到边界仍有 18/255（7%）强度，浅色桌面上就是一道生硬平边。
+            // 判据「余地 ≥ 模糊半径/2 + 偏移」是实测反推的经验式，两个数据点都对上了：
+            //   旧参数 4px 余地 vs 需要 8/2+2=6px → 实测被切；新参数 8px 余地 vs 需要 10/2+2=7px → 实测边界处仅 0~1/255。
+            // 这条只能静态断参数，不能断像素 —— 慢层不渲染位图；像素级复核走快照工具。
+            var shadow = ball.FindResource("BallShadow") as System.Windows.Media.Effects.DropShadowEffect;
+            Check(shadow != null,
+                "必须能取到悬浮球的投影参数（取不到＝资源名被改，下面那条等于没测）");
+            if (shadow != null)
+            {
+                var room = ball.ActualWidth / 2 - ballRadius;          // 球边 → 窗口边界
+                var need = shadow.BlurRadius / 2 + shadow.ShadowDepth;  // 投影淡完所需
+                Check(room >= need,
+                    "球边到窗口边界的余地必须够投影淡完（不够就被窗口边界硬切，浅色桌面上是一道平边）",
+                    $"实际：余地 {room:0.##}px，需要 ≈{need:0.##}px" +
+                    $"（模糊半径 {shadow.BlurRadius:0.##}/2 + 偏移 {shadow.ShadowDepth:0.##}）；" +
+                    $"投影自身不透明度 {shadow.Opacity:0.##}");
+            }
         }
         ball.Close();
 
