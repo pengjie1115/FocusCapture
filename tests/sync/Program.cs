@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Threading;
 using FocusCapture;
 using FocusCapture.Models;
 using FocusCapture.Services;
@@ -77,6 +78,7 @@ internal static class Program
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
+            Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
@@ -218,6 +220,109 @@ print(json.dumps({
               !rNoRuntime.Contains("成功") && !rNoRuntime.Contains("EXIT=0"),
               "运行时缺失时返回文本不得含「已完成/已执行/成功」字样（防假成功 —— 最重要的一条）",
               $"实际：{Short(rNoRuntime)}");
+    }
+
+    // ══════════════════ UI 线程封送（2026-09-20） ══════════════════
+    //
+    // 守的是什么：Agent 工具跑在线程池线程上（AgentRunService 全程 ConfigureAwait(false)），
+    // 在那个线程里碰 UI 对象（典型场景：弹框问用户）会抛
+    // 「调用线程无法访问此对象，因为另一个线程拥有该对象」——真机已经踩过一次
+    // （Skill 准入确认，模型连着四轮拿到这个错），本组把它钉成回归。
+    //
+    // 为什么单独起 STA 线程：本组要有一个真实的 Dispatcher —— "UI 线程"在 WPF 里就等于
+    // 一个 Dispatcher 线程，而 Dispatcher 要求 STA；慢层主线程是 async（MTA）。
+
+    private static void TestUiMarshaling()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try { TestUiMarshalingCore(); }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure != null) throw new Exception("UI 线程封送组在 STA 线程里失败：" + failure.Message, failure);
+    }
+
+    private static void TestUiMarshalingCore()
+    {
+        var dispatcher = Dispatcher.CurrentDispatcher;
+        var uiThreadId = Environment.CurrentManagedThreadId;
+        var probe = new System.Windows.Window();   // 只用来验证"跨线程碰 UI 对象会炸"，不显示
+
+        // ── 0. 自验装置：先确认发起端真的不在 UI 线程上 ──
+        // 不验这一条，下面两条可能是"假绿"—— 万一发起端本来就在 UI 线程，那 CheckAccess 直接短路，
+        // 测的根本不是封送。
+        var ranOn = -1;
+        var initiatorId = 0;
+        var marshaled = RunOnPoolAndPump(dispatcher, () =>
+        {
+            initiatorId = Environment.CurrentManagedThreadId;
+            return UiThread.AskAsync(dispatcher, () =>
+            {
+                probe.Title = "marshaled";                // 真碰一个 UI 对象：不封送就会在这里抛
+                ranOn = Environment.CurrentManagedThreadId;
+                return true;
+            });
+        });
+        Check(initiatorId != uiThreadId,
+              "自验：发起端必须真的不在 UI 线程上（否则本组是假绿）",
+              $"UI 线程 {uiThreadId}，发起线程 {initiatorId}");
+        Check(ranOn == uiThreadId,
+              "非 UI 线程发起时，回调必须被搬到 UI 线程上执行（否则真机上就是「调用线程无法访问此对象」）",
+              $"期望线程 {uiThreadId}，实际 {ranOn}");
+        Check(marshaled, "非 UI 线程发起时，回调返回值必须如实传回（true）");
+
+        // ── 1. 用户点了取消：结果必须如实传回 false，不能吞成 true ──
+        var cancelled = RunOnPoolAndPump(dispatcher, () => UiThread.AskAsync(dispatcher, () => false));
+        Check(!cancelled, "用户没确认时返回值必须是 false（绝不能反向当成放行）");
+
+        // ── 2. 拿不到确认的场景（窗口已关 / 调度器停用）：返回 false 且不抛 ──
+        // 不抛很重要：抛出去会冒泡成工具异常，模型读到的就是一句内部错误，而不是"用户没同意"。
+        var emptyDispatcher = RunOnPoolAndPump(dispatcher, () => UiThread.AskAsync(null, () => true));
+        Check(!emptyDispatcher, "没有调度器时按未确认处理（返回 false），不得抛");
+
+        dispatcher.InvokeShutdown();
+        var shutdownResult = true;
+        var shutdownError = "";
+        try
+        {
+            shutdownResult = Task.Run(() => UiThread.AskAsync(dispatcher, () => true)).GetAwaiter().GetResult();
+        }
+        catch (Exception ex) { shutdownError = $"{ex.GetType().Name} {ex.Message}"; }
+        Check(shutdownError.Length == 0 && !shutdownResult,
+              "调度器已停用（窗口已关）时返回 false 且不抛",
+              shutdownError.Length > 0 ? $"实际抛出：{shutdownError}" : $"实际返回：{shutdownResult}");
+    }
+
+    /// <summary>
+    /// 在后台线程（= 工具线程的等价物）上发起 <paramref name="start"/>，同时在当前 STA 线程上
+    /// 泵消息直到它完成。
+    ///
+    /// <para>
+    /// 为什么必须泵：封送是靠 <c>Dispatcher.InvokeAsync</c> 把回调排进 UI 线程的队列，而队列只有
+    /// 在有人泵消息的时候才会被处理 —— 真实应用里 UI 线程一直在泵，这里不泵就会**死锁**
+    /// （这正是"跨线程弹窗"在控制台环境里测不出来的原因）。这是测试装置，不是被测对象。
+    /// </para>
+    /// </summary>
+    private static T RunOnPoolAndPump<T>(Dispatcher dispatcher, Func<Task<T>> start)
+    {
+        var result = default(T);
+        Exception? failure = null;
+        var frame = new DispatcherFrame();
+
+        _ = Task.Run(async () =>
+        {
+            try { result = await start().ConfigureAwait(false); }
+            catch (Exception ex) { failure = ex; }
+            finally { dispatcher.BeginInvoke(new Action(() => frame.Continue = false)); }
+        });
+
+        Dispatcher.PushFrame(frame);
+        if (failure != null) throw new Exception("后台发起端抛了：" + failure.Message, failure);
+        return result!;
     }
 
     // ══════════════════ 应用图标与悬浮球角标（2026-09-19） ══════════════════

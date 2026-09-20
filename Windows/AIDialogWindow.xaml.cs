@@ -1507,11 +1507,14 @@ public partial class AIDialogWindow : Window
         AppendAgentRulesOnce();
         var agent = new AgentRunService(_provider, _registry!, _session!, _settings.AgentMaxToolRounds)
         {
-            ConfirmHandler = desc => Task.FromResult(System.Windows.MessageBox.Show(
+            // 必须经 UiThread 封送：工具跑在线程池线程上，直接 MessageBox.Show(this, …) 会因
+            // 跨线程访问窗口对象而抛「调用线程无法访问此对象」（2026-09-20 实测，详见 UiThread 注释）。
+            ConfirmHandler = desc => UiThread.AskAsync(Dispatcher, () => System.Windows.MessageBox.Show(
                 this,
                 $"AI 请求执行以下操作：\n\n{desc}\n\n确认执行？",
                 "AI 操作确认",
-                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK,
+                msg => AppLog.Warn("Agent", msg)),
             WriteConfirmEnabled = _settings.AgentWriteConfirmPopup,
             // 每轮把「当前时间」+「用户当前选中的文件牌号」告诉模型。放这里而不是会话历史里：
             // 它们是随手会变的短期状态，写进历史既污染持久化数据，也会让翻旧会话时看到过期值。
@@ -2014,7 +2017,16 @@ public partial class AIDialogWindow : Window
     /// 
     /// <para>撤销入口在「设置 → Skill」；只能授权不能撤销的安全机制是残缺的。</para>
     /// </summary>
-    private Task<bool> ConfirmSkillTrustAsync(SkillInfo skill)
+    /// <para>
+    /// ⚠ <b>必须经 <see cref="UiThread"/> 封送回 UI 线程</b> —— 本方法是被
+    /// <see cref="SkillScriptRunner"/> 在**工具线程**（线程池，非 UI 线程）上调用的，
+    /// 直接在这里 <c>MessageBox.Show(this, …)</c> 会抛「调用线程无法访问此对象」。
+    /// </para>
+    private Task<bool> ConfirmSkillTrustAsync(SkillInfo skill) =>
+        UiThread.AskAsync(Dispatcher, () => ShowSkillTrustDialog(skill), msg => AppLog.Warn("Skill", msg));
+
+    /// <summary>准入确认弹窗本体 —— <b>只允许被 <see cref="ConfirmSkillTrustAsync"/> 在 UI 线程上调用</b></summary>
+    private bool ShowSkillTrustDialog(SkillInfo skill)
     {
         var scripts = skill.ScriptFiles.Count > 0 ? string.Join("、", skill.ScriptFiles) : "（无）";
         var msg =
@@ -2028,7 +2040,7 @@ public partial class AIDialogWindow : Window
             MessageBoxButton.OKCancel, MessageBoxImage.Warning) == MessageBoxResult.OK;
 
         AppLog.Info("Skill", $"准入确认：{skill.Name} → {(ok ? "允许" : "用户取消")}");
-        return Task.FromResult(ok);
+        return ok;
     }
 
     /// <summary>把刚授权的 Skill 名落盘（去重后 Save）</summary>

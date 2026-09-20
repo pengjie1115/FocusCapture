@@ -64,9 +64,9 @@
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
 | **快层** | `tests/` | **49** | 纯逻辑，秒级 | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **298** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*` 时**；交付前 |
+| **慢层** | `tests/sync/` | **304** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*` 时**；交付前 |
 
-当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**（慢层）。
+当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**、**UI 线程封送（自验：发起端确实不在 UI 线程 / 回调被搬到 UI 线程 / 取消如实传回 / 无调度器与已停用一律按未确认，6 条）**（慢层）。
 
 > **为什么文件仓库的检查点在慢层不在快层**（2026-09-16）：快层工程刻意不引用主项目（只链接少数无依赖源文件，以保持秒级编译）。
 > 文件仓库必然依赖日志/设置/附件服务，链进快层会把这层轻量结构毁掉。代价是它的检查点不是「每次改动都跑」，
@@ -79,6 +79,16 @@
 > **条数与耗时无关，别按条数猜瓶颈**（2026-09-17 实测）：文件仓库 57 条只花 0.3 秒、拖放保存 46 条只花 70 毫秒，
 > 而断网/重试 **8 条**独占 25.8 秒（77%）。**95% 的耗时集中在 3 个组**。推论：想「把条数多的组搬回快层」省时间，
 > 收益可能为零 —— 先看耗时表再决定搬谁。
+
+> **⚠️ `dev.ps1` 的退出码曾经是假的（2026-09-20 修）**：`tests\run-tests.bat` 与 `tests\sync\run-sync-tests.bat`
+> 都以 `pause` 结尾且从不传 `ERRORLEVEL`，于是 `.bat` 的退出码 = `pause` 的退出码 = **恒为 0** ——
+> 「退出码 0 = 检查点全过」这条契约（AGENTS.md 里写着）**根本兑现不了，门禁永远红不了**。
+> 实测证据：故意把一处封送去掉让慢层崩掉，`.bat` 自己打印了 `[RESULT] SOME CHECKS FAILED - exit code -532462766`，
+> 而 `dev.ps1` 仍然报"通过"。
+> 已修两处：① 两个 `.bat` 末尾加 `exit /b %RESULT%`（pause 仍在前面，人双击照样看得完）；
+> ② `dev.ps1` 的 `Invoke-Test` 改成**双重判据** —— 退出码为 0 **且**输出里有 `[RESULT] ALL CHECKS PASSED` 才算过。
+> 加第二条的理由是本项目一贯判据：**能用产物证明的，就不信声明的退出码**。
+> 改完复验：同一处故障下 `dev.ps1 test -Slow` 现在返回 **1** 并打印期望/实际对照。
 
 > **断网组从 25.8 秒降到 5.5 秒**（2026-09-17）：两处根因都在「干等」而不是「算得慢」——
 > ① `WebDAVProvider` 对 503/429 会硬等 5s+15s 再重试（C-7 段正用 503 触发它）→ 给该类加了**可注入退避参数**，
@@ -712,7 +722,7 @@
 `list_recycle_bin`、`restore_deleted`、`export_notes`、`update_file_meta`、`read_spreadsheet`、`read_pdf`；
 另 `read_cloud_file` 扩展支持 docx/xlsx/pdf。
 
-> **三条红线（改这块之前必读）**：
+> **四条红线（改这块之前必读）**：
 > ① **文档工具的来源只能是 `handle`（用户亲手选的文件牌号）或 `file_id`（本地元数据编号）** ——
 >    `read_spreadsheet` / `read_pdf` 沿用与文件工具同一条红线，**没有路径参数**。慢层有断言守护：编造牌号、把本机路径当牌号、两者都不给，三种情况都必须失败并给出可执行指引。
 > ② **原地改行 = 旧内容先写回收站再替换**（`NoteService.RewriteEntryLine`）。这是用户拍板的语义（"直接改，不要另存一条"），
@@ -720,6 +730,11 @@
 >    回收站写失败就**中止改行** —— 宁可这次改不成，也不能让旧内容无声消失。
 > ③ **AI 改内容与界面「编辑」不是同一条路**：界面走 `AppendEdit`（追加【编辑】行，原行不动），AI 走 `UpdateNote`（原地替换）。
 >    这是刻意的差异，不是 bug；改之前先确认要的是哪一种。
+> ④ **工具执行线程不是 UI 线程** —— `AgentRunService.RunAsync` 全程 `ConfigureAwait(false)`，工具体跑在线程池线程上。
+>    任何"弹窗问用户 / 碰 UI 对象"的回调**必须经 `Services/UiThread.AskAsync` 封送**，否则抛
+>    「调用线程无法访问此对象，因为另一个线程拥有该对象」。**这不是理论 —— 2026-09-20 真机炸过一轮**
+>    （Skill 准入确认），而"写操作确认弹窗"里同一处写法只是**因为用户把它关着才没暴露**：一旦打开，所有写工具全废。
+>    慢层「UI 线程封送」组 6 条守着它，改完可以拿掉 `UiThread` 跑一遍看它红不红（验过：会红）。
 
 > **⚠️ `read_cloud_image` 为什么没做（2026-09-17 结论，别重复踩）**：工具返回的是 tool 消息，
 > 而 `OpenAICompatibleProvider.BuildMessagesArray` 里 Tool 分支排在附件分支之前、只写纯文本 content ——
@@ -770,13 +785,14 @@
 > 涉及文件：`Services/Skills/`（SkillCatalog / SkillScriptRunner / SkillRuntime / SkillManifest / SkillTools，五个新文件）、
 > `Windows/AIDialogWindow.xaml.cs`（装配两行 + ExtraSystemContext 注入清单）、`Models/AppSettings.cs`（SkillTrusted）、
 > `Windows/SettingsWindow.xaml(.cs)`（AI 模型板块里的「Skill 扩展」分区）、`FocusCapture.csproj`（runtime 复制规则）、
-> `Diagnostics/UiSnapshot.cs`（新增截图项 03b）、`tools/fetch-python-runtime.ps1` + `.bat`（新增）、`.gitignore`（`/runtime/`）。
+> `Diagnostics/UiSnapshot.cs`（新增截图项 03b）、`tools/fetch-python-runtime.ps1` + `.bat`（新增）、`.gitignore`（`/runtime/`）、
+> `Services/UiThread.cs`（新，UI 线程封送 —— 工具线程上不能直接碰 UI 对象，见下 ④）。
 
 **它是什么**：让 AI 问答能加载并执行 **WorkBuddy 格式**的 Skill（`SKILL.md` + `scripts/`），**不改写 Skill 格式**。
 装 Skill = 把文件夹整个拷进 `%AppData%\FocusCapture\Skills\`；某个 Skill 首次要跑脚本时弹一次授权确认；
 撤销入口在「设置 → AI 模型 → Skill 扩展」。
 
-> **三条红线（改这块之前必读）**：
+> **四条红线（改这块之前必读）**：
 > ① **九条硬规则写死在 `SkillScriptRunner` 里**，不得下放给模型、也不做成配置项。最要紧的两条：
 >    **Skill 名只在已扫描目录表里查、取表中预存的绝对路径**（绝不拼串）；**脚本解析后必须仍在
 >    `<skill>\scripts\` 内**（`..`、路径分隔符、绝对路径一律拒）。安全边界只能靠机器守。
@@ -785,6 +801,11 @@
 >    **静默失效**。慢层有专门检查点守它（「同目录模块 import 必须成功」）。
 > ③ **缺运行时或执行失败时，返回给模型的文本不得含「已完成 / 已执行 / 成功 / EXIT=0」字样** ——
 >    这是「AI 谎报已上传成功」那条红线在 Skill 场景下的同一道防线。
+> ④ **准入确认必须经 `UiThread.AskAsync` 封送**（同 B-16 ④）。`SkillScriptRunner` 在线程池线程上调
+>    `TrustPrompt`，直接 `MessageBox.Show(this, …)` 会抛「调用线程无法访问此对象」——
+>    2026-09-20 真机踩到：模型连着四轮拿到这句内部错误，而它读到的清单、脚本名全是对的，
+>    所以它自己的判断是"工具运行环境有问题，不是授权过期"（**判断正确**）。
+>    ⚠ **这类故障的报错文本极具误导性**：它看起来像"授权挂了"，实际连一次网络请求都没发出去。
 
 **为什么它对主循环零侵入**：清单走 `AgentRunService.ExtraSystemContext`（每轮求值、不落会话历史），
 `AgentRunService` 一行未改；核心全在 `Services/Skills/` 独立目录 —— **出问题可整目录删掉回退**，不牵存量功能。

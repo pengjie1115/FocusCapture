@@ -184,8 +184,15 @@ function Invoke-Test {
     }
     foreach ($line in $captured) { Write-Host $line }
 
-    if ($code -ne 0) {
-        Write-Fail $name '退出码 0（全部通过）' "退出码 $code" '检查点红了 —— 去看上面哪几条失败，改代码，不要改检查点标准' $ExTaskFail
+    # 双重判据（2026-09-20 补）：退出码 + 输出里的结论行，两个都要对。
+    # 为什么不能只看退出码：tests 下两个 .bat 之前以 pause 结尾、从不传 ERRORLEVEL，
+    # 于是退出码恒为 0 —— 这个门禁永远红不了，AGENTS.md 那条「退出码 0 = 检查点全过」是假的。
+    # 「能用产物证明的就不信声明的退出码」是本项目一贯判据（见 snap 那段注释），这里沿用：
+    # 结论行是检查点程序自己打的，比 .bat 传上来的数字更接近事实。
+    $passed = @($captured | Where-Object { [string]$_ -match '\[RESULT\] ALL CHECKS PASSED' }).Count -gt 0
+    if ($code -ne 0 -or -not $passed) {
+        $why = if ($code -ne 0) { "退出码 $code" } else { '退出码 0，但输出里没有 [RESULT] ALL CHECKS PASSED' }
+        Write-Fail $name '退出码 0 且输出含 [RESULT] ALL CHECKS PASSED' $why '检查点红了 —— 去看上面哪几条失败，改代码，不要改检查点标准' $ExTaskFail
         return $ExTaskFail
     }
     Write-Host "$name 通过" -ForegroundColor Green
