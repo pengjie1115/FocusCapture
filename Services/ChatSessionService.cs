@@ -17,6 +17,7 @@ public class ChatSessionService
     // ── 会话元数据（同步/管理用主键 = Id(GUID)，不再用文件名时间戳） ──
     private string _sessionId;       // 会话唯一 ID（GUID）；旧文件无 Id 时 Load 兜底生成，首次 Save 回写
     private int _rev;                // 会话版本号，每次 Save 自增（同步冲突检测依据）
+    private bool _hasConversation;  // 是否已有实质对话（非 system 消息）；为 false 时 Save 不落盘，避免打开窗口即生成空对话历史污染列表
     private string _title = "";      // 重命名标题（阶段二 UI 写入；空 = 用首条用户消息预览）
     private bool _pinned;            // 置顶
     private string _groupId = "";    // 所属分组 ID（空 = 未分组）
@@ -72,12 +73,14 @@ public class ChatSessionService
     {
         _messages.Add(new ChatMessage(ChatRoles.User, content,
             Attachments: attachments is { Count: > 0 } ? attachments : null));
+        _hasConversation = true;
         Trim();
     }
 
     public void AddAssistant(string content)
     {
         _messages.Add(new ChatMessage(ChatRoles.Assistant, content));
+        _hasConversation = true;
         Trim();
     }
 
@@ -85,6 +88,7 @@ public class ChatSessionService
     public void AddAssistantToolCall(string? content, string toolCallsJson)
     {
         _messages.Add(new ChatMessage(ChatRoles.Assistant, content ?? "", ToolCallsJson: toolCallsJson));
+        _hasConversation = true;
         Trim();
     }
 
@@ -93,6 +97,7 @@ public class ChatSessionService
     {
         if (content.Length > _toolResultLimit) content = content[.._toolResultLimit] + "…（已截断）";
         _messages.Add(new ChatMessage(ChatRoles.Tool, content, ToolCallId: toolCallId));
+        _hasConversation = true;
         Trim();
     }
 
@@ -141,6 +146,9 @@ public class ChatSessionService
     /// <summary>持久化到 chat_history/{GUID}.json。Rev 自增；成功后触发 SessionChanged（同步管道入口）。</summary>
     public void Save()
     {
+        // 未发生实质对话（仅 system 消息）不落盘：避免"打开窗口/点新会话"就写出空对话历史污染列表。
+        // 一旦 AddUser/AddAssistant/AddToolResult 命中，_hasConversation 置 true，后续 Save 正常写盘。
+        if (!_hasConversation) return;
         try
         {
             _rev++;
@@ -191,6 +199,7 @@ public class ChatSessionService
             svc._groupId = payload.GroupId ?? "";
             svc._messages.Clear();
             svc._messages.AddRange(payload.Messages ?? new List<ChatMessage>());
+            svc._hasConversation = payload.Messages?.Any(m => m.Role != ChatRoles.System) ?? false;
             return svc;
         }
         catch (Exception ex)
@@ -218,7 +227,11 @@ public class ChatSessionService
                     var payload = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(file, Encoding.UTF8));
                     if (payload == null || !Enum.TryParse<ExplainMode>(payload.Mode, out _)) continue;
 
-                    var firstUser = payload.Messages?.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    var messages = payload.Messages ?? new List<ChatMessage>();
+                    var nonSysCount = messages.Count(m => m.Role != ChatRoles.System);
+                    if (nonSysCount == 0) continue;   // 空会话（仅 system）不进历史列表
+
+                    var firstUser = messages.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
                     result.Add(new SessionSummary(
                         file,
                         string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
@@ -228,7 +241,7 @@ public class ChatSessionService
                         payload.Pinned,
                         payload.GroupId ?? "",
                         BuildPreview(payload.Title, firstUser),
-                        payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
+                        nonSysCount));
                 }
                 catch (Exception ex) when (ex is JsonException or IOException)
                 {
@@ -306,7 +319,10 @@ public class ChatSessionService
                 {
                     var payload = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(file, Encoding.UTF8));
                     if (payload == null || !Enum.TryParse<ExplainMode>(payload.Mode, out _)) continue;
-                    var firstUser = payload.Messages?.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    var messages = payload.Messages ?? new List<ChatMessage>();
+                    var nonSysCount = messages.Count(m => m.Role != ChatRoles.System);
+                    if (nonSysCount == 0) continue;   // 空会话不进回收站列表
+                    var firstUser = messages.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
                     result.Add(new SessionSummary(
                         file,
                         string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
@@ -316,7 +332,7 @@ public class ChatSessionService
                         payload.Pinned,
                         payload.GroupId ?? "",
                         BuildPreview(payload.Title, firstUser),
-                        payload.Messages?.Count(m => m.Role != ChatRoles.System) ?? 0));
+                        nonSysCount));
                 }
                 catch (Exception ex) when (ex is JsonException or IOException)
                 {
