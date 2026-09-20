@@ -524,9 +524,10 @@ function Invoke-Merge {
     }
 
     $before = Get-TrackedCount
-    $beforeExe = $false
     Write-Host "  待合并分支：$branch"
-    Write-Host "  合并前跟踪文件总数：$before"
+    Write-Host "  合并前跟踪文件总数：$before（仅参考 —— 切分支后文件数本来就会变）"
+    Write-Host '  ⚠ 本机实测：git checkout 会触发「文件从磁盘消失」（索引完好、可恢复）。' -ForegroundColor Yellow
+    Write-Host '     若下一步校验失败：先 git checkout 切回本分支，再 git restore --worktree .' -ForegroundColor Yellow
 
     $code = Invoke-External 'git' @('-C', $RepoRoot, 'checkout', 'main')
     if ($code -ne 0) {
@@ -534,20 +535,40 @@ function Invoke-Merge {
         return $ExScriptFail
     }
 
-    # 本机实测：checkout 有触发索引异常的历史（文件被误标 D 且真的从磁盘消失），所以切完立刻验
+    # ⚠ 判据只有一个：切换前工作区干净（上面已校验），切换后也该干净。
+    #    不要用「文件数是否一致」判断 —— 切分支本来就会换一整套文件（各分支文件集不同）：
+    #    实测 main 比本分支多 4 个（本分支删了 8 个、加了 4 个），文件数必然变化。
+    #    2026-09-20 实测踩到：原判据把这种正常差异当成异常，报了假警报。
     $afterCheckout = Get-TrackedCount
     $st = Get-Git @('status', '--porcelain')
-    $deletedWork = 0
+    $vanished = @()
     foreach ($line in ($st -split "`n")) {
-        if ($line.StartsWith(' D')) { $deletedWork = $deletedWork + 1 }
+        if ($line.Trim() -eq '') { continue }
+        if ($line.StartsWith(' D')) { $vanished += $line.Substring(3).Trim() }
     }
-    if ($deletedWork -gt 0 -or $afterCheckout -lt $before) {
-        Write-Fail '切到 main 后校验' '文件数与切之前一致、无工作区删除' `
-            "文件数 $before -> $afterCheckout，工作区删除 $deletedWork 项" `
-            '疑似本机已知的 git 索引异常。先跑 tools\dev.ps1 recover 看现场（它默认只诊断+备份，不改文件）' $ExTaskFail
-        return $ExTaskFail
+    if ($vanished.Count -gt 0) {
+        # 本机 checkout 会【稳定复现】这个现象（2026-09-20 实测：切到 main 丢 18 个、切回分支丢 8 个），
+        # 所以不能只报警 —— 每次都报等于每次都卡住。按本方案自己的原则：
+        # 【能让脚本自己修好的，绝不上升到 AI】。
+        Write-Host ''
+        Write-Host "  检测到 $($vanished.Count) 个文件被 checkout 弄丢（本机已知现象）：" -ForegroundColor Yellow
+        foreach ($f in $vanished) { Write-Host "    $f" -ForegroundColor Yellow }
+        Write-Host '  → 自动恢复（git restore --worktree：只写工作区，不动索引、不删文件）...' -ForegroundColor Yellow
+        $rc = Invoke-External 'git' @('-C', $RepoRoot, 'restore', '--worktree', '.')
+        $st2 = Get-Git @('status', '--porcelain')
+        $still = @()
+        foreach ($line in ($st2 -split "`n")) {
+            if ($line.Trim() -eq '') { continue }
+            if ($line.StartsWith(' D')) { $still += $line.Substring(3).Trim() }
+        }
+        if ($rc -ne 0 -or $still.Count -gt 0) {
+            Write-Fail '自动恢复消失文件' '恢复后工作区干净' "仍剩 $($still.Count) 个文件缺失" `
+                '自动恢复没成功。切回原分支后用 git restore --worktree . 手动恢复；或先跑 dev.ps1 recover 看现场' $ExTaskFail
+            return $ExTaskFail
+        }
+        Write-Host "  已自动恢复 $($vanished.Count) 个文件，继续合并" -ForegroundColor Green
     }
-    Write-Host "  切到 main 后校验通过（文件数 $afterCheckout，无误标删除）" -ForegroundColor Green
+    Write-Host "  切到 main 后校验通过（工作区干净；文件数 $before -> $afterCheckout，差异属正常）" -ForegroundColor Green
 
     $code = Invoke-External 'git' @('-C', $RepoRoot, 'merge', '--ff-only', $branch)
     if ($code -ne 0) {
@@ -560,6 +581,7 @@ function Invoke-Merge {
     Write-Host ''
     Write-Host "  合并完成：$before -> $after 个跟踪文件" -ForegroundColor Green
     Write-Host '  提醒：分支按规范「合并即删」（git log 即归档，不登记）。删分支前先跑 status 确认。' -ForegroundColor Yellow
+    Write-Host '  另注：若本脚本此前只存在于被合并分支上，这是它第一次进 main。' -ForegroundColor DarkGray
     return $ExOk
 }
 
