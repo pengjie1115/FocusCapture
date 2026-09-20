@@ -25,6 +25,7 @@
 | 10 | **SecretKey / API Key 不进聊天、日志、文档、仓库** | 人工纪律 |
 | 11 | **Release 构建禁用 IL 裁剪**（`PublishTrimmed=false`）—— WPF 的 COM 互操作类型无法静态裁剪，开了会启动即崩 | 人工纪律 |
 | 12 | **数据全部存本机** —— 任何涉及网络传输的新改动，必须先跟用户讨论 | 人工纪律 |
+| 13 | **脚本报错 → 先绕过把任务做完 → 交付时必须附「脚本异常报告」**（什么错 / 怎么绕的 / 建议改不改 / 等用户拍板）；**没报告的视为交付未完成** | 用户验收时检查有没有这段 |
 
 > **「人工纪律」= 目前只靠自觉，没有机器拦截。** 标「门禁待补」的是下一批要固化成脚本的候选。
 > 判据：**写不出拦截点的红线就是口号** —— 要么升级成门禁，要么接受它治不了。
@@ -37,16 +38,25 @@
 
 | 要做的事 | 命令 / 位置 |
 |---|---|
-| 编译 | `dotnet build`（Debug） |
-| 检查点 · 快层（纯逻辑、秒级，**每次改动都跑**） | `tests\run-tests.bat` |
-| 检查点 · 慢层（驱动真实同步引擎） | `tests\sync\run-sync-tests.bat` |
+| **日常动作一律走脚本** | `tools\dev.ps1 <命令>`（Agent 用这个）；自述：`tools\dev.ps1 help`。人双击用 `tools\dev.bat` |
+| 编译 | `dev.ps1 build`（自带环境变量补丁,不用再手动补那 4 个变量） |
+| 跑检查点 · 快层 | `dev.ps1 test` |
+| 跑检查点 · 慢层 | `dev.ps1 test -Slow` |
+| **交付前自检(必做)** | `dev.ps1 ready` —— 编译 + 全量检查点 + 文档引用检查,打印固定格式结果;**交付时把这段完整贴给用户** |
+| 看当前现状 | `dev.ps1 status`(分支 / 改动 / 与 main 差距 / 待推送 / 文件数) |
+| 开分支 | `dev.ps1 start <分支名>`(自动补类型前缀 + 开工查重) |
+| 合并到 main | `dev.ps1 merge`(ff-only + 合并后自动校验索引异常) |
+| 推双远程 | `dev.ps1 push` |
+| 界面问题(看不清 / 被挤出 / 豆腐块) | `dev.ps1 snap`(出图到 `%TEMP%\fc-ui-snapshot` + 打印尺寸表) |
+| git 索引异常 | `dev.ps1 recover`(默认只诊断 + 备份;加 `-Apply` 才恢复) |
+| 提交 | `dev.ps1 commit`(从 `.git\FC_COMMIT_MSG` 读提交信息) |
 | 判断改动影响面、该跑哪层 | `REGRESSION.md` §一 枢纽清单 + §二 触发表 |
-| 交付前自检 | `REGRESSION.md` §二 八条硬规则 |
-| 界面问题（看不清 / 被挤出 / 豆腐块） | `FocusCapture.exe --snapshot` → `Diagnostics/README.md` |
-| 数据迁移 | `MIGRATION.md`（**顺序不可颠倒**；本机文件，不进远端） |
-| 查有哪些分支、有没有未合并 | **当场用 `git` 查**（不再维护分支索引） |
-| 找已放弃的分支（git 已查不到的） | `docs/ARCHIVE-BRANCHES.md` |
-| 版本变更历史 | `git log`；`CHANGELOG.md` 仅在发版时整理 |
+| 检查点纪律(八条硬规则) | `REGRESSION.md` §二 |
+| 数据迁移 | `MIGRATION.md`(**顺序不可颠倒**;本机文件,不进远端) |
+| 查有哪些分支、有没有未合并 | **当场用 `git` 查**(不再维护分支索引) |
+| 找已放弃的分支(git 已查不到的) | `docs/ARCHIVE-BRANCHES.md` |
+| 版本变更历史 | `git log`;`CHANGELOG.md` 仅在发版时整理 |
+| 想知道脚本为什么这么设计 | `docs/dev-script-plan.md` |
 
 退出码 `0` = 检查点全过，`1` = 有失败。检查点跑在临时沙箱，**不触碰真实数据**。
 

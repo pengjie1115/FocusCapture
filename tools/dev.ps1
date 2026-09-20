@@ -1,0 +1,667 @@
+﻿<#
+  dev.ps1 - FocusCapture 开发流程入口（Agent 无关）
+
+  用法：  tools\dev.ps1 <命令> [参数]
+  自述：  tools\dev.ps1 help
+
+  ── 设计原则（改本脚本前必读）──────────────────────────────
+  1. 只放「动作」，不放「知识」。会变的东西（敏感文件清单、检查点条数、
+     远程名、框架版本号）一律现场读取，绝不硬编码 —— 硬编码必然过期，
+     而过期后的脚本会「照样跑得好好的，但判断已经错了」（软失真）。
+  2. 退出码分级：0 = 成功 ／ 1 = 任务失败（该改代码）／ 2 = 脚本故障（该改脚本）。
+  3. 界面文字一律 Write-Host；函数返回值只用于退出码，避免污染管道。
+  4. 幂等：同一状态下跑两遍，结果一样。
+  5. 不用 bash 核心命令（本机实测 mkdir/find/tail/head/ls/cp/grep/cat 会消失），
+     一律用 PowerShell 原生 cmdlet。
+  6. 兼容 PowerShell 5.1：不用 && / || / ?? / 三元运算符。
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Position = 0)]
+    [string]$Command = 'help',
+
+    [Parameter(Position = 1)]
+    [string]$Arg1,
+
+    [switch]$Apply
+)
+
+# 注意：这里【不要】设 [Console]::OutputEncoding = UTF8。
+# 本脚本是被父进程调用的（WorkBuddy 的 PowerShell 工具 / dev.bat），父进程按系统代码页（本机 GBK）
+# 解码本脚本的输出；脚本若强设 UTF8 输出，父进程会按 GBK 解出乱码。
+# 2026-09-20 实测：设了之后 `dev.ps1 status` 输出全是「鐜扮姸涓€灞?」这类乱码。
+# 结论：输出保持系统默认编码，让调用方按同一编码解码。
+
+$ExOk         = 0   # 成功
+$ExTaskFail   = 1   # 任务失败：编译错 / 检查点红 —— 该改代码
+$ExScriptFail = 2   # 脚本自身故障 —— 该改脚本（走「脚本异常报告」流程）
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$MsgFile  = Join-Path $RepoRoot '.git\FC_COMMIT_MSG'
+
+# ────────────────────────── 工具函数 ──────────────────────────
+
+function Repair-BuildEnv {
+    # 本机实测：WorkBuddy 沙箱里这几个变量为空时，dotnet restore 会报
+    #「Value cannot be null. (Parameter 'path1')」。只在为空时补，不覆盖真实值。
+    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        $env:APPDATA = Join-Path $env:USERPROFILE 'AppData\Roaming'
+    }
+    if ([string]::IsNullOrWhiteSpace($env:PROGRAMFILES)) { $env:PROGRAMFILES = 'C:\Program Files' }
+    if ([string]::IsNullOrWhiteSpace($env:ProgramW6432)) { $env:ProgramW6432 = 'C:\Program Files' }
+    if ([string]::IsNullOrWhiteSpace($env:ProgramData))  { $env:ProgramData  = 'C:\ProgramData' }
+}
+
+function Write-Head {
+    param([string]$Text)
+    Write-Host ''
+    Write-Host "== $Text ==" -ForegroundColor Cyan
+}
+
+function Write-Fail {
+    param([string]$Step, [string]$Expect, [string]$Actual, [string]$Advice, [int]$Code)
+    Write-Host ''
+    Write-Host '[dev.ps1] 失败' -ForegroundColor Red
+    Write-Host "  步骤：$Step"
+    Write-Host "  期望：$Expect"
+    Write-Host "  实际：$Actual"
+    Write-Host "  建议：$Advice" -ForegroundColor Yellow
+    if ($Code -eq $ExTaskFail) {
+        Write-Host '  退出码：1（任务失败 —— 这是正常结果，去看输出改代码，不是改脚本）'
+    } else {
+        Write-Host '  退出码：2（脚本自身故障 —— 先绕过完成任务，再按「脚本异常报告」流程报告）'
+    }
+}
+
+function Invoke-External {
+    # 跑外部程序并返回退出码。两个坑（2026-09-20 实测，都真踩过）：
+    #
+    # ① 程序输出必须【先捕获、再输出】。若直接 `& prog` 让输出留在管道里，
+    #    它会流进本函数的返回值流，和退出码混成一个数组 ——
+    #    实测：检查点 31 项全过、退出码本是 0，结果 $code 变成「整段输出文本 + 0」，脚本误判成失败。
+    #
+    # ② .NET 系工具（dotnet build、检查点程序）按 UTF-8 输出，而本机控制台默认 GBK，
+    #    按 GBK 解就会乱码（「正在确定要还原的项目」变成「姝ｅ湪纭畾瑕佽繕鍘熺殑椤圭洰」）。
+    #    所以调用期间切 UTF-8 解码，捕获完成后【先恢复系统编码、再往外输出】——
+    #    否则本脚本自己的 stdout 会写出 UTF-8 字节，父进程按 GBK 解，中文会再乱一次。
+    #
+    # 注：git 的界面消息以英文为主，按 UTF-8 解也正常；仓库内容（commit message）本就是 UTF-8，
+    #     这也正是 Get-Git 用同一套做法的原因。
+    param([string]$FilePath, [string[]]$Arguments)
+    $oldEnc = [Console]::OutputEncoding
+    $captured = @()
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $captured = @(& $FilePath @Arguments 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $oldEnc
+    }
+    foreach ($line in $captured) { Write-Host $line }
+    return $code
+}
+
+function Get-Git {
+    param([string[]]$Arguments)
+    # 编码有两层，别混（2026-09-20 实测）：
+    #   · 本脚本自己的中文输出 → 必须保持系统代码页（本机 GBK），因为父进程按 GBK 解码；
+    #   · git 读出来的仓库内容（commit message、分支名等）在仓库里存的是 UTF-8 字节，
+    #     若按 GBK 解就会变成「鏂板 dev.ps1」这类乱码。
+    # 所以：仅在调用 git 这一段临时切成 UTF-8，调完立刻还原。
+    $old = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $out = & git -C $RepoRoot @Arguments 2>&1
+    } finally {
+        [Console]::OutputEncoding = $old
+    }
+    return ($out | Out-String).Trim()
+}
+
+function Get-TrackedCount {
+    $out = & git -C $RepoRoot ls-files 2>&1
+    if ($null -eq $out) { return 0 }
+    return @($out).Count
+}
+
+# ────────────────────────── 1. build ──────────────────────────
+
+function Invoke-Build {
+    Repair-BuildEnv
+    Write-Head 'build 编译'
+    Push-Location $RepoRoot
+    try {
+        $code = Invoke-External 'dotnet' @('build', '-c', 'Debug', '--nologo')
+    } finally {
+        Pop-Location
+    }
+    if ($code -ne 0) {
+        Write-Fail 'dotnet build' '退出码 0' "退出码 $code" `
+            '看上面的编译错误，多半是代码问题；若报 path1 为 null 则是环境变量没补上（跑 dev.ps1 status 看看）' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host 'build 通过' -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── 2. test ──────────────────────────
+
+function Invoke-Test {
+    param([switch]$Slow)
+    $name = 'test 快层'
+    $bat  = Join-Path $RepoRoot 'tests\run-tests.bat'
+    if ($Slow) {
+        $name = 'test 慢层'
+        $bat  = Join-Path $RepoRoot 'tests\sync\run-sync-tests.bat'
+    }
+    if (-not (Test-Path -LiteralPath $bat)) {
+        Write-Fail $name '检查点脚本存在' "找不到 $bat" '检查点脚本被移动或删除；确认后改本脚本' $ExScriptFail
+        return $ExScriptFail
+    }
+    Write-Head $name
+
+    $oldEnc = [Console]::OutputEncoding
+    $captured = @()
+    try {
+        # 检查点程序按 UTF-8 输出（.NET 默认），而控制台默认 GBK
+        # → 中文用例名会乱码（「加密解密」显示成「鍔犲瘑瑙ｅ瘑」），故调用期间临时切成 UTF-8 解码。
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        # 检查点 .bat 末尾带 pause：喂一个空行，避免非交互场景卡住等按键。
+        $captured = @('' | & $bat 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        # 关键：先把系统编码恢复回来，再往外输出。
+        # 若在 UTF-8 状态下直接输出，本脚本的 stdout 会写出 UTF-8 字节，
+        # 而父进程按 GBK 解码 → 中文会又乱一次（2026-09-20 实测踩到）。
+        [Console]::OutputEncoding = $oldEnc
+    }
+    foreach ($line in $captured) { Write-Host $line }
+
+    if ($code -ne 0) {
+        Write-Fail $name '退出码 0（全部通过）' "退出码 $code" '检查点红了 —— 去看上面哪几条失败，改代码，不要改检查点标准' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "$name 通过" -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── 3. ready ──────────────────────────
+
+function Test-DocRefs {
+    # 只扫仓库根目录的 md（docs/ 与 .workbuddy/ 里可能有「故意提到不存在文件」的归档文字，避免误报）
+    $docs = @('AGENTS.md', 'REGRESSION.md', 'README.md', 'CHANGELOG.md', 'MIGRATION.md')
+    $bad = @()
+    $total = 0
+    foreach ($d in $docs) {
+        $p = Join-Path $RepoRoot $d
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        $text = Get-Content -LiteralPath $p -Raw -Encoding UTF8
+        # 只认「全 ASCII 的项目文档名」（AGENTS.md / docs/ARCHIVE-BRANCHES.md 这类）。
+        # 不能贪心匹配任意 `xxx.md`：MIGRATION.md 里举例用到的数据文件名
+        # （如 `灵感_2026-09-15.md`）会被误判成失效引用，导致 ready 假红 —— 狼来了会让门禁失效。
+        $m = [regex]::Matches($text, '`([A-Za-z0-9][A-Za-z0-9._/\-]*\.md)`')
+        foreach ($one in $m) {
+            $target = $one.Groups[1].Value
+            $total = $total + 1
+            $tp = Join-Path $RepoRoot ($target -replace '/', '\')
+            if (-not (Test-Path -LiteralPath $tp)) {
+                $bad += "$d -> $target"
+            }
+        }
+    }
+    return @{ Total = $total; Bad = $bad }
+}
+
+function Invoke-Ready {
+    Write-Head 'ready 交付前总检'
+    $c1 = Invoke-Build
+    if ($c1 -ne $ExOk) { return $c1 }
+
+    $c2 = Invoke-Test
+    if ($c2 -ne $ExOk) { return $c2 }
+
+    $c3 = Invoke-Test -Slow
+    if ($c3 -ne $ExOk) { return $c3 }
+
+    Write-Head '文档引用检查'
+    $r = Test-DocRefs
+    if ($r.Bad.Count -gt 0) {
+        Write-Host "发现 $($r.Bad.Count) 处失效引用：" -ForegroundColor Yellow
+        foreach ($b in $r.Bad) { Write-Host "  - $b" -ForegroundColor Yellow }
+        Write-Fail '文档引用检查' '所有 ``xxx.md`` 引用都能找到目标' "失效 $($r.Bad.Count) 处" '改文档里的路径，或补回被引用文件；确认是合理例外后再说' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "文档引用检查通过（$($r.Total) 处全部有效）" -ForegroundColor Green
+
+    Write-Host ''
+    Write-Host '── ready 总检通过 ──' -ForegroundColor Green
+    Write-Host '交付时请把上面这段完整贴给用户。'
+    return $ExOk
+}
+
+# ────────────────────────── 4. push ──────────────────────────
+
+function Invoke-Push {
+    Write-Head 'push 双远程推送（目标：main）'
+
+    $branch = Get-Git @('branch', '--show-current')
+    if ($branch -ne 'main') {
+        Write-Host "  当前分支：$branch（推的是 main，不是当前分支）" -ForegroundColor Yellow
+    }
+    $dirty = Get-Git @('status', '--porcelain')
+    if ($dirty -ne '') {
+        Write-Host '  注意：工作区有未提交改动 —— 推送只含已提交内容，改动不会上去' -ForegroundColor Yellow
+    }
+
+    $ahead = Get-Git @('log', '--oneline', 'origin/main..main')
+    if ($ahead -eq '') {
+        Write-Host '  本地 main 没有待推送提交（与 origin/main 一致）'
+    }
+
+    foreach ($remote in @('origin', 'github')) {
+        Write-Host ''
+        Write-Host "  → 推 $remote ..." -ForegroundColor Cyan
+        $code = Invoke-External 'git' @('-C', $RepoRoot, 'push', $remote, 'main')
+        if ($code -ne 0) {
+            Write-Host "  $remote 第一次失败，隔 3 秒重试一次 ..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+            $code = Invoke-External 'git' @('-C', $RepoRoot, 'push', $remote, 'main')
+        }
+        if ($code -ne 0) {
+            $advice = '若是 GitHub 502／连不上：本机实测是沙箱出口问题（对 Gitee 通畅、对 GitHub 时通时不通），别改 git 参数，隔一会儿直接重试即可；落后的提交一次能补完'
+            Write-Fail "git push $remote main" '退出码 0' "退出码 $code" $advice $ExTaskFail
+            return $ExTaskFail
+        }
+        Write-Host "  $remote 推送成功" -ForegroundColor Green
+    }
+
+    Write-Host ''
+    Write-Host 'push 完成（两侧均已推送）' -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── 5. recover ──────────────────────────
+
+function Invoke-Recover {
+    Write-Head 'recover git 索引异常诊断'
+
+    $tracked = Get-TrackedCount
+    Write-Host "  跟踪文件总数：$tracked"
+
+    $status = Get-Git @('status', '--porcelain')
+    $deletedStaged = 0
+    $deletedWork   = 0
+    $untracked     = @()
+    foreach ($line in ($status -split "`n")) {
+        if ($line.Trim() -eq '') { continue }
+        if ($line.StartsWith('D ')) { $deletedStaged = $deletedStaged + 1 }
+        elseif ($line.StartsWith(' D')) { $deletedWork = $deletedWork + 1 }
+        elseif ($line.StartsWith('??')) { $untracked += $line.Substring(3).Trim().Trim('"') }
+    }
+    Write-Host "  已暂存删除（D ）：$deletedStaged"
+    Write-Host "  工作区删除（ D）：$deletedWork"
+    Write-Host "  未跟踪文件（??）：$($untracked.Count)"
+
+    if ($deletedWork -eq 0 -and $deletedStaged -eq 0) {
+        Write-Host ''
+        Write-Host '  没有发现删除类异常，无需恢复。' -ForegroundColor Green
+        return $ExOk
+    }
+
+    # 备份未跟踪文件 —— 本机踩过的坑：全树通配的 restore 会卷走「已暂存但 HEAD 没有」的文件，
+    # 且索引损坏时 git status 本身不可信，所以先把 ?? 清单抄下来并备份出仓库。
+    $backupRoot = Join-Path $env:TEMP ('fc-recover-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    if ($untracked.Count -gt 0) {
+        New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+        foreach ($u in $untracked) {
+            $src = Join-Path $RepoRoot ($u -replace '/', '\')
+            if (Test-Path -LiteralPath $src -PathType Leaf) {
+                $dst = Join-Path $backupRoot ($u -replace '/', '\')
+                $dstDir = Split-Path -Parent $dst
+                if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+            }
+        }
+        Write-Host ''
+        Write-Host "  未跟踪文件已备份到：$backupRoot" -ForegroundColor Green
+    }
+
+    if (-not $Apply) {
+        Write-Host ''
+        Write-Host '  这是【干跑】模式，没有改动任何文件。' -ForegroundColor Yellow
+        Write-Host '  确认要执行恢复，请加 -Apply：' -ForegroundColor Yellow
+        Write-Host "      tools\dev.ps1 recover -Apply" -ForegroundColor Yellow
+        Write-Host '  恢复命令是：git restore --source=HEAD --staged --worktree .'
+        Write-Host '  （它是全树通配，只删「已暂存但 HEAD 没有」的 A 文件，不动 ?? —— 但仍需你确认）'
+        return $ExOk
+    }
+
+    Write-Head '执行恢复'
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'restore', '--source=HEAD', '--staged', '--worktree', '.')
+    if ($code -ne 0) {
+        Write-Fail 'git restore' '退出码 0' "退出码 $code" '恢复命令本身失败；把完整输出报给用户' $ExScriptFail
+        return $ExScriptFail
+    }
+
+    $after = Get-TrackedCount
+    Write-Host "  恢复后跟踪文件总数：$after（恢复前 $tracked）"
+    if ($after -lt $tracked) {
+        Write-Fail '恢复后校验' "跟踪文件数不少于 $tracked" "只有 $after" "有文件可能在恢复中丢失，备份在 $backupRoot" $ExScriptFail
+        return $ExScriptFail
+    }
+    Write-Host ''
+    Write-Host '  恢复完成，工作区应已干净。请跑一次 status 确认。' -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── 6. snap ──────────────────────────
+
+function Invoke-Snap {
+    Write-Head 'snap 界面快照'
+    $debugDir = Join-Path $RepoRoot 'bin\Debug'
+    $exe = $null
+    if (Test-Path -LiteralPath $debugDir) {
+        $found = Get-ChildItem -LiteralPath $debugDir -Filter 'FocusCapture.exe' -Recurse -ErrorAction SilentlyContinue
+        if ($found.Count -gt 0) { $exe = $found[0].FullName }
+    }
+    # 不硬编码 net8.0-windows 版本号 —— 上面用通配查找，框架升级也不用改脚本
+    if ($null -eq $exe) {
+        Write-Host '  未找到已编译的 exe，先编译 ...'
+        $c = Invoke-Build
+        if ($c -ne $ExOk) { return $c }
+        $found = Get-ChildItem -LiteralPath $debugDir -Filter 'FocusCapture.exe' -Recurse -ErrorAction SilentlyContinue
+        if ($found.Count -eq 0) {
+            Write-Fail 'snap 定位 exe' 'bin\Debug 下存在 FocusCapture.exe' '没找到' '确认已编译；若框架版本变了本脚本无需改（用的是通配查找）' $ExScriptFail
+            return $ExScriptFail
+        }
+        $exe = $found[0].FullName
+    }
+
+    $outDir = Join-Path $env:TEMP 'fc-ui-snapshot'
+    if (Test-Path -LiteralPath $outDir) { Remove-Item -LiteralPath $outDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+    Write-Host "  用 exe：$exe"
+    # 必须用 Start-Process -Wait（两个原因，都实测过）：
+    #   ① FocusCapture.exe 是 GUI 子系统程序，用 `& exe` 调用时 PowerShell 不会等它跑完 ——
+    #      实测脚本立刻去查目录是空的，而图是在脚本结束之后才写完的（25 张，时间戳对得上）；
+    #   ② 这类程序的退出码不可靠（$LASTEXITCODE 为空），所以【不看退出码，看产物】：
+    #      出图目录里出现 PNG 才算成功。能用产物证明的，就不信「声明的退出码」。
+    $proc = Start-Process -FilePath $exe -ArgumentList @('--snapshot', '--out', $outDir) -Wait -PassThru
+    if ($null -ne $proc -and $proc.ExitCode -ne 0) {
+        Write-Host "  程序退出码：$($proc.ExitCode)（仅参考 —— GUI 程序退出码未必可靠，以下面的产物为准）" -ForegroundColor Yellow
+    }
+
+    $pngs = @(Get-ChildItem -LiteralPath $outDir -Filter '*.png' -File -ErrorAction SilentlyContinue)
+    if ($pngs.Count -eq 0) {
+        Write-Fail 'FocusCapture.exe --snapshot' '出图目录里出现 PNG' "一张图都没生成（$outDir）" `
+            '看上面的程序输出；可能是窗口初始化失败' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "  已生成 $($pngs.Count) 张图" -ForegroundColor Green
+
+    $log = Join-Path $outDir 'snapshot.log'
+    Write-Host ''
+    Write-Host "  出图目录：$outDir" -ForegroundColor Green
+    if (Test-Path -LiteralPath $log) {
+        Write-Host '  ── snapshot.log（尺寸异常是布局异常的第一信号）──'
+        Get-Content -LiteralPath $log | ForEach-Object { Write-Host "  $_" }
+    }
+    Write-Host ''
+    Write-Host '  判读提醒：不要只看缩略图，图标偏移/字形残缺要放大裁剪再看；对比法最有效（改动前后各跑一次）。' -ForegroundColor Yellow
+    return $ExOk
+}
+
+# ────────────────────────── 7. status ──────────────────────────
+
+function Invoke-Status {
+    Write-Head 'status 现状一屏'
+
+    Write-Host "  分支：$(Get-Git @('branch', '--show-current'))"
+
+    $status = Get-Git @('status', '--porcelain')
+    if ($status -eq '') { Write-Host '  工作区：干净' -ForegroundColor Green }
+    else {
+        $lines = @($status -split "`n" | Where-Object { $_.Trim() -ne '' })
+        Write-Host "  工作区：$($lines.Count) 项改动" -ForegroundColor Yellow
+        foreach ($l in $lines) { Write-Host "    $($l.TrimEnd())" }
+    }
+
+    $tracked = Get-TrackedCount
+    Write-Host "  跟踪文件总数：$tracked"
+
+    $aheadMain = Get-Git @('log', '--oneline', 'main..HEAD')
+    if ($aheadMain -eq '') { Write-Host '  与 main：无差距' }
+    else {
+        $n = @($aheadMain -split "`n" | Where-Object { $_.Trim() -ne '' }).Count
+        Write-Host "  与 main：领先 $n 个提交" -ForegroundColor Yellow
+        $aheadMain -split "`n" | ForEach-Object { if ($_.Trim() -ne '') { Write-Host "    $_" } }
+    }
+
+    $unpushed = Get-Git @('log', '--oneline', 'origin/main..main')
+    if ($unpushed -eq '') { Write-Host '  本地 main 待推送：无' -ForegroundColor Green }
+    else {
+        $n = @($unpushed -split "`n" | Where-Object { $_.Trim() -ne '' }).Count
+        Write-Host "  本地 main 待推送：$n 个提交" -ForegroundColor Yellow
+    }
+
+    # 双远程可达性只做提示，不联网探测（GitHub 本机时通时不通，会拖慢 status）
+    $remotes = Get-Git @('remote')
+    Write-Host "  远程：$(($remotes -split "`n" | Where-Object { $_.Trim() -ne '' }) -join ' / ')"
+
+    return $ExOk
+}
+
+# ────────────────────────── 8. start ──────────────────────────
+
+function Invoke-Start {
+    param([string]$Name)
+    Write-Head 'start 开分支'
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        Write-Fail 'start 参数' 'dev.ps1 start <分支名>' '没给分支名' '例：dev.ps1 start 悬浮球角标修复' $ExScriptFail
+        return $ExScriptFail
+    }
+
+    $prefixes = @('feature/', 'fix/', 'docs/', 'release/', 'experiment/')
+    $hasPrefix = $false
+    foreach ($p in $prefixes) { if ($Name.StartsWith($p)) { $hasPrefix = $true } }
+    if (-not $hasPrefix) {
+        $Name = 'feature/' + $Name
+        Write-Host "  未带类型前缀，自动补为：$Name"
+    }
+
+    $dirty = Get-Git @('status', '--porcelain')
+    if ($dirty -ne '') {
+        Write-Fail '工作区检查' '开分支前工作区干净' '有未提交改动' '先提交或 stash，再开分支（否则改动会跟着切过去）' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    $exists = Get-Git @('branch', '--list', $Name)
+    if ($exists -ne '') {
+        Write-Fail '分支查重' "不存在同名分支 $Name" '已存在' '换个名字，或用 git checkout 切过去' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    # 开工前查重（规范要求）：看看 main 上有没有做过类似的事
+    $keyword = ($Name -split '/' | Select-Object -Last 1)
+    $similar = Get-Git @('log', '--all', '--oneline', "--grep=$keyword", '-20')
+    if ($similar -ne '') {
+        Write-Host "  ⚠ 历史提交里有提到「$keyword」的（防重复开发，请看一眼）：" -ForegroundColor Yellow
+        $similar -split "`n" | ForEach-Object { if ($_.Trim() -ne '') { Write-Host "    $_" } }
+    }
+
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'checkout', '-b', $Name, 'main')
+    if ($code -ne 0) {
+        Write-Fail "git checkout -b $Name main" '退出码 0' "退出码 $code" '建分支失败；把输出报给用户' $ExScriptFail
+        return $ExScriptFail
+    }
+
+    Write-Host ''
+    Write-Host "  已从 main 新建并切到：$Name" -ForegroundColor Green
+    Write-Host '  开完立刻验一次工作区（本机 checkout 有触发索引异常的历史）：' -ForegroundColor Yellow
+    return Invoke-Status
+}
+
+# ────────────────────────── 9. merge ──────────────────────────
+
+function Invoke-Merge {
+    Write-Head 'merge 合并到 main（ff-only）'
+
+    $branch = Get-Git @('branch', '--show-current')
+    if ($branch -eq 'main') {
+        Write-Fail 'merge 前置检查' '当前不在 main 上' '已经在 main 上' '先切到要合并的分支，再跑 merge' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    $dirty = Get-Git @('status', '--porcelain')
+    if ($dirty -ne '') {
+        Write-Fail '工作区检查' '合并前工作区干净' '有未提交改动' '先提交，再合并' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    $before = Get-TrackedCount
+    $beforeExe = $false
+    Write-Host "  待合并分支：$branch"
+    Write-Host "  合并前跟踪文件总数：$before"
+
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'checkout', 'main')
+    if ($code -ne 0) {
+        Write-Fail 'git checkout main' '退出码 0' "退出码 $code" '切分支失败；把输出报给用户' $ExScriptFail
+        return $ExScriptFail
+    }
+
+    # 本机实测：checkout 有触发索引异常的历史（文件被误标 D 且真的从磁盘消失），所以切完立刻验
+    $afterCheckout = Get-TrackedCount
+    $st = Get-Git @('status', '--porcelain')
+    $deletedWork = 0
+    foreach ($line in ($st -split "`n")) {
+        if ($line.StartsWith(' D')) { $deletedWork = $deletedWork + 1 }
+    }
+    if ($deletedWork -gt 0 -or $afterCheckout -lt $before) {
+        Write-Fail '切到 main 后校验' '文件数与切之前一致、无工作区删除' `
+            "文件数 $before -> $afterCheckout，工作区删除 $deletedWork 项" `
+            '疑似本机已知的 git 索引异常。先跑 tools\dev.ps1 recover 看现场（它默认只诊断+备份，不改文件）' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "  切到 main 后校验通过（文件数 $afterCheckout，无误标删除）" -ForegroundColor Green
+
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'merge', '--ff-only', $branch)
+    if ($code -ne 0) {
+        Write-Fail "git merge --ff-only $branch" '退出码 0' "退出码 $code" `
+            'ff-only 失败一般意味着 main 上有该分支没有的提交。若确认要真合并，请人工判断（本脚本不做非快进合并）' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    $after = Get-TrackedCount
+    Write-Host ''
+    Write-Host "  合并完成：$before -> $after 个跟踪文件" -ForegroundColor Green
+    Write-Host '  提醒：分支按规范「合并即删」（git log 即归档，不登记）。删分支前先跑 status 确认。' -ForegroundColor Yellow
+    return $ExOk
+}
+
+# ────────────────────────── 10. commit ──────────────────────────
+
+function Invoke-Commit {
+    Write-Head 'commit 提交'
+
+    if (-not (Test-Path -LiteralPath $MsgFile)) {
+        Write-Fail '读提交信息' "存在 $MsgFile" '没找到提交信息文件' `
+            "用编辑器/Write 工具把提交信息（UTF-8）写到 $MsgFile，再跑本命令。中文不要走命令行参数——本机实测会被 GBK 破坏" $ExScriptFail
+        return $ExScriptFail
+    }
+
+    $msg = Get-Content -LiteralPath $MsgFile -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($msg)) {
+        Write-Fail '读提交信息' '提交信息非空' '文件是空的' "把内容写进 $MsgFile" $ExScriptFail
+        return $ExScriptFail
+    }
+
+    $cached = Get-Git @('diff', '--cached', '--stat')
+    if ($cached -eq '') {
+        Write-Fail '暂存检查' '有已暂存改动' '暂存区是空的' `
+            '先用 git add <明确路径> 暂存（禁止 git add -A，见 AGENTS.md 红线 3）。暂存后用 git diff --cached --stat 复查一遍' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    Write-Host '  ── 本次将提交（请核对，防止漏 add 文件）──'
+    $cached -split "`n" | ForEach-Object { if ($_.Trim() -ne '') { Write-Host "  $_" } }
+    Write-Host ''
+    Write-Host '  ── 提交信息 ──'
+    $msg -split "`n" | ForEach-Object { Write-Host "  $_" }
+    Write-Host ''
+
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'commit', '-F', $MsgFile)
+    if ($code -ne 0) {
+        Write-Fail 'git commit -F' '退出码 0' "退出码 $code" '提交失败；看上面输出（可能是 hook 拦下或没暂存内容）' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "  提交成功。提交信息文件仍在 $MsgFile，下次会被覆盖。" -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── help ──────────────────────────
+
+function Show-Help {
+    Write-Host ''
+    Write-Host 'dev.ps1 - FocusCapture 开发流程入口（Agent 无关）' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '用法：tools\dev.ps1 <命令> [参数]'
+    Write-Host ''
+    Write-Host '命令：'
+    Write-Host '  build                 编译 Debug（自带环境变量补丁）'
+    Write-Host '  test                  跑快层检查点'
+    Write-Host '  test -Slow            跑慢层检查点'
+    Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
+    Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
+    Write-Host '  start <分支名>        从 main 新建分支（自动补类型前缀 + 开工查重）'
+    Write-Host '  merge                 把当前分支 ff-only 合并到 main（合并后自动校验索引）'
+    Write-Host '  push                  推 main 到双远程（origin=Gitee, github）'
+    Write-Host '  recover               诊断 git 索引异常（默认只诊断+备份，加 -Apply 才恢复）'
+    Write-Host '  snap                  出界面快照到 %TEMP%\fc-ui-snapshot 并打印尺寸表'
+    Write-Host '  commit                提交（从 .git\FC_COMMIT_MSG 读信息，避免中文走命令行）'
+    Write-Host '  help                  显示本帮助'
+    Write-Host ''
+    Write-Host '退出码约定（重要）：' -ForegroundColor Yellow
+    Write-Host '  0 = 成功'
+    Write-Host '  1 = 任务失败（编译错 / 检查点红）—— 这是正常结果，去看输出改代码，不是改脚本'
+    Write-Host '  2 = 脚本自身故障 —— 先绕过把任务做完，交付时附「脚本异常报告」，再问用户改不改脚本'
+    Write-Host ''
+    Write-Host '提交信息文件：.git\FC_COMMIT_MSG（UTF-8，用文件传中文，不要走命令行参数）'
+    Write-Host ''
+    Write-Host '细节见 docs\dev-script-plan.md。' -ForegroundColor DarkGray
+}
+
+# ────────────────────────── 分发 ──────────────────────────
+
+$final = $ExOk
+try {
+    switch ($Command.ToLower()) {
+        'build'   { $final = Invoke-Build }
+        'test'    { if ($Apply) { $final = Invoke-Test -Slow } else { $final = Invoke-Test } }
+        'ready'   { $final = Invoke-Ready }
+        'push'    { $final = Invoke-Push }
+        'recover' { $final = Invoke-Recover }
+        'snap'    { $final = Invoke-Snap }
+        'status'  { $final = Invoke-Status }
+        'start'   { $final = Invoke-Start -Name $Arg1 }
+        'merge'   { $final = Invoke-Merge }
+        'commit'  { $final = Invoke-Commit }
+        'help'    { Show-Help }
+        '-h'      { Show-Help }
+        '--help'  { Show-Help }
+        default {
+            Write-Host "未知命令：$Command" -ForegroundColor Red
+            Show-Help
+            $final = $ExScriptFail
+        }
+    }
+} catch {
+    Write-Host ''
+    Write-Host '[dev.ps1] 脚本自身异常' -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)"
+    $final = $ExScriptFail
+}
+
+exit $final
