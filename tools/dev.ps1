@@ -262,15 +262,47 @@ function Invoke-Push {
     foreach ($remote in @('origin', 'github')) {
         Write-Host ''
         Write-Host "  → 推 $remote ..." -ForegroundColor Cyan
-        $code = Invoke-External 'git' @('-C', $RepoRoot, 'push', $remote, 'main')
-        if ($code -ne 0) {
-            Write-Host "  $remote 第一次失败，隔 3 秒重试一次 ..." -ForegroundColor Yellow
-            Start-Sleep -Seconds 3
-            $code = Invoke-External 'git' @('-C', $RepoRoot, 'push', $remote, 'main')
+
+        # 自行捕获输出（而不是走 Invoke-External）：这里需要【看输出是否为空】来区分两种失败。
+        $captured = @()
+        $code = 1
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $oldPushEnc = [Console]::OutputEncoding
+            try {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                $captured = @(& git -C $RepoRoot push $remote main 2>&1)
+                $code = $LASTEXITCODE
+            } finally {
+                [Console]::OutputEncoding = $oldPushEnc
+            }
+            foreach ($line in $captured) { Write-Host $line }
+            if ($code -eq 0) { break }
+            if ($attempt -eq 1) {
+                Write-Host "  $remote 第一次失败，隔 3 秒重试 ..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
+            }
         }
+
         if ($code -ne 0) {
-            $advice = '若是 GitHub 502／连不上：本机实测是沙箱出口问题（对 Gitee 通畅、对 GitHub 时通时不通），别改 git 参数，隔一会儿直接重试即可；落后的提交一次能补完'
-            Write-Fail "git push $remote main" '退出码 0' "退出码 $code" $advice $ExTaskFail
+            Write-Host ''
+            Write-Host '[dev.ps1] 失败' -ForegroundColor Red
+            Write-Host "  步骤：git push $remote main"
+            if ($captured.Count -eq 0) {
+                # 【零输出 + 非零退出码】= 沙箱里「系统 git 出不了网」的典型特征。
+                # 2026-09-20 实测：PowerShell 会话用的 git 是 C:\Program Files\Git\cmd\git.exe，
+                # 同一时刻在 bash 里跑同样的命令完全正常（Gitee 一次成功），而系统 git 连错误都不吐。
+                # 两类失败的区分判据就是「有没有输出」：有输出 = 真实网络问题；零输出 = 沙箱限制。
+                Write-Host "  实际：退出码 $code，且 git 没有任何输出"
+                Write-Host '  诊断：沙箱环境的已知限制 —— PowerShell 会话里的系统 git 出不了网。' -ForegroundColor Yellow
+                Write-Host '        同一时刻在 bash 里跑同样的命令是正常的，所以这不是凭据问题、也不是仓库问题。' -ForegroundColor Yellow
+                Write-Host '  建议：① Agent 改用 bash 执行 git push；② 或双击 tools\dev.bat push（本机终端无沙箱限制）；' -ForegroundColor Yellow
+                Write-Host '        ③ 或你在本机终端手动推。' -ForegroundColor Yellow
+            } else {
+                Write-Host "  实际：退出码 $code"
+                Write-Host '  建议：若是 GitHub 502 / CONNECT tunnel failed：本机实测是沙箱出口问题（对 Gitee 通畅、对 GitHub 时通时不通），' -ForegroundColor Yellow
+                Write-Host '        别改 git 参数（http.version / http.proxy 都验证无效），隔一会儿直接重试即可；落后的提交一次能补完。' -ForegroundColor Yellow
+            }
+            Write-Host '  退出码：1（任务失败 —— 看上面的「建议」决定下一步，不是改代码）'
             return $ExTaskFail
         }
         Write-Host "  $remote 推送成功" -ForegroundColor Green
