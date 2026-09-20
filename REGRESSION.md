@@ -1,7 +1,7 @@
 # REGRESSION.md - FocusCapture 回归验收清单
 
 > **用途**：改动后逐条验证，防止「改一处坏一片」「修了 A 的 bug 冒出 B 的 bug」。
-> **配套**：`~/.dsh/AGENTS.md` 的《改动影响面与回归规程》——本文件是那份规程的**项目级细则**。
+> **配套**：项目根 `AGENTS.md`（红线 + 路由）——本文件是它的**项目级回归细则**。
 > **用法**：先按规程判级 → **先跑自动化检查点（第二节）** → L2 过本文 A 级全量 / L1 过对应 B 级板块 / L0 只保构建通过。
 > **构建命令**：`dotnet build`（Debug）
 > **自动化检查点**：双击 `tests/run-tests.bat`（快层）/ `tests/sync/run-sync-tests.bat`（慢层），细则见第二节
@@ -696,7 +696,7 @@
 
 ### B-16 Agent 工具扩展 + 文档解析（Services/Agent/ + Services/Files/ + Services/AI/PromptBuilder + AIDialogWindow Agent 路径，2026-09-17 新增）
 
-> 设计依据（原文档已解耦，可删）：工具清单与能力边界见 `Services/Agent/` 下各 `*Tools.cs` 的类注释与 `AIDialogWindow.EnsureAgentRegistry()` 的注册表；逐项决策记录见 `BRANCHES.md` 本节与提交历史。
+> 设计依据：工具清单与能力边界见 `Services/Agent/` 下各 `*Tools.cs` 的类注释与 `AIDialogWindow.EnsureAgentRegistry()` 的注册表；逐项决策记录见提交历史（2026-09-17 一批）。
 > 涉及文件：`Services/Agent/`（LocalTools / FileTools / RecycleBinTools / ExportTools / DocumentTools）、
 > `Services/Files/DocumentTextExtractor.cs`（新）、`Services/Files/XlsxTextExtractor.cs`（新）、
 > `Services/Files/FileRepository.cs`（ReadTextAsync 扩展）、`Services/AI/ChatAttachmentService.cs`（PDF/xlsx 支持）、
@@ -773,7 +773,7 @@
 | 实测发现错 | 跑清单时发现描述与实际不符 | 你 / AI | 当场改，去掉 ⚠ |
 | 定期体检 | 每季度，或大重构后 | AI | 重扫枢纽引用数 |
 
-**约束**：清单没同步更新的，视为交付未完成（见 `~/.dsh/AGENTS.md` 第六节）；**新增功能没补检查点，同样视为交付未完成**（第二节规则 3）。
+**约束**：清单没同步更新的，视为交付未完成（见项目根 `AGENTS.md` 红线 5）；**新增功能没补检查点，同样视为交付未完成**（第二节规则 3）。
 
 ### 写条目的两条规矩
 
@@ -799,4 +799,4 @@ done | sort -rn | head -20
 ### 其他
 
 - 标 ⚠ 的条目：按文件命名推断，未经实机验证。首次使用后按实际表现修正，并去掉标记
-- 本文件随项目进 git，改动需走 feature 分支（见 `~/.dsh/AGENTS.md` 的 Git 分支规范）
+- 本文件随项目进 git，改动需走 feature 分支（见项目根 `AGENTS.md` 红线 1–2）

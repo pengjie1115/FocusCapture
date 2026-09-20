@@ -1,5 +1,8 @@
 # Changelog
 
+> **维护约定（2026-09-20 改）**：本项目已转私有、无外部读者，本文件**只在发版时整理**，平时不随提交更新。
+> 日常查变更请用 `git log`。下方 `[Unreleased]` 段是历史遗留，保留备查、不再追加。
+
 本项目所有重要变更都记录在此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]

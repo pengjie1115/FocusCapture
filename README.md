@@ -133,7 +133,7 @@ FocusCapture/
 3. 提交改动（遵循 [Conventional Commits](https://www.conventionalcommits.org/)）
 4. 推送到你的 fork 并发起 Pull Request
 
-详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+项目约定见 [AGENTS.md](AGENTS.md)。
 
 ## 📄 License
 

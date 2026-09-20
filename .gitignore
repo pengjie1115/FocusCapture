@@ -38,6 +38,7 @@ docs/TASK*.md
 docs/FEATURE-*.md
 docs/*-PRD.md
 docs/PROGRESS.md
+/PROGRESS.md
 docs/fc-sync-test-archive/
 
 # WorkBuddy local data
