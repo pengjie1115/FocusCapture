@@ -204,19 +204,37 @@ public partial class AIDialogWindow : Window
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
     private readonly OpenAICompatibleProvider _provider;
-    private readonly ObservableCollection<ChatBubbleViewModel> _bubbles = new();
-    private ChatSessionService? _session;
-    private NoteEntry? _targetNote;
-    private bool _isStreaming;
     private bool _closed;
-    private int _sessionGeneration; // 新会话时递增，旧流据此自我中止
-    private CancellationTokenSource? _cts;   // 当前回答的取消源（发送按钮停止 / 新会话切换时取消）
     private bool _drawerOpen;               // 历史抽屉展开状态
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
-    private bool _agentRulesAdded;        // Agent 系统规则每会话只注入一次
     private SkillCatalog? _skillCatalog;  // Skill 目录扫描（2026-09-20；带目录时间戳缓存，装完不必重启）
     private SkillRuntime? _skillRuntime;  // 内置 Python 运行时（只读状态，探测带缓存）
     private IReadOnlyList<SkillDependency>? _skillDeps; // 外部依赖表（2026-09-20；授权走应用内，不外包给用户）
+
+    // ── 多会话并行（2026-09-21）：每个会话独立运行态，切会话不中断后台回答，后台流继续往各自 Bubbles 写 ──
+    private ConversationRuntime? _active;   // 当前活跃（前台显示）的会话运行态
+    private readonly Dictionary<string, ConversationRuntime> _runtimes = new(StringComparer.Ordinal);  // 按 SessionId 索引；后台正在回答的会话也常驻于此
+
+    /// <summary>单个会话的运行态：把原先散在窗口级的会话状态收拢成每会话一个实例，使多会话可并行。
+    /// 切会话 = 切 _active + 把 MessagesList.ItemsSource 指向目标 Bubbles；后台流照常往各自 Bubbles 写，切回即见。</summary>
+    private sealed class ConversationRuntime
+    {
+        public ObservableCollection<ChatBubbleViewModel> Bubbles { get; } = new();
+        public ChatSessionService Session { get; }
+        public CancellationTokenSource? Cts;        // 当前回答的取消源；停止按钮 / 关窗时 Cancel
+        public bool IsStreaming;                    // 该会话是否正在生成回答
+        public ExplainMode Mode { get; }
+        public NoteEntry? TargetNote { get; }        // 关联的目标笔记（翻译/搜索来源）
+        public bool AgentRulesAdded;                // Agent 系统规则每会话只注入一次
+        // 未发送草稿字段（DraftText）在阶段3「问题三草稿保留」引入，此处先不声明以免带未赋值警告
+
+        public ConversationRuntime(ChatSessionService session, ExplainMode mode, NoteEntry? targetNote)
+        {
+            Session = session;
+            Mode = mode;
+            TargetNote = targetNote;
+        }
+    }
 
     /// <summary>附件悬停预览 + 双击大图（输入区卡片与气泡卡片共用一份实例）</summary>
     private readonly AttachmentPreviewHost _preview = new();
@@ -230,7 +248,7 @@ public partial class AIDialogWindow : Window
         _settings = settings;
         _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel, settings.AiMaxTokens);
         InitializeComponent();
-        MessagesList.ItemsSource = _bubbles;
+        // MessagesList.ItemsSource 在 Activate() 时按活跃会话绑定（多会话并行：切会话即切 Bubbles 源）
         InitInputArea();
         // 预览浮层预热：Popup 首次显示要创建宿主窗口（低配机上可感知），
         // 放到窗口加载完成后的空闲时机先开合一次，把这份开销挪到用户看不见的地方
@@ -262,8 +280,8 @@ public partial class AIDialogWindow : Window
         var isGlobalAskReopen = mode == ExplainMode.Ask
                                 && targetNote == null
                                 && string.IsNullOrEmpty(selectedText)
-                                && _session != null
-                                && _mode == ExplainMode.Ask;
+                                && _active != null
+                                && _active.Mode == ExplainMode.Ask;
 
         if (!isGlobalAskReopen)
         {
@@ -278,22 +296,29 @@ public partial class AIDialogWindow : Window
                 Dispatcher.BeginInvoke(new Action(() => SendAsync(firstMessage)));
             }
         }
+        else
+        {
+            // 复用原会话：把前台切回当前活跃 runtime（可能正后台回答中）
+            if (_active != null) Activate(_active);
+        }
 
-        TitleText.Text = GetModeTitle(mode);
-        Title = GetModeTitle(mode);
-        _session?.Save();
+        // 注：空会话不在此 Save（阶段1 守卫：仅有 system 消息不落盘，避免打开窗口即生成空对话历史）
     }
 
-    private ExplainMode _mode;
-
-    /// <summary>新建会话核心操作：清空对话上下文（目标笔记上下文保留），复位于 UI 入口与标题栏按钮。</summary>
+    /// <summary>新建会话：建一个新 runtime 并切为活跃。**不中断当前活跃会话的后台回答**（多会话并行）。
+    /// 当前活跃会话若仍空（未对话）且模式/目标笔记一致 → 复用，避免空 runtime 堆积。</summary>
     private void StartNewSession(ExplainMode mode, NoteEntry? targetNote)
     {
-        StopStreaming();         // 中断进行中的回答
-        _sessionGeneration++;
-        _isStreaming = false;
-        _targetNote = targetNote;
-        _mode = mode;
+        // 复用仍空的当前会话：模式与目标笔记一致时直接接管，不另造一个空 runtime
+        if (_active != null
+            && !HasConversation(_active)
+            && _active.Mode == mode
+            && SameTargetNote(_active.TargetNote, targetNote))
+        {
+            _active.AgentRulesAdded = false;
+            Activate(_active);
+            return;
+        }
 
         string? noteContext = null;
         string? noteContent = null;
@@ -303,21 +328,48 @@ public partial class AIDialogWindow : Window
             noteContent = targetNote.Content;
         }
 
-        _session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit);
-        _bubbles.Clear();
+        var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit);
+        var runtime = new ConversationRuntime(session, mode, targetNote);
+        _runtimes[session.SessionId] = runtime;
+        Activate(runtime);
+    }
+
+    /// <summary>把指定 runtime 切为活跃：消息列表指向其 Bubbles、按其状态刷新按钮与标题。</summary>
+    private void Activate(ConversationRuntime runtime)
+    {
+        _active = runtime;
+        MessagesList.ItemsSource = runtime.Bubbles;
+        TitleText.Text = GetModeTitle(runtime.Mode);
+        Title = GetModeTitle(runtime.Mode);
+        SetBusyUi(runtime.IsStreaming);
+        FocusInput();
+    }
+
+    /// <summary>runtime 是否已有实质对话（非 system 消息）</summary>
+    private static bool HasConversation(ConversationRuntime runtime)
+        => runtime.Session.Messages.Any(m => m.Role != ChatRoles.System);
+
+    /// <summary>两个目标笔记是否同一（按时间戳判定；都为 null 视为一致）</summary>
+    private static bool SameTargetNote(NoteEntry? a, NoteEntry? b)
+    {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.Timestamp == b.Timestamp;
     }
 
     private static string GetModeTitle(ExplainMode mode) => "AI " + AiModeText.Get(mode);
 
-    private void AddBubble(bool isUser, string content, bool isFillable = false,
+    private void AddBubble(ConversationRuntime runtime, bool isUser, string content, bool isFillable = false,
         IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
     {
-        _bubbles.Add(new ChatBubbleViewModel(isUser, content, isFillable, attachments));
-        ScrollAfterDelay();
+        runtime.Bubbles.Add(new ChatBubbleViewModel(isUser, content, isFillable, attachments));
+        ScrollAfterDelay(runtime);
     }
 
-    private void ScrollAfterDelay()
+    private void ScrollAfterDelay(ConversationRuntime? runtime)
     {
+        // 仅当前活跃会话滚动：后台 runtime 的回调不抢前台滚动位置（内容照常写入各自 Bubbles，切回即见）
+        if (runtime == null || _active != runtime) return;
         Dispatcher.BeginInvoke(new Action(ScrollToBottom), DispatcherPriority.Background);
     }
 
@@ -707,7 +759,7 @@ public partial class AIDialogWindow : Window
     /// <summary>发送/停止一体按钮：回答中点击 = 停止生成，空闲时点击 = 发送</summary>
     private void BtnSend_Click(object sender, RoutedEventArgs e)
     {
-        if (_isStreaming)
+        if (_active != null && _active.IsStreaming)
         {
             StopStreaming();
             return;
@@ -717,7 +769,7 @@ public partial class AIDialogWindow : Window
 
     private void SendCurrentInput()
     {
-        if (_isStreaming) return; // 回答中 Enter 不发送也不清空输入框，防误触丢字
+        if (_active != null && _active.IsStreaming) return; // 回答中 Enter 不发送也不清空输入框，防误触丢字
 
         var (text, attachments) = ExtractInput();
         if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
@@ -862,7 +914,8 @@ public partial class AIDialogWindow : Window
     /// <summary>摘掉同一文件的所有卡片（同 id 可能挂在多个气泡上），并刷新「是否有云文件卡片」。</summary>
     private void RemoveCloudFileCard(CloudFileCardViewModel card)
     {
-        foreach (var b in _bubbles.ToList())
+        // 云文件卡片可能挂在任一会话（含后台回答中）的气泡上，遍历全部 runtime 摘卡
+        foreach (var b in _runtimes.Values.SelectMany(r => r.Bubbles).ToList())
         {
             var hit = b.CloudFiles.FirstOrDefault(c => c.Model.Id == card.Model.Id);
             if (hit == null) continue;
@@ -937,9 +990,11 @@ public partial class AIDialogWindow : Window
     private void OnFileDelivered(FileMetadata meta) => Dispatcher.BeginInvoke(new Action(() =>
     {
         if (_closed) return;
-        var bubble = _bubbles.LastOrDefault(b => !b.IsUser) ?? _bubbles.LastOrDefault();
+        var runtime = _active;
+        if (runtime == null) return;
+        var bubble = runtime.Bubbles.LastOrDefault(b => !b.IsUser) ?? runtime.Bubbles.LastOrDefault();
         bubble?.AddCloudFile(meta);
-        ScrollAfterDelay();
+        ScrollAfterDelay(runtime);
     }));
 
     private void OnFileOpenRequested(FileMetadata meta) => Dispatcher.BeginInvoke(new Action(() =>
@@ -992,12 +1047,21 @@ public partial class AIDialogWindow : Window
     /// 静态读 XAML 看不出来，只能出图。这里刻意不走 OnFileDelivered（它经 Dispatcher 异步排队，
     /// 快照可能在渲染前就完成了），直接同步挂卡片。
     /// </summary>
+    /// <summary>快照专用：无活跃会话时建一个空的，避免快照方法访问 _active 落空。</summary>
+    private void EnsureActiveForSnapshot()
+    {
+        if (_active == null) StartNewSession(ExplainMode.Ask, null);
+    }
+
     internal void SeedCloudFileCardsForSnapshot()
     {
         try
         {
-            AddBubble(false, "两份文件都取回来了：可以直接打开、在文件夹中定位、另存，确认不要了也能彻底删除。");
-            var bubble = _bubbles.LastOrDefault(b => !b.IsUser);
+            EnsureActiveForSnapshot();
+            var runtime = _active;
+            if (runtime == null) return;
+            AddBubble(runtime, false, "两份文件都取回来了：可以直接打开、在文件夹中定位、另存，确认不要了也能彻底删除。");
+            var bubble = runtime.Bubbles.LastOrDefault(b => !b.IsUser);
             if (bubble == null) return;
 
             foreach (var (name, size) in new[]
@@ -1024,7 +1088,7 @@ public partial class AIDialogWindow : Window
     /// <summary>当前会话出现过的全部附件（链路 B 的输入：工具只能引用其中之一，不能凭空指定路径）。</summary>
     private IReadOnlyList<ChatAttachment> CurrentSessionAttachments()
     {
-        var session = _session;
+        var session = _active?.Session;
         if (session == null) return Array.Empty<ChatAttachment>();
         return session.Messages
             .Where(m => m.Attachments is { Count: > 0 })
@@ -1354,7 +1418,8 @@ public partial class AIDialogWindow : Window
 
             var bubbleItems = new List<ChatAttachment> { att };
             if (docAtt != null) bubbleItems.Add(docAtt);
-            _bubbles.Add(new ChatBubbleViewModel(true, "这是带附件的消息示例", false,
+            EnsureActiveForSnapshot();
+            _active!.Bubbles.Add(new ChatBubbleViewModel(true, "这是带附件的消息示例", false,
                 BuildAttachmentVms(bubbleItems)));
         }
         catch
@@ -1388,45 +1453,45 @@ public partial class AIDialogWindow : Window
 
     private void StopStreaming()
     {
-        try { _cts?.Cancel(); } catch (ObjectDisposedException) { /* 已释放即已结束 */ }
+        // 停止当前活跃会话的回答（发送/停止按钮用）。后台会话不被打扰，切回时再停。
+        try { _active?.Cts?.Cancel(); } catch (ObjectDisposedException) { /* 已释放即已结束 */ }
     }
 
     /// <summary>发送一条消息（可带附件）并流式接收回复（普通/Agent 两路径统一：真流式 + 思考过程 + 可停止）</summary>
     private async void SendAsync(string text, List<ChatAttachment>? attachments = null)
     {
-        if (_session == null || _isStreaming) return;
+        var runtime = _active;
+        if (runtime == null || runtime.IsStreaming) return;
         if (string.IsNullOrWhiteSpace(text) && attachments is not { Count: > 0 }) return;
 
-        var generation = _sessionGeneration;
         var cts = new CancellationTokenSource();
-        _cts = cts;
-        _isStreaming = true;
+        runtime.Cts = cts;
+        runtime.IsStreaming = true;
         SetBusyUi(true);
 
         try
         {
-            AddBubble(true, text, attachments: BuildAttachmentVms(attachments));
-            AddBubble(false, "", _targetNote != null && _mode != ExplainMode.Ask);
-            var current = _bubbles[^1];
+            AddBubble(runtime, true, text, attachments: BuildAttachmentVms(attachments));
+            AddBubble(runtime, false, "", runtime.TargetNote != null && runtime.Mode != ExplainMode.Ask);
+            var current = runtime.Bubbles[runtime.Bubbles.Count - 1];
             current.Content = "思考中…"; // 首包到达前的等待占位
 
-            if (_settings.AgentEnabled && _mode == ExplainMode.Ask)
+            if (_settings.AgentEnabled && runtime.Mode == ExplainMode.Ask)
             {
                 // Agent 路径：function calling 流式循环（RunAsync 内部负责把用户消息写入会话）
-                await SendViaAgentAsync(text, attachments, current, generation, cts);
+                await SendViaAgentAsync(runtime, text, attachments, current, cts);
             }
             else
             {
                 // 普通问答路径：用户消息入会话 + 事件流式接收（正文/思考）
                 // （AddUser 不可省：请求体 messages 无 user 会导致 Agnes 400 "No user query" / DeepSeek 自说自话）
-                _session.AddUser(text, attachments);
-                await StreamPlainReplyAsync(current, generation, cts);
+                runtime.Session.AddUser(text, attachments);
+                await StreamPlainReplyAsync(runtime, current, cts);
             }
         }
         catch (Exception ex)
         {
-            if (generation != _sessionGeneration) return;
-            var last = _bubbles.Count > 0 ? _bubbles[^1] : null;
+            var last = runtime.Bubbles.Count > 0 ? runtime.Bubbles[runtime.Bubbles.Count - 1] : null;
             if (last != null && !last.IsUser)
             {
                 last.Content += string.IsNullOrEmpty(last.Content)
@@ -1435,32 +1500,32 @@ public partial class AIDialogWindow : Window
             }
             else
             {
-                AddBubble(false, $"（错误：{ex.Message}）");
+                AddBubble(runtime, false, $"（错误：{ex.Message}）");
             }
         }
         finally
         {
-            _isStreaming = false; // 即使会话已切换也必须复位，否则新会话永远发不出消息
-            if (ReferenceEquals(_cts, cts)) _cts = null;
+            runtime.IsStreaming = false;
+            if (ReferenceEquals(runtime.Cts, cts)) runtime.Cts = null;
             cts.Dispose();
-            if (generation == _sessionGeneration)
-            {
-                SetBusyUi(false);
-                _session?.Save();
-            }
+            // 仅当该 runtime 仍是前台活跃会话时才复位发送按钮；后台完成的 runtime 不打扰前台按钮状态
+            if (_active == runtime) SetBusyUi(false);
+            runtime.Session.Save();   // 多会话并行：每个 runtime 回答完各自落盘（阶段1 空会话守卫仍生效）
+            // 后台 runtime 跑完时新会话已进历史列表，刷新展开的抽屉让用户看见
+            if (_active != runtime) _ = Dispatcher.BeginInvoke(new Action(RefreshDrawerIfOpen));
         }
     }
 
     /// <summary>普通问答路径：消费 StreamChatWithToolsAsync 事件流（无 tools），正文打字机 + 思考过程展示。
     /// 用户停止时已生成的部分内容照常写入会话历史。</summary>
-    private async Task StreamPlainReplyAsync(ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
+    private async Task StreamPlainReplyAsync(ConversationRuntime runtime, ChatBubbleViewModel current, CancellationTokenSource cts)
     {
         var sb = new StringBuilder();
         try
         {
-            await foreach (var ev in _provider.StreamChatWithToolsAsync(_session!.Messages, tools: null, cts.Token))
+            await foreach (var ev in _provider.StreamChatWithToolsAsync(runtime.Session.Messages, tools: null, cts.Token))
             {
-                if (generation != _sessionGeneration) return; // 会话已切换，丢弃旧流
+                // 多会话并行：不再因切会话丢弃旧流；取消由 cts.Token 触发 OperationCanceledException
                 switch (ev)
                 {
                     case StreamChatEvent.ReasoningDelta reasoning:
@@ -1469,21 +1534,20 @@ public partial class AIDialogWindow : Window
                     case StreamChatEvent.ContentDelta delta:
                         sb.Append(delta.Text);
                         current.Content = sb.ToString();
-                        ScrollAfterDelay();
+                        ScrollAfterDelay(runtime);
                         break;
                 }
             }
         }
         catch (OperationCanceledException)
         {
-            if (generation != _sessionGeneration) return;
+            // 停止/关窗取消：已生成部分写入会话历史
             MarkStopped(current, sb.ToString());
             if (!string.IsNullOrWhiteSpace(sb.ToString()))
-                _session!.AddAssistant(sb.ToString());
+                runtime.Session.AddAssistant(sb.ToString());
             return;
         }
 
-        if (generation != _sessionGeneration) return;
         CollapseReasoning(current);
         var full = sb.ToString();
         if (string.IsNullOrWhiteSpace(full))
@@ -1492,7 +1556,7 @@ public partial class AIDialogWindow : Window
         }
         else
         {
-            _session.AddAssistant(full);
+            runtime.Session.AddAssistant(full);
         }
     }
 
@@ -1501,12 +1565,12 @@ public partial class AIDialogWindow : Window
     /// 写操作（非只读工具）执行前经 ConfirmHandler 弹窗确认。用户停止时不把部分内容写入会话
     /// （中断可能落在 assistant(tool_calls) 与 tool 结果配对之间，写入不完整配对会让后续请求 400）。
     /// </summary>
-    private async Task SendViaAgentAsync(string text, List<ChatAttachment>? attachments,
-        ChatBubbleViewModel current, int generation, CancellationTokenSource cts)
+    private async Task SendViaAgentAsync(ConversationRuntime runtime, string text, List<ChatAttachment>? attachments,
+        ChatBubbleViewModel current, CancellationTokenSource cts)
     {
         EnsureAgentRegistry();
-        AppendAgentRulesOnce();
-        var agent = new AgentRunService(_provider, _registry!, _session!, _settings.AgentMaxToolRounds)
+        AppendAgentRulesOnce(runtime);
+        var agent = new AgentRunService(_provider, _registry!, runtime.Session, _settings.AgentMaxToolRounds)
         {
             // 必须经 UiThread 封送：工具跑在线程池线程上，直接 MessageBox.Show(this, …) 会因
             // 跨线程访问窗口对象而抛「调用线程无法访问此对象」（2026-09-20 实测，详见 UiThread 注释）。
@@ -1546,10 +1610,8 @@ public partial class AIDialogWindow : Window
 
         agent.StatusCallback = msg =>
         {
-            if (generation != _sessionGeneration) return;
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                if (generation != _sessionGeneration) return;
                 current.ToolSteps = string.IsNullOrEmpty(current.ToolSteps) ? "· " + msg : current.ToolSteps + "\n· " + msg;
             }));
         };
@@ -1562,20 +1624,19 @@ public partial class AIDialogWindow : Window
             }
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                if (generation != _sessionGeneration) return;
                 lock (gate)
                 {
                     if (finished) return;
                     current.Content = agentSb.ToString();
                 }
-                ScrollAfterDelay();
+                ScrollAfterDelay(runtime);
             }));
         };
         agent.ReasoningDelta += t =>
         {
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                if (generation != _sessionGeneration || Volatile.Read(ref finished)) return;
+                if (Volatile.Read(ref finished)) return;
                 AppendReasoning(current, t);
             }));
         };
@@ -1583,14 +1644,12 @@ public partial class AIDialogWindow : Window
         try
         {
             var reply = await agent.RunAsync(text, attachments, cts.Token);
-            if (generation != _sessionGeneration) return;
             lock (gate) finished = true;
             CollapseReasoning(current);
             current.Content = string.IsNullOrWhiteSpace(reply) ? "（模型未返回内容）" : reply;
         }
         catch (OperationCanceledException)
         {
-            if (generation != _sessionGeneration) return;
             lock (gate) finished = true;
             CollapseReasoning(current);
             string partial;
@@ -1624,6 +1683,7 @@ public partial class AIDialogWindow : Window
     /// <summary>发送/停止按钮状态机：回答中变红色停止图标，空闲恢复发送</summary>
     private void SetBusyUi(bool busy)
     {
+        if (_closed) return;   // 窗口已关闭不刷按钮（关窗后后台 runtime 完成的回调不应再动 UI）
         if (busy)
         {
             BtnSend.Content = "■ 停止";
@@ -1639,7 +1699,7 @@ public partial class AIDialogWindow : Window
             BtnSend.ToolTip = null;
             InputBox.Focus();
         }
-        // 输入框回答期间保持可用（可预输入下一条），发送动作由 _isStreaming 守卫拦截
+        // 输入框回答期间保持可用（可预输入下一条），发送动作由 _active.IsStreaming 守卫拦截
     }
 
     /// <summary>历史抽屉开关：展开时刷新会话列表；宽度动画滑出/收起</summary>
@@ -1795,10 +1855,11 @@ public partial class AIDialogWindow : Window
     /// Save 自动自增 Rev + 触发 SessionChanged（同步管道入口），重命名/置顶/分组无需额外接线。</summary>
     private void ApplySessionMeta(HistoryItemViewModel item, Action<ChatSessionService> mutate)
     {
-        if (_session != null && _session.SessionId == item.Id)
+        // 优先改内存里的 runtime（含后台回答中的）：它的下次 Save 会带上新 meta，不会被覆盖丢失
+        if (_runtimes.TryGetValue(item.Id, out var rt))
         {
-            mutate(_session);
-            _session.Save();
+            mutate(rt.Session);
+            rt.Session.Save();
             return;
         }
         var svc = ChatSessionService.Load(item.FilePath);
@@ -1820,8 +1881,14 @@ public partial class AIDialogWindow : Window
 
         foreach (var item in items)
         {
-            if (_session != null && _session.SessionId == item.Id)
-                StartNewSession(_mode, null);
+            // 内存里有 runtime（含后台回答中）→ 先 cancel 它再移除，避免流还在往已删会话写
+            if (_runtimes.TryGetValue(item.Id, out var rt))
+            {
+                try { rt.Cts?.Cancel(); } catch (ObjectDisposedException) { /* 已结束 */ }
+                _runtimes.Remove(item.Id);
+                if (_active == rt)
+                    StartNewSession(rt.Mode, null);   // 活跃会话被删 → 新建空会话接管前台
+            }
             AIDialogHelper.SessionDeleted?.Invoke(item.Id);
         }
     }
@@ -1889,7 +1956,7 @@ public partial class AIDialogWindow : Window
             fail > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
-    /// <summary>加载历史会话回看（可继续对话）。历史 JSON 未存原笔记引用：「追加到原笔记」不可用，「存为新笔记」正常。</summary>
+    /// <summary>加载历史会话回看（可继续对话）。**不中断当前活跃会话的后台回答**：若该会话已在内存（活跃/后台跑），直接切过去保留运行态。</summary>
     private void LoadHistorySession(string filePath)
     {
         var loaded = ChatSessionService.Load(filePath);
@@ -1900,49 +1967,48 @@ public partial class AIDialogWindow : Window
             return;
         }
 
-        if (_isStreaming) StopStreaming();
-        _sessionGeneration++;
-        _isStreaming = false;
-        _session = loaded;
-        _mode = loaded.Mode;
-        _targetNote = null;
-
-        // Agent 会话的 system 消息里已含规则文本，避免继续对话时重复注入
-        _agentRulesAdded = _session.Messages.Count > 0
-            && _session.Messages[0].Role == ChatRoles.System
-            && _session.Messages[0].Content.Contains("[Agent 工具规则]");
-
-        _bubbles.Clear();
-        foreach (var m in _session.Messages)
+        // 已是本窗口内存中的 runtime（活跃或后台跑）→ 直接切过去，保留运行态与已生成气泡
+        if (_runtimes.TryGetValue(loaded.SessionId, out var existing))
         {
-            if (m.Role == ChatRoles.User) AddBubble(true, m.Content, attachments: BuildAttachmentVms(m.Attachments));
-            else if (m.Role == ChatRoles.Assistant) AddBubble(false, m.Content);
-            // tool / assistant(tool_calls) 中间消息不渲染为气泡
+            Activate(existing);
+            return;
         }
 
-        TitleText.Text = GetModeTitle(_mode);
-        Title = GetModeTitle(_mode);
-        FocusInput();   // 切完历史会话把焦点还给输入框，省掉"再点一下才能打字"
+        var runtime = new ConversationRuntime(loaded, loaded.Mode, null)
+        {
+            // Agent 会话的 system 消息里已含规则文本，避免继续对话时重复注入
+            AgentRulesAdded = loaded.Messages.Count > 0
+                && loaded.Messages[0].Role == ChatRoles.System
+                && loaded.Messages[0].Content.Contains("[Agent 工具规则]")
+        };
+        _runtimes[loaded.SessionId] = runtime;
+        foreach (var m in loaded.Messages)
+        {
+            if (m.Role == ChatRoles.User) runtime.Bubbles.Add(new ChatBubbleViewModel(true, m.Content, attachments: BuildAttachmentVms(m.Attachments)));
+            else if (m.Role == ChatRoles.Assistant) runtime.Bubbles.Add(new ChatBubbleViewModel(false, m.Content));
+            // tool / assistant(tool_calls) 中间消息不渲染为气泡
+        }
+        Activate(runtime);
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
     {
-        StartNewSession(_mode, _targetNote); // 清空对话上下文，保留当前目标笔记
-        _session?.Save();
+        // 新会话保留当前模式与目标笔记；StartNewSession 内部已处理复用空会话，空会话不落盘
+        StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote);
     }
 
     /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
-    private void AppendAgentRulesOnce()
+    private void AppendAgentRulesOnce(ConversationRuntime runtime)
     {
-        if (_session == null || _agentRulesAdded) return;
-        _session.AppendSystemRules(
+        if (runtime.AgentRulesAdded) return;
+        runtime.Session.AppendSystemRules(
             "[Agent 工具规则]\n" +
             "1. 工具执行返回的结果是唯一事实来源：工具返回成功才可以说完成；返回失败必须如实告知。严禁在没有调用工具、或工具未返回成功的情况下宣称已完成任何操作。\n" +
             "2. 执行任何写操作（新增/修改/删除笔记或待办）之前，必须先在回复中列出将要执行的具体动作，等用户明确同意后再调用工具执行。\n" +
             "3. 没有对应工具的能力就直说做不到，不要编造替代方案的结果。\n" +
             "4. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。\n" +
             "5. 只根据工具真正返回的内容作答：文件读不出文字时（如扫描件 PDF、图片）必须如实说读不了，绝不许编造文件里没有的内容；工具返回的是部分数据（只列了前 N 行/条）时要说明这是部分。");
-        _agentRulesAdded = true;
+        runtime.AgentRulesAdded = true;
     }
 
     /// <summary>装配工具注册表：本地工具 + 各外发目的地能力（新增目的地在此注册一行）</summary>
@@ -2091,9 +2157,10 @@ public partial class AIDialogWindow : Window
     private void BtnFillAppend_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: ChatBubbleViewModel bubble } btn) return;
-        if (_targetNote == null || bubble.IsUser || bubble.IsFilled) return;
+        var target = _active?.TargetNote;
+        if (target == null || bubble.IsUser || bubble.IsFilled) return;
 
-        if (ImmersiveSessionService.IsLocked(_targetNote.Timestamp))
+        if (ImmersiveSessionService.IsLocked(target.Timestamp))
         {
             System.Windows.MessageBox.Show(this, "沉浸式输入进行中，暂不可回填", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2104,7 +2171,7 @@ public partial class AIDialogWindow : Window
         var fillText = GetBubbleSelectedText(btn, bubble);
         if (string.IsNullOrEmpty(fillText)) return;
 
-        if (_noteService.AppendToNote(_targetNote, fillText))
+        if (_noteService.AppendToNote(target, fillText))
         {
             bubble.IsFilled = true; // 按钮文本由 DataTrigger 自动更新为"已回填"并禁用
         }
@@ -2171,11 +2238,17 @@ public partial class AIDialogWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _closed = true;
-        StopStreaming();
+        // 关窗即停止所有后台回答（多会话并行：每个 runtime 各自 cancel + 落盘）
+        foreach (var r in _runtimes.Values)
+        {
+            try { r.Cts?.Cancel(); } catch (ObjectDisposedException) { /* 已结束 */ }
+            try { r.Session.Save(); } catch { /* best effort */ }
+        }
+        _runtimes.Clear();
+        _active = null;
         FileDeliveryHub.Delivered -= OnFileDelivered;
         FileDeliveryHub.OpenRequested -= OnFileOpenRequested;
         FileDeliveryHub.LocateRequested -= OnFileLocateRequested;
-        try { _session?.Save(); } catch { /* best effort */ }
         try { _preview.Dispose(); } catch { /* 预览浮层释放失败不影响关闭 */ }
         AIDialogHelper.NotifyClosed();
     }
