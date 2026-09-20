@@ -331,6 +331,12 @@ public partial class SettingsWindow : Window
         RefreshSkillSection();            // Skill 分区（2026-09-20）：目录 / 运行时状态 / 已授权列表
     }
 
+    /// <summary>禁用按钮的文字色 —— 窗口样式只有 hover 态，禁用态得自己上色，否则"不能点"看不出来</summary>
+    private static readonly Brush DisabledTextBrush = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77));
+
+    /// <summary>外部依赖面板正在刷新（防并发：两次刷新交错会插出两遍行）</summary>
+    private bool _depsBuilding;
+
     // ══════════════════ Skill 扩展（2026-09-20） ══════════════════
     //
     // 这里只负责「让 Skill 可见、可控」，刻意**不做**装 / 删 / 停用 —— 那会让用户多学一套概念。
@@ -354,15 +360,142 @@ public partial class SettingsWindow : Window
 
             SkillRuntimeText.Text = File.Exists(runtime.PythonPath)
                 ? "内置 Python 运行时：已就位。"
-                : "内置 Python 运行时：未安装 —— 含脚本的 Skill 暂时跑不了，双击 tools\\fetch-python-runtime.bat 获取（约 11MB）。";
+                : "内置 Python 运行时：未就位 —— 含脚本的 Skill 暂时跑不了。这是应用自身的组件缺失（不是你要额外装什么），"
+                  + "请向开发者反馈这一项。";
 
             RebuildTrustedSkillList();
+            _ = RefreshSkillDepsAsync();      // 外部依赖面板（异步探测，不阻塞设置打开）
         }
         catch (Exception ex)
         {
             AppLog.Warn("Skill", $"设置页刷新 Skill 分区失败：{ex.Message}");
             SkillSummaryText.Text = "读取 Skill 信息失败：" + ex.Message;
         }
+    }
+
+    /// <summary>
+    /// 外部依赖面板（2026-09-20）。
+    ///
+    /// <para>
+    /// 存在的理由：Skill 依赖的外部 CLI 需要"先登录"，而阶段一交付时这块是空白的 ——
+    /// 结果是模型让用户去终端敲命令。这里给出**应用内唯一的授权入口**：
+    /// 看到状态、点一下、扫一次码，其余全由宿主完成。同时提供"退出登录"（撤销入口）——
+    /// 只能授权不能撤销的安全机制是残缺的。
+    /// </para>
+    /// </summary>
+    private async Task RefreshSkillDepsAsync()
+    {
+        // 并发保护 + **原子替换**（两条都要，缺一条就会出两遍行）：
+        //   ① 这个方法被多处触发（打开设置 / 切换板块 / 授权回来 / 退出登录 / 快照入口）；
+        //   ② 更隐蔽的一条：不能"先 Clear → await 探测 → 再 Add" —— 那样另一条路径的清空与插入
+        //      可以落在中间，结果就是同一个依赖显示两行（快照里抓到过）。
+        // 所以先算好整份行、再一次性替换。
+        if (_depsBuilding) return;
+        _depsBuilding = true;
+        try
+        {
+            var rows = new List<UIElement>();
+            try
+            {
+                foreach (var dep in SkillDependencies.All(AppContext.BaseDirectory))
+                {
+                    var status = await dep.ProbeAsync().ConfigureAwait(true);
+                    rows.Add(BuildDependencyRow(dep, status));
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Skill", $"刷新外部依赖面板失败：{ex.Message}");
+                rows.Add(new TextBlock
+                {
+                    Text = "读取外部依赖状态失败：" + ex.Message,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x9A, 0x9A)),
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+
+            SkillDepsPanel.Children.Clear();
+            foreach (var row in rows) SkillDepsPanel.Children.Add(row);
+        }
+        finally
+        {
+            _depsBuilding = false;
+        }
+    }
+
+    /// <summary>一个依赖一行：状态（按登录态着色）+ 位置 + 授权 / 退出登录</summary>
+    private UIElement BuildDependencyRow(SkillDependency dep, DependencyStatus status)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+
+        var location = !status.Resolved
+            ? "未找到"
+            : dep.BundledDir != null && status.ExePath != null &&
+              status.ExePath.StartsWith(dep.BundledDir, StringComparison.OrdinalIgnoreCase)
+                ? "应用自带"
+                : "系统 PATH";
+
+        var color = status.Auth switch
+        {
+            DependencyAuth.Ready => Color.FromRgb(0x8F, 0xD1, 0x8F),
+            DependencyAuth.Unknown => Color.FromRgb(0xE0, 0xC0, 0x8F),
+            _ => Color.FromRgb(0xE0, 0x9A, 0x9A),
+        };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{dep.DisplayName}：{status.Detail}（{location}）",
+            Foreground = new SolidColorBrush(color),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+
+        var authButton = new Button
+        {
+            Content = status.Auth == DependencyAuth.Ready ? "重新授权" : "授权（扫一次码）",
+            Width = 132,
+            Height = 28,
+            IsEnabled = status.CanAuthorize,
+        };
+        // 禁用态必须**看得出来**：SettingsWindow 的按钮样式只有 hover 态，
+        // 不动前景色的话"不能点"和"能点"长得一样，用户会以为按钮坏了（快照对比中发现，2026-09-20）。
+        if (!status.CanAuthorize) authButton.Foreground = DisabledTextBrush;
+        authButton.Click += async (_, _) => await RunDependencyAuthAsync(dep, status).ConfigureAwait(true);
+        row.Children.Add(authButton);
+
+        var logoutButton = new Button
+        {
+            Content = "退出登录",
+            Width = 96,
+            Height = 28,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsEnabled = status.Auth == DependencyAuth.Ready,
+        };
+        if (status.Auth != DependencyAuth.Ready) logoutButton.Foreground = DisabledTextBrush;
+        logoutButton.Click += async (_, _) =>
+        {
+            logoutButton.IsEnabled = false;
+            logoutButton.Foreground = DisabledTextBrush;
+            var (ok, message) = await dep.LogoutAsync().ConfigureAwait(true);
+            AppLog.Info("Skill", $"依赖退出登录（{dep.Id}）：ok={ok} {message}");
+            await RefreshSkillDepsAsync().ConfigureAwait(true);
+        };
+        row.Children.Add(logoutButton);
+
+        panel.Children.Add(row);
+        return panel;
+    }
+
+    /// <summary>从设置页发起授权 —— 走的是和 AI 问答里同一个窗口，不另起一套</summary>
+    private async Task RunDependencyAuthAsync(SkillDependency dep, DependencyStatus status)
+    {
+        var window = new SkillAuthWindow(dep, status) { Owner = this };
+        var done = window.ShowDialog() == true;
+        AppLog.Info("Skill", $"设置页发起依赖授权（{dep.Id}）：{(done ? "完成" : "未完成")}");
+        await RefreshSkillDepsAsync().ConfigureAwait(true);
     }
 
     private void RebuildTrustedSkillList()
@@ -1955,6 +2088,29 @@ public partial class SettingsWindow : Window
     internal void ScrollToEndForSnapshot()
     {
         try { ContentScroller.ScrollToEnd(); } catch { /* 快照辅助失败不影响主流程 */ }
+    }
+
+    /// <summary>
+    /// 界面快照专用：**同步**把外部依赖行建出来，然后滚到底。
+    ///
+    /// <para>
+    /// 为什么需要它：依赖行是异步探测后插入的（探针要起子进程），而快照的"滚到底"发生在插入之前 ——
+    /// 结果是图里只剩一个区块标题、看不见状态行与按钮（实测踩到，2026-09-20）。
+    /// 同步阻塞 UI 线程在这里**不会死锁**：<c>ProbeAsync</c> 内部的 await 全部走
+    /// <c>ConfigureAwait(false)</c>，续体在线程池上跑，不需要 UI 线程回信。
+    /// </para>
+    /// </summary>
+    internal void PrepareSkillDepsForSnapshot()
+    {
+        try
+        {
+            SkillDepsPanel.Children.Clear();
+            foreach (var dep in SkillDependencies.All(AppContext.BaseDirectory))
+                SkillDepsPanel.Children.Add(BuildDependencyRow(dep, dep.ProbeAsync().GetAwaiter().GetResult()));
+            UpdateLayout();
+            ContentScroller.ScrollToEnd();
+        }
+        catch { /* 快照辅助失败不影响主流程 */ }
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();

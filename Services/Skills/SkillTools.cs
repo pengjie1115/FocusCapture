@@ -15,8 +15,13 @@ namespace FocusCapture.Services.Skills;
 public sealed class LoadSkillTool : AgentTool
 {
     private readonly SkillCatalog _catalog;
+    private readonly IReadOnlyList<SkillDependency> _dependencies;
 
-    public LoadSkillTool(SkillCatalog catalog) => _catalog = catalog;
+    public LoadSkillTool(SkillCatalog catalog, IReadOnlyList<SkillDependency>? dependencies = null)
+    {
+        _catalog = catalog;
+        _dependencies = dependencies ?? Array.Empty<SkillDependency>();
+    }
 
     public override string Name => "load_skill";
 
@@ -51,6 +56,18 @@ public sealed class LoadSkillTool : AgentTool
         else
         {
             sb.Append("\n\n（该 Skill 没有自带脚本，按其说明直接作答即可。）");
+        }
+
+        // 依赖预告（2026-09-20 补）：让模型**在跑之前**就知道这个 Skill 依赖什么外部程序，
+        // 从而在需要授权时如实说"需要授权"，而不是自己发明一套流程让用户去敲命令 ——
+        // 实测它干过：照着 CLI 输出里的提示，把开发机上的安装路径拼成命令给了用户。
+        var deps = SkillDependencies.DetectInSkill(_dependencies, skill);
+        if (deps.Count > 0)
+        {
+            sb.Append("\n\n--- 外部依赖（由应用负责准备，你不需要管）---\n");
+            foreach (var d in deps) sb.Append("- ").Append(d.DisplayName).Append('\n');
+            sb.Append("若执行时报「未授权 / 缺少依赖」：如实说明需要在应用里完成授权，")
+              .Append("指向「设置 → AI 模型 → Skill 扩展」；**不要给用户命令、终端步骤或任何安装路径。**");
         }
 
         if (skill.HealthNote.Length > 0)

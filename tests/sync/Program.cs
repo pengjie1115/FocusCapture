@@ -78,6 +78,7 @@ internal static class Program
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
+            await RunAsync("Skill 依赖", TestSkillDependency); // 定位自带优先 / 设备码流 / 二维码产物 / 授权闸（2026-09-20）
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
@@ -220,6 +221,163 @@ print(json.dumps({
               !rNoRuntime.Contains("成功") && !rNoRuntime.Contains("EXIT=0"),
               "运行时缺失时返回文本不得含「已完成/已执行/成功」字样（防假成功 —— 最重要的一条）",
               $"实际：{Short(rNoRuntime)}");
+    }
+
+    // ══════════════════ Skill 外部依赖与授权（2026-09-20） ══════════════════
+    //
+    // 守的是什么：Skill 依赖的外部 CLI「在不在 / 要不要先登录」必须由宿主**在跑之前**问清楚，
+    // 而且授权必须在应用内闭环。起因是真机实测 —— 模型照着 CLI 输出里的提示，让用户去终端敲
+    // `lark-cli auth login`，还把开发机上的安装目录拼进了命令里。那属于"把宿主该做的事外包给用户"。
+    //
+    // 判据尽量落在产物上：真实退出码、真实 PNG 文件、真实进程输出，不靠"读代码看着对"。
+
+    private static async Task TestSkillDependency()
+    {
+        static string Short(string? s) => s is null ? "(null)" : (s.Length <= 160 ? s : s[..160] + "…");
+
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var runtime = new SkillRuntime(repoRoot);
+        var deps = SkillDependencies.All(repoRoot);
+
+        // ── 1. 定位：自带优先，不猜别人的安装目录 ──
+        Check(deps.Count >= 1, "依赖表至少有一项（当前应含飞书 lark-cli）");
+        var lark = deps[0];
+        var exe = lark.Locate();
+        Check(exe != null, "应能定位到 lark-cli（应用自带 runtime\\lark-cli 或系统 PATH）", $"实际：{exe}");
+        Check(exe != null && lark.BundledDir != null &&
+              exe.StartsWith(lark.BundledDir, StringComparison.OrdinalIgnoreCase),
+              "定位必须命中应用自带那一份（自带优先；靠'别的应用恰好装过'是不可移植的）", $"实际：{exe}");
+
+        // ── 2. 静态扫描：认出用到它的 Skill，且不误判 ──
+        Check(lark.Matches("LARK = shutil.which(\"lark-cli\")"), "静态扫描应认出脚本里用到 lark-cli");
+        Check(!lark.Matches("import json\nprint('纯粹的计算脚本')"), "没用到的依赖不该被误判（误判会让用户白扫一次码）");
+
+        // ── 3. 状态解析：判据是 JSON 字段，不是退出码 ──
+        // 实测：用户身份缺失时 `auth status` 照样返回退出码 0 —— 只看退出码会得出"一切正常"。
+        var pReady = lark.ParseStatus(exe, """{"identities":{"user":{"available":true,"status":"ready","userName":"张三"}}}""");
+        Check(pReady.Auth == DependencyAuth.Ready && pReady.Account == "张三" && !pReady.NeedsAuth,
+              "available=true 必须判为已授权并取到用户名", $"实际：{pReady.Auth}/{pReady.Account}");
+
+        var pMissing = lark.ParseStatus(exe, """{"identities":{"user":{"available":false,"status":"missing"}}}""");
+        Check(pMissing.Auth == DependencyAuth.Missing && pMissing.NeedsAuth,
+              "available=false 必须判为未授权（这是「该弹二维码」的信号）", $"实际：{pMissing.Auth}");
+
+        var pExpired = lark.ParseStatus(exe, """{"identities":{"user":{"available":false,"status":"expired"}}}""");
+        Check(pExpired.Auth == DependencyAuth.Expired, "status=expired 必须判为过期", $"实际：{pExpired.Auth}");
+
+        var pWordOnly = lark.ParseStatus(exe, """{"identities":{"user":{"status":"ready"}}}""");
+        Check(pWordOnly.Auth == DependencyAuth.Ready, "没有 available 字段时应回落到 status 词判断", $"实际：{pWordOnly.Auth}");
+
+        var pEmpty = lark.ParseStatus(exe, "");
+        var pGarbage = lark.ParseStatus(exe, "这不是 JSON");
+        var pNoIdentities = lark.ParseStatus(exe, """{"ok":true}""");
+        Check(pEmpty.Auth == DependencyAuth.Unknown && pGarbage.Auth == DependencyAuth.Unknown &&
+              pNoIdentities.Auth == DependencyAuth.Unknown,
+              "畸形/缺失输出一律判为未知 —— 绝不因为读不懂就乐观当成已授权（也不能反过来当成未授权）");
+
+        // ── 4. 真跑一次状态查询（字段真的能被解析出来）──
+        var live = await lark.ProbeAsync();
+        Check(live.Resolved && live.Auth != DependencyAuth.Unknown,
+              "真跑 auth status 必须能解析出登录态（Unknown 说明输出格式变了）", $"实际：{Short(live.Detail)}");
+
+        // ── 5. 设备码流：拿得到 device_code 与验证链接 ──
+        var (startOk, startMsg, session) = await lark.StartAuthAsync();
+        Check(startOk && session != null, "应能发起设备码授权", $"实际：{Short(startMsg)}");
+        if (startOk && session != null)
+        {
+            Check(session.DeviceCode.Length > 20, "必须拿到 device_code");
+            Check(session.VerificationUrl.Contains("device", StringComparison.OrdinalIgnoreCase),
+                  "必须拿到设备验证链接（用户扫码用的就是它）", $"实际：{Short(session.VerificationUrl)}");
+            Check(session.ExpiresInSeconds > 0, "必须拿到有效期（窗口的倒计时与超时都靠它）");
+
+            // ── 6. 二维码：产出真实 PNG（产物判据）──
+            var tmp = Path.Combine(_sandbox, "qr-" + Guid.NewGuid().ToString("N")[..6]);
+            Directory.CreateDirectory(tmp);
+            var png = await lark.MakeQrPngAsync(session.VerificationUrl, tmp);
+            var pngSize = png != null && File.Exists(png) ? new FileInfo(png).Length : 0;
+            Check(png != null && pngSize > 500,
+                  "必须真的生成二维码 PNG（>500 字节）—— 用户要扫的就是它", $"实际：{png}（{pngSize} 字节）");
+
+            // ── 7. 产物位置与失败语义 ──
+            // 版本差异（实测，别把结论记死）：CLI 1.0.92 拒绝绝对路径的输出位置
+            //（"unsafe output path: --output must be a relative path within the current directory"，退出码 2），
+            // 而 1.0.96 接受绝对路径。实现统一用「相对名 + CWD 设到临时目录」——
+            // 它在两个版本上都成立，是**向下兼容**的选择，不是当前版本的硬性要求。
+            // 所以这里不断言 CLI 的版本行为（那是它的实现细节，会漂），只断言我们自己的两条承诺：
+            if (png != null)
+            {
+                Check(string.Equals(Path.GetDirectoryName(Path.GetFullPath(png)),
+                                    Path.GetFullPath(tmp), StringComparison.OrdinalIgnoreCase),
+                      "二维码必须落在宿主指定的工作目录内（不许写到别的地方去）",
+                      $"实际：{png}，期望目录：{tmp}");
+            }
+
+            // 失败语义：给一个不存在的目录 → 必须返回 null，绝不能返回一个看起来成功的假路径
+            var badDir = Path.Combine(_sandbox, "no-such-dir-" + Guid.NewGuid().ToString("N")[..6]);
+            var pngBad = await lark.MakeQrPngAsync(session.VerificationUrl, badDir);
+            Check(pngBad == null, "生成失败时必须返回 null（拿不到产物 ≠ 假装拿到了）", $"实际：{pngBad}");
+        }
+
+        // ── 8. 依赖闸：跑之前拦，且拦完要能在同一次调用里继续 ──
+        var skillsRoot = Path.Combine(_sandbox, "Skills");
+        var gatedDir = Path.Combine(skillsRoot, "gated-skill");
+        var gatedScripts = Path.Combine(gatedDir, "scripts");
+        Directory.CreateDirectory(gatedScripts);
+        File.WriteAllText(Path.Combine(gatedDir, "SKILL.md"),
+            "---\nname: gated-skill\ndescription: 依赖闸检查点用\n---\n正文", new UTF8Encoding(false));
+        // 脚本里出现 lark-cli 字样 = 真实场景（kb.py 就是这么调外部 CLI 的）
+        File.WriteAllText(Path.Combine(gatedScripts, "caller.py"),
+            "import subprocess\n# 真实 Skill 会用 lark-cli 干活\nprint('GATE_RAN_OK')\n", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(gatedScripts, "unauth.py"),
+            "print('need_user_authorization: no token in keychain')\nimport sys\nsys.exit(1)\n",
+            new UTF8Encoding(false));
+
+        var catalog = new SkillCatalog(skillsRoot);
+        var runner = new SkillScriptRunner(catalog, runtime, timeoutMs: 5000, dependencies: deps);
+        runner.TrustedSkills.Add("gated-skill");   // 跳过准入确认，本组只测依赖闸
+
+        runner.AuthPrompt = (_, _) => Task.FromResult(false);
+        var rDenied = await runner.RunAsync("gated-skill", "caller.py", null, null, default);
+        Check(!rDenied.Contains("GATE_RAN_OK"),
+              "未完成授权时**不得执行脚本**（否则等于把'没登录'的失败留给用户看）", $"实际：{Short(rDenied)}");
+        Check(rDenied.Contains("没有执行") && !rDenied.Contains("已完成"),
+              "拒绝授权必须如实说'没执行'，且不得出现「已完成」字样（防假成功）", $"实际：{Short(rDenied)}");
+        Check(rDenied.Contains("设置 → AI 模型 → Skill 扩展"),
+              "拒绝后必须给出应用内入口（否则模型会自己发明流程）", $"实际：{Short(rDenied)}");
+
+        runner.AuthPrompt = (_, _) => Task.FromResult(true);
+        var rRan = await runner.RunAsync("gated-skill", "caller.py", null, null, default);
+        Check(rRan.Contains("GATE_RAN_OK"),
+              "用户完成授权后必须在**同一次调用里**继续执行脚本（他不用把刚才那句话再说一遍）",
+              $"实际：{Short(rRan)}");
+
+        // 不传依赖表 = 不做预检：绝不能因为预检把本来能跑的 Skill 拦死
+        var plainRunner = new SkillScriptRunner(catalog, runtime, timeoutMs: 5000);
+        plainRunner.TrustedSkills.Add("gated-skill");
+        var rPlain = await plainRunner.RunAsync("gated-skill", "caller.py", null, null, default);
+        Check(rPlain.Contains("GATE_RAN_OK"), "不传依赖表时不做预检，脚本照跑", $"实际：{Short(rPlain)}");
+
+        // ── 9. 授权类失败的措辞：只搬运事实 + 补应用内下一步 ──
+        var rUnauth = await runner.RunAsync("gated-skill", "unauth.py", null, null, default);
+        Check(rUnauth.Contains("need_user_authorization"),
+              "脚本的原始输出必须原样带给模型（宿主不替它下结论）", $"实际：{Short(rUnauth)}");
+        Check(rUnauth.Contains("设置 → AI 模型 → Skill 扩展"),
+              "脚本自己报'未授权'时，宿主必须补上应用内入口", $"实际：{Short(rUnauth)}");
+        Check(!rUnauth.Contains("已完成") && !rUnauth.Contains("已执行"),
+              "失败文本不得含「已完成/已执行」（防假成功 —— 最重要的一条）");
+
+        // ── 10. 面向用户的文案纪律：不许出现开发者路径 ──
+        // 实测教训：模型会把文案里的 `tools\xxx.bat` 原样抄进给用户的回答里，用户根本执行不了。
+        var hint = runtime.MissingHint;
+        Check(!hint.Contains("tools\\") && !hint.Contains(".bat") && !hint.Contains("fetch-"),
+              "运行时缺失提示不得出现开发者路径/脚本文件（实测模型会照抄给用户）", $"实际：{Short(hint)}");
+        Check(hint.Contains("设置"), "运行时缺失提示必须指向应用内位置", $"实际：{Short(hint)}");
+
+        var manifest = SkillManifest.Build(catalog.GetSkills(false), true);
+        Check(manifest.Contains("不许让用户去命令行"),
+              "系统提示必须带硬约束：不许让用户去命令行执行命令", $"实际：{Short(manifest)}");
+        Check(manifest.Contains("设置 → AI 模型 → Skill 扩展"),
+              "系统提示必须给出应用内授权入口（否则模型只能自己发明）", $"实际：{Short(manifest)}");
     }
 
     // ══════════════════ UI 线程封送（2026-09-20） ══════════════════

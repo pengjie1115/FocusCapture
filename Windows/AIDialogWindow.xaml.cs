@@ -216,6 +216,7 @@ public partial class AIDialogWindow : Window
     private bool _agentRulesAdded;        // Agent 系统规则每会话只注入一次
     private SkillCatalog? _skillCatalog;  // Skill 目录扫描（2026-09-20；带目录时间戳缓存，装完不必重启）
     private SkillRuntime? _skillRuntime;  // 内置 Python 运行时（只读状态，探测带缓存）
+    private IReadOnlyList<SkillDependency>? _skillDeps; // 外部依赖表（2026-09-20；授权走应用内，不外包给用户）
 
     /// <summary>附件悬停预览 + 双击大图（输入区卡片与气泡卡片共用一份实例）</summary>
     private readonly AttachmentPreviewHost _preview = new();
@@ -1993,14 +1994,16 @@ public partial class AIDialogWindow : Window
         // 核心逻辑全在 Services/Skills/ 里，这里只是装配 —— 出问题可整目录删掉回退，不牵存量功能。
         _skillCatalog = new SkillCatalog(FocusCapturePaths.Combine("Skills"), msg => AppLog.Warn("Skill", msg));
         _skillRuntime = new SkillRuntime(AppContext.BaseDirectory);
+        _skillDeps = SkillDependencies.All(AppContext.BaseDirectory);   // 外部依赖表（应用自带优先，其次 PATH）
 
-        var scriptRunner = new SkillScriptRunner(_skillCatalog, _skillRuntime)
+        var scriptRunner = new SkillScriptRunner(_skillCatalog, _skillRuntime, dependencies: _skillDeps)
         {
             TrustedSkills = new HashSet<string>(_settings.SkillTrusted, StringComparer.OrdinalIgnoreCase),
             OnTrusted = RememberSkillTrust,
             TrustPrompt = ConfirmSkillTrustAsync,
+            AuthPrompt = ConfirmSkillAuthAsync,
         };
-        registry.Register(new LoadSkillTool(_skillCatalog));
+        registry.Register(new LoadSkillTool(_skillCatalog, _skillDeps));
         registry.Register(new RunSkillScriptTool(scriptRunner));
 
         _registry = registry;
@@ -2022,6 +2025,28 @@ public partial class AIDialogWindow : Window
     /// <see cref="SkillScriptRunner"/> 在**工具线程**（线程池，非 UI 线程）上调用的，
     /// 直接在这里 <c>MessageBox.Show(this, …)</c> 会抛「调用线程无法访问此对象」。
     /// </para>
+    /// <summary>
+    /// Skill 依赖授权（2026-09-20）：某个 Skill 依赖的外部 CLI（如 lark-cli）还没登录时，
+    /// **在应用内**把标准设备码流走完 —— 弹二维码、用户扫一次、窗口自动关闭。
+    ///
+    /// <para>
+    /// 为什么必须有这一环：授权原本是完全空白的，模型只能照着 CLI 输出里的提示自己发挥 ——
+    /// 实测它让用户去终端敲 <c>lark-cli auth login</c>，还把开发机上的安装目录拼进了命令里。
+    /// **该由宿主做的事外包给用户，比 bug 本身更贵。**
+    /// </para>
+    /// <para>
+    /// ⚠ 本方法在**工具线程**（线程池）上被调用 —— 必须经 <see cref="UiThread"/> 封送回 UI 线程，
+    /// 否则 <c>ShowDialog</c> 会因跨线程访问窗口对象而抛「调用线程无法访问此对象」。
+    /// </para>
+    /// <para>返回 false = 用户没完成授权；执行器据此拒绝执行脚本，绝不假装成功。</para>
+    /// </summary>
+    private Task<bool> ConfirmSkillAuthAsync(SkillDependency dep, DependencyStatus status) =>
+        UiThread.AskAsync(Dispatcher, () =>
+        {
+            var window = new SkillAuthWindow(dep, status) { Owner = this };
+            return window.ShowDialog() == true;
+        }, msg => AppLog.Warn("Skill", msg));
+
     private Task<bool> ConfirmSkillTrustAsync(SkillInfo skill) =>
         UiThread.AskAsync(Dispatcher, () => ShowSkillTrustDialog(skill), msg => AppLog.Warn("Skill", msg));
 

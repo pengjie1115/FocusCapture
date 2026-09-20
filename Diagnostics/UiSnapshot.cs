@@ -92,6 +92,19 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // AI 模型板块的**最底部**：外部依赖区块（2026-09-20 新增）。
+            // 为什么单独一张：依赖行是「异步探测 → 动态生成控件」两个坑叠在一起 ——
+            //   ① 动态生成的按钮可能不继承窗口的隐式 Button 样式（深色主题下会变成浅色默认样式）
+            //   ② 异步插入晚于"滚到底"，上一版快照里只剩一个区块标题、状态行与按钮完全看不见
+            // 所以这里用同步入口先把行建出来再滚到底。这一张就是"必须出图才发现"的典型。
+            Capture("03c-设置-AI 模型板块（底部·外部依赖）", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 1;
+                w.PrepareSkillDepsForSnapshot();
+                return w;
+            }, outDir, log);
+
             // 其余可无副作用构造的窗口：用于横向排查同一类 UI 写法（按钮内边距 / 图标字形 / 对齐）
             Capture("04-全局查找弹窗", () => new SearchDialog(), outDir, log);
             Capture("05-待办汇总", () => new TodoSummaryWindow(notes, settings), outDir, log);
