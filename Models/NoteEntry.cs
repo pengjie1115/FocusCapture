@@ -24,6 +24,15 @@ public class NoteEntry
     /// <summary>编辑后的内容（展示层优先显示；解析【编辑】标记行关联到原笔记时填充；不参与存储序列化）</summary>
     public string? EditedContent { get; set; }
 
+    /// <summary>
+    /// 本条目对应的**原始物理行**（解析时记录；不参与存储序列化）。
+    /// 标记行（【编辑】/【AI 释义】）合并失败成孤儿卡时必填——孤儿卡的 Content 是剥掉前缀/ref 后的展示文本，
+    /// 用它反向定位/删除/改行永远匹配不上物理行（2026-09-20 实测：同步来的孤儿卡删除必报
+    /// "未在笔记文件中找到该条目"）。有了 RawLine，删除/原地改行按它精确匹配物理行。
+    /// 普通行条目也记录（代价为零，IsEntryLine 多一个精确匹配分支）。
+    /// </summary>
+    public string? RawLine { get; set; }
+
     /// <summary>生成单行 markdown 条目，多段内容中的换行用 \u23CE 转义</summary>
     public string ToMarkdownLine()
     {

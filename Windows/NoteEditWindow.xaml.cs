@@ -64,8 +64,9 @@ public partial class NoteEditWindow : Window
     private void BtnSave_Click(object sender, RoutedEventArgs e) => Save();
 
     /// <summary>
-    /// 保存（v3.5 改造）：分离 AI 释义后——
-    /// 普通笔记走 AppendEdit（现状不变）；待办走 TodoEditService.SaveEdited 原地改行（红线 2 例外，禁止追加【编辑】行）。
+    /// 保存（v5 2026-09-20）：分离 AI 释义后——
+    /// 笔记/待办统一走 TodoEditService.SaveEdited **原地替换**改行（笔记此前走 AppendEdit 追加【编辑】行，
+    /// 因跨端同步双条/孤儿卡问题经用户拍板改为替换；红线 2 例外）。
     /// 待办保存后做时间识别（规则优先，规则未命中才调 LLM 兜底）：识别到未来时间 → 弹建议条（不立即关窗）；
     /// 未识别到时间 → 不自动清除原提醒，直接关窗。
     /// async void：LLM 调用放后台线程（DetectDueAsync 内部），禁止 UI 线程同步阻塞等 LLM。
@@ -90,7 +91,7 @@ public partial class NoteEditWindow : Window
 
         _vm.EditText = content;
 
-        // 内容未变化：不追加冗余【编辑】行也不改行
+        // 内容未变化：不改行（替换语义下无变化即无操作）
         var displayBase = _vm.Entry.EditedContent ?? _vm.Entry.Content;
         var changed = content != displayBase;
         if (changed && !TodoEditService.SaveEdited(_noteService, _vm.Entry, content))
@@ -101,13 +102,12 @@ public partial class NoteEditWindow : Window
         }
         if (changed)
         {
-            // 存储层状态同步：
-            // - 待办原地改行 → Content 即新正文（供后续 UpdateTodo 定位）
-            // - 笔记追加【编辑】行 → EditedContent 即展示新内容（原行不动）
-            if (_vm.Entry.Type == NoteType.Todo)
-                _vm.Entry.Content = content;
-            else
-                _vm.Entry.EditedContent = content;
+            // 存储层状态同步（v5 2026-09-20：笔记编辑=原地替换，同待办）：
+            // UpdateNote/UpdateTodo 内部已回写 entry.Content；笔记的旧 EditedContent
+            //（历史【编辑】痕迹的合并结果）必须清掉——痕迹行已随替换清理
+            _vm.Entry.Content = content;
+            if (_vm.Entry.Type != NoteType.Todo)
+                _vm.Entry.EditedContent = null;
         }
 
         // 普通笔记：保存即关闭（现状不变）

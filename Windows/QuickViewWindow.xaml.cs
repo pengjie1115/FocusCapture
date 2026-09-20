@@ -1313,8 +1313,9 @@ public partial class QuickViewWindow : Window
     }
 
     /// <summary>
-    /// 保存编辑（v3.5 改造）：笔记走 AppendEdit 追加【编辑】行（现状不变）；待办走 TodoEditService.SaveEdited
-    /// 原地改行（红线 2 例外，禁止追加【编辑】行）。保存成功后对待办做时间识别——规则优先（TimeParser），
+    /// 保存编辑（v5 2026-09-20）：笔记/待办统一走 TodoEditService.SaveEdited **原地替换**改行
+    /// （笔记此前走 AppendEdit 追加【编辑】行，因跨端同步双条/孤儿卡问题经用户拍板改为替换）。
+    /// 保存成功后对待办做时间识别——规则优先（TimeParser），
     /// 规则未命中才调 LLM 兜底（DetectDueAsync），识别到未来时间弹建议条；未识别到时间不自动清除原提醒。
     /// async void：LLM 调用放后台线程（DetectDueAsync 内部），禁止 UI 线程同步阻塞等 LLM。
     /// </summary>
@@ -1338,7 +1339,7 @@ public partial class QuickViewWindow : Window
             return;
         }
 
-        // 内容未变化：不追加冗余【编辑】行也不改行
+        // 内容未变化：不改行（替换语义下无变化即无操作）
         var displayBase = vm.Entry.EditedContent ?? vm.Entry.Content;
         if (contentToSave != displayBase)
         {
@@ -1349,13 +1350,12 @@ public partial class QuickViewWindow : Window
                 vm.CancelEdit();
                 return;
             }
-            // 存储层状态同步：
-            // - 待办原地改行 → Content 即新正文（供后续 UpdateTodo 定位用变更前字段）
-            // - 笔记追加【编辑】行 → EditedContent 即展示新内容（原行不动）
-            if (vm.Entry.Type == NoteType.Todo)
-                vm.Entry.Content = contentToSave;
-            else
-                vm.Entry.EditedContent = contentToSave;
+            // 存储层状态同步（v5 2026-09-20：笔记编辑=原地替换，同待办）：
+            // UpdateNote/UpdateTodo 内部已回写 entry.Content；笔记的旧 EditedContent（历史【编辑】
+            // 痕迹的合并结果）必须清掉——痕迹行已随替换清理，留着会用旧文本盖住新正文
+            vm.Entry.Content = contentToSave;
+            if (vm.Entry.Type != NoteType.Todo)
+                vm.Entry.EditedContent = null;
         }
 
         CancelEditState(vm);

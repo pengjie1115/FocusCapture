@@ -77,6 +77,7 @@ internal static class Program
             Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            Run("标记行挂靠", TestMarkerAttach);           // 跨文件 ref 挂靠 / 孤儿卡删除 / 编辑=替换（2026-09-20）
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
             await RunAsync("Skill 依赖", TestSkillDependency); // 定位自带优先 / 设备码流 / 二维码产物 / 授权闸（2026-09-20）
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
@@ -333,7 +334,12 @@ print(json.dumps({
             new UTF8Encoding(false));
 
         var catalog = new SkillCatalog(skillsRoot);
-        var runner = new SkillScriptRunner(catalog, runtime, timeoutMs: 5000, dependencies: deps);
+        // ⚠ 依赖闸检查点必须用**桩探测**（固定返回未授权），不能依赖真实 lark-cli 登录态 ——
+        // 2026-09-20 20:11 用户真机扫码授权后，真实探测返回"已授权" → 闸放行 → 脚本照跑 EXIT=0，
+        // 下面三条"未授权要拦截"检查点全红。检查点测的是"未授权时要拦"这个**代码行为**，
+        // 登录态是机器环境不是代码行为，依赖它 = 检查点随机器状态翻红翻绿（软失真的检查点变体）。
+        var stubDeps = new List<SkillDependency> { new UnauthorizedStubDependency() };
+        var runner = new SkillScriptRunner(catalog, runtime, timeoutMs: 5000, dependencies: stubDeps);
         runner.TrustedSkills.Add("gated-skill");   // 跳过准入确认，本组只测依赖闸
 
         runner.AuthPrompt = (_, _) => Task.FromResult(false);
@@ -1839,6 +1845,118 @@ print(json.dumps({
         {
             try { Directory.Delete(root, true); } catch { }
         }
+    }
+
+    // ══════════════════ 标记行挂靠与编辑=替换（2026-09-20） ══════════════════
+    //
+    // 背景（真机实锤，本机灵感笔记文件直接复现）：界面编辑曾走 AppendEdit 追加【编辑】标记行
+    //（原行不动），展示层靠「同文件 + 原行先解析」合并。跨端同步落地按各行自己的时间戳算文件、
+    // 落地顺序也不保证创建序，两个前提都会被打破 → 标记行成孤儿独立成卡（面板"原始+编辑"双条并存），
+    // 且孤儿卡删除必报"未在笔记文件中找到该条目"。修复 = A（两遍扫描 + 跨文件 ref 挂靠 + 孤儿记
+    // RawLine）+ B（界面编辑改走 UpdateNote 原地替换，用户拍板）。
+
+    private static void TestMarkerAttach()
+    {
+        Console.WriteLine("[标记行挂靠] 跨文件 ref 挂靠 / 孤儿卡删除 / 编辑=替换 / 旧痕迹清理");
+        var root = Path.Combine(_sandbox, "marker-attach");
+        var notesDir = Path.Combine(root, "notes");
+        Directory.CreateDirectory(notesDir);
+        var settings = new AppSettings { NotesPath = notesDir };
+        var notes = new NoteService(settings, Path.Combine(root, "deleted.json"));
+        var file20 = Path.Combine(notesDir, "灵感_2026-09-20.md");
+
+        // ── ① 跨文件 ref 挂靠：原笔记在 9-19 文件、【AI 释义】标记行落在 9-20 文件（模拟跨端落地分家）──
+        var d19 = new DateTime(2026, 9, 19, 10, 24, 0);
+        var d20 = new DateTime(2026, 9, 20, 10, 0, 0);
+        File.AppendAllText(Path.Combine(notesDir, "灵感_2026-09-19.md"),
+            $"- [{d19:yyyy-MM-dd HH:mm}] Grep 复核 — 来源: WorkBuddy{Environment.NewLine}", Encoding.UTF8);
+        var markerAi = $"- [{d20:yyyy-MM-dd HH:mm}] 【AI 释义】Grep 复核指的是对关键字符串的再次检查 — 来源: AI 回填 (ref {d19:yyyy-MM-dd HH:mm})";
+        File.AppendAllText(file20, markerAi + Environment.NewLine, Encoding.UTF8);
+
+        Check(!notes.LoadNotes(d20.Date).Any(e => e.SourceWindow == "AI 回填" && e.Content.Contains("Grep 复核指的是")),
+            "跨文件【AI 释义】：不再孤儿独立成卡（旧版面板双条并存）");
+        var origin19 = notes.LoadNotes(d19.Date).FirstOrDefault(e => e.Content == "Grep 复核");
+        Check(origin19 != null && origin19.AiFills.Count == 1 && origin19.AiFills[0].Contains("Grep 复核指的是"),
+            "跨文件【AI 释义】：按 ref 挂靠到 9-19 文件里的原笔记（子条目语义保留）");
+
+        // ── ② 同文件顺序颠倒 + 多条编辑行：合并成功且最新编辑内容赢（与物理顺序解耦）──
+        var dOrg = new DateTime(2026, 9, 20, 11, 34, 0);
+        var dEdit1 = new DateTime(2026, 9, 20, 11, 45, 0);
+        var dEdit2 = new DateTime(2026, 9, 20, 11, 47, 0);
+        // 刻意让【编辑】行物理位置先于原行（跨端落地实测出现过的顺序）
+        File.AppendAllText(file20,
+            $"- [{dEdit1:yyyy-MM-dd HH:mm}] 【编辑】编辑内容一 — 来源: 手动编辑 (ref {dOrg:yyyy-MM-dd HH:mm}){Environment.NewLine}" +
+            $"- [{dOrg:yyyy-MM-dd HH:mm}] vibe coding效率提升：不每次编译{Environment.NewLine}" +
+            $"- [{dEdit2:yyyy-MM-dd HH:mm}] 【编辑】编辑内容二 — 来源: 手动编辑 (ref {dOrg:yyyy-MM-dd HH:mm}){Environment.NewLine}", Encoding.UTF8);
+
+        var merged = notes.LoadNotes(dOrg.Date).FirstOrDefault(e => e.Content.Contains("vibe coding"));
+        Check(merged != null && merged.EditedContent == "编辑内容二",
+            "同文件顺序颠倒：编辑行先于原行也能合并；多条编辑行按时间戳取最新（旧版按物理顺序取，跨端会取到旧版编辑）");
+        Check(!notes.LoadAllEntries().Any(e => e.SourceWindow == "手动编辑" && e.Content == "编辑内容一"),
+            "同文件顺序颠倒：【编辑】行不再孤儿独立成卡（旧版双条并存）");
+
+        // ── ③ 孤儿标记行：独立成条但带 RawLine，删除必成功（旧版报"未在笔记文件中找到该条目"）──
+        var dOrphan = new DateTime(2026, 9, 20, 12, 0, 0);
+        var orphanLine = $"- [{dOrphan:yyyy-MM-dd HH:mm}] 【AI 释义】无主释义内容 — 来源: AI 回填 (ref 2026-09-01 08:00)";
+        File.AppendAllText(file20, orphanLine + Environment.NewLine, Encoding.UTF8);
+
+        var orphan = notes.LoadNotes(dOrphan.Date).FirstOrDefault(e => e.Content.Contains("无主释义内容"));
+        Check(orphan != null && orphan.RawLine == orphanLine, "孤儿标记行：独立成条且记住原始物理行 RawLine");
+        Check(orphan != null && notes.DeleteNote(orphan), "孤儿标记行：删除成功（旧版必报错删不掉）");
+        Check(!ReadAllMd(notesDir).Contains("无主释义内容"), "孤儿标记行：删除后物理行从文件消失");
+        Check(notes.RecycleBin.List().Any(x => x.Entry.Lines.Any(l => l.Contains("无主释义内容"))),
+            "孤儿标记行：删除先进回收站（可恢复）");
+
+        // ── ④ 编辑=替换（TodoEditService.SaveEdited 笔记分支）：不追加【编辑】行、旧行进回收站、发墓碑 ──
+        var tombstones = new List<string>();
+        notes.LinesDeleted += (_, lines) => tombstones.AddRange(lines);
+
+        var toEdit = notes.SaveNote("替换前正文");
+        Check(toEdit != null, "准备：写入一条待替换笔记");
+        var editNew = toEdit != null && TodoEditService.SaveEdited(notes, toEdit, "替换后正文");
+        var mdAfterEdit = ReadAllMd(notesDir);
+        Check(editNew && mdAfterEdit.Contains("替换后正文"), "编辑=替换：新正文写入");
+        Check(!mdAfterEdit.Contains("【编辑】替换后正文"), "编辑=替换：不再追加【编辑】行（B 方案核心）");
+        Check(!mdAfterEdit.Contains("替换前正文"), "编辑=替换：旧正文从文件消失（跨端同步只留一条的前提）");
+        Check(notes.RecycleBin.List().Any(x => x.Entry.Lines.Any(l => l.Contains("替换前正文"))),
+            "编辑=替换：旧正文先进回收站（改错可恢复）");
+        Check(tombstones.Any(l => l.Contains("替换前正文")),
+            "编辑=替换：旧行发同步墓碑（否则云端旧行会被反复投递回本机）");
+
+        // ── ⑤ 替换时清理旧【编辑】痕迹、保留【AI 释义】子条目 ──
+        var dKeep = new DateTime(2026, 9, 20, 15, 0, 0);
+        File.AppendAllText(file20,
+            $"- [{dKeep:yyyy-MM-dd HH:mm}] 带痕迹的笔记{Environment.NewLine}" +
+            $"- [{dKeep.AddMinutes(5):yyyy-MM-dd HH:mm}] 【编辑】旧编辑痕迹 — 来源: 手动编辑 (ref {dKeep:yyyy-MM-dd HH:mm}){Environment.NewLine}" +
+            $"- [{dKeep.AddMinutes(6):yyyy-MM-dd HH:mm}] 【AI 释义】保留的释义 — 来源: AI 回填 (ref {dKeep:yyyy-MM-dd HH:mm}){Environment.NewLine}", Encoding.UTF8);
+
+        var keepEntry = notes.LoadNotes(dKeep.Date).FirstOrDefault(e => e.Content == "带痕迹的笔记");
+        Check(keepEntry != null && keepEntry.EditedContent == "旧编辑痕迹" && keepEntry.AiFills.Count == 1,
+            "准备校验：旧【编辑】痕迹与【AI 释义】都挂靠到原笔记");
+        Check(keepEntry != null && notes.UpdateNote(keepEntry, "全新正文"), "替换带痕迹的笔记成功");
+        var mdAfterClean = ReadAllMd(notesDir);
+        Check(mdAfterClean.Contains("全新正文") && !mdAfterClean.Contains("旧编辑痕迹"),
+            "替换后旧【编辑】痕迹一并清理（否则展示层会把新正文盖成旧编辑文本）");
+        Check(mdAfterClean.Contains("保留的释义"), "替换后【AI 释义】子条目保留（不随正文改写失效）");
+        var reloaded = notes.LoadNotes(dKeep.Date).FirstOrDefault(e => e.Content == "全新正文");
+        Check(reloaded != null && reloaded.EditedContent == null && reloaded.AiFills.Count == 1,
+            "替换后重载：EditedContent 为空、AiFills 仍在（面板直接显示新正文）");
+        Check(tombstones.Any(l => l.Contains("旧编辑痕迹")), "清理的痕迹行也发同步墓碑");
+    }
+
+    /// <summary>
+    /// 依赖闸检查点专用桩：永远"在位但未授权"。探针不真调 lark-cli（那会随机器登录态翻红翻绿，
+    /// 2026-09-20 实锤），只让执行器的闸逻辑走"NeedsAuth → 问用户"这条分支。
+    /// </summary>
+    private sealed class UnauthorizedStubDependency : SkillDependency
+    {
+        public UnauthorizedStubDependency() : base(
+            id: "stub-cli", displayName: "桩依赖（永远未授权）", exeName: "stub-cli",
+            scriptMarkers: new[] { "lark-cli" }, baseDir: null) { }
+
+        public override Task<DependencyStatus> ProbeAsync(CancellationToken ct = default)
+            => Task.FromResult(new DependencyStatus(Id, DisplayName, true, null,
+                DependencyAuth.Missing, "", "桩：固定返回未授权"));
     }
 
     // ── 双设备模拟（验收 C 全流程 + 回声 + D 密钥重置 + E 自愈） ──

@@ -376,17 +376,19 @@ public class NoteService
     }
 
     /// <summary>
-    /// 笔记原地改行（2026-09-17 新增，供 Agent 的 update_note 使用）。
+    /// 笔记原地改行（2026-09-17 新增，供 Agent 的 update_note 使用；2026-09-20 起界面「编辑保存」
+    /// 也走这条路，见 TodoEditService.SaveEdited —— 用户拍板：编辑=替换，不再追加【编辑】行）。
     ///
-    /// **与界面「编辑保存」不是同一条路**：界面走 <see cref="AppendEdit"/>（追加【编辑】行，原行不动、
-    /// 展示层合并为子条目）；这里**原地替换原行**。这是用户明确拍板的语义（"直接在原来那条上改，
-    /// 不要另存一条"）——记在这里，免得日后有人看到两种行为以为其中一个是 bug。
+    /// **两条路曾刻意不同**（界面走 AppendEdit 追加、这里原地替换），2026-09-20 因跨端同步实测
+    /// 双条并存/孤儿卡删不掉而合并为一条：追加【编辑】行 + 展示层合并的语义在跨端场景天然脆弱
+    /// （标记行与原行会被拆文件/乱顺序），替换语义的同步模型是"删旧行+加新行"，天然只留一条。
     ///
     /// 代价与对策：原地替换 = 旧文本消失，而行身份是 SHA256(行文本)，改行等于「删旧行 + 加新行」，
     /// 同步层会认不出旧行。所以 ① 旧行先写回收站（改错可恢复）② 成功后抛 LinesDeleted
-    /// 让同步层生成删除墓碑，避免云端旧行被反复投递回本机。
+    /// 让同步层生成删除墓碑，避免云端旧行被反复投递回本机 ③ 清理旧【编辑】痕迹行（它们描述的是
+    /// 旧正文，留着会被展示层挂回新行、把新内容盖成旧编辑文本），同样进回收站 + 发墓碑。
     ///
-    /// 沉浸式输入锁定中的笔记不许改（与 <see cref="AppendEdit"/> 一致）。
+    /// 沉浸式输入锁定中的笔记不许改。
     /// </summary>
     public bool UpdateNote(NoteEntry entry, string newContent)
     {
@@ -404,8 +406,88 @@ public class NoteService
         if (replacedLine != null)
             LinesDeleted?.Invoke(fileName!, new[] { replacedLine });
 
+        // 旧【编辑】痕迹行清理（进回收站 + 墓碑，见 RemoveStaleEditMarkers）
+        RemoveStaleEditMarkers(entry);
+
         NotesChanged?.Invoke();
         return true;
+    }
+
+    /// <summary>
+    /// 原地替换正文后，清理引用原时间戳的【编辑】痕迹行（2026-09-20 随"编辑=替换"语义新增）。
+    /// 痕迹行描述的是旧正文的编辑历史；正文被整体替换后若不清，展示层会按 ref 把它们挂回
+    /// 新行，把新内容盖成旧编辑文本（EditedContent 优先于 Content 展示）。
+    /// 【AI 释义】是子条目语义（不随正文改写失效），**保留不清**。
+    /// 防线：① 旧行先进回收站（可恢复）② 同分钟多条原笔记时保守跳过（ref 分钟精度无法区分归属，
+    /// 同 DeleteNote 的口径）③ 清掉的行发 LinesDeleted 墓碑，否则云端旧行会被反复投递回本机。
+    /// </summary>
+    private void RemoveStaleEditMarkers(NoteEntry entry)
+    {
+        if (!Directory.Exists(_settings.NotesPath)) return;
+        var refStr = entry.Timestamp.ToString("yyyy-MM-dd HH:mm");
+
+        try
+        {
+            // 同分钟歧义检测（全库口径）：>1 条原笔记时 (ref 时间戳) 无法区分归属 → 保守不清
+            var sameMinuteCount = 0;
+            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+            {
+                string[] lines;
+                try { lines = File.ReadAllLines(file, Encoding.UTF8); }
+                catch { continue; }
+                foreach (var raw in lines)
+                {
+                    var l = raw.TrimEnd('\r');
+                    if (l.Contains("【编辑】", StringComparison.Ordinal) ||
+                        l.Contains("【AI 释义】", StringComparison.Ordinal)) continue;
+                    var m = NoteLineRegex.Match(l);
+                    if (!m.Success) continue;
+                    var day = m.Groups[1].Success ? m.Groups[1].Value.Trim() : "";
+                    if (day.Length == 0) continue;   // 无日期旧格式行不参与计数（无法可靠判定同分钟）
+                    if (DateTime.TryParse($"{day} {m.Groups[2].Value}", out var ts) && ts == entry.Timestamp)
+                        sameMinuteCount++;
+                }
+            }
+            if (sameMinuteCount > 1) return;
+
+            foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
+            {
+                string[] lines;
+                try { lines = File.ReadAllLines(file, Encoding.UTF8); }
+                catch { continue; }
+
+                var removed = new List<string>();
+                var keep = new List<string>(lines.Length);
+                foreach (var raw in lines)
+                {
+                    var line = raw.TrimEnd('\r');
+                    if (line.Contains("【编辑】", StringComparison.Ordinal) &&
+                        line.Contains($"(ref {refStr})", StringComparison.Ordinal))
+                    {
+                        removed.Add(line);
+                        continue;
+                    }
+                    keep.Add(line);
+                }
+                if (removed.Count == 0) continue;
+
+                lock (FileWriteLock)
+                {
+                    // 先回收站后删行（与 DeleteNote/RewriteEntryLine 同序：防"行已删但回收站没记"）
+                    if (!_recycleBin.AddIfAbsent(Path.GetFileName(file), removed))
+                    {
+                        AppLog.Error("Note", $"清理旧编辑痕迹中止：回收站写入失败，痕迹保留 ({file})");
+                        continue;
+                    }
+                    File.WriteAllLines(file, keep, Encoding.UTF8);
+                }
+                LinesDeleted?.Invoke(Path.GetFileName(file), removed);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Note", "清理旧编辑痕迹失败（不影响本次改行结果）", ex);
+        }
     }
 
     /// <summary>
@@ -500,6 +582,11 @@ public class NoteService
     {
         if (line == entry.ToMarkdownLine()) return true;
 
+        // v5（2026-09-20）：RawLine 精确匹配 —— 解析时记录的原始物理行，最高优先级的身份证据。
+        // 标记行孤儿卡（Content 是剥掉前缀/ref 的展示文本）靠它才能定位/删除/改行
+        //（否则重建行永远匹配不上带【AI 释义】/【编辑】前缀和 (ref …) 尾巴的物理行）。
+        if (!string.IsNullOrEmpty(entry.RawLine) && line == entry.RawLine) return true;
+
         // v3.5 旧待办格式回退：同 FormatTodoLine 但提醒时间到分钟（秒为 :00 时与新版同串，天然去重）
         if (entry.Type == NoteType.Todo && line == NoteEntry.FormatTodoLine(entry, withSeconds: false)) return true;
 
@@ -561,16 +648,35 @@ public class NoteService
     }
 
     /// <summary>
-    /// 按指定日期加载笔记（v4 2026-09-12：**扫描全部 md 后按"归类时间"过滤**，与行的物理位置解耦）。
-    /// 归类口径统一为 <see cref="TodoDisplayTime"/>：待办=提醒日（无提醒则创建日）、笔记=行时间戳 —— 与
-    /// 日历计数（LoadNoteCounts）、面板排序完全一致。
-    /// 旧实现只读 `灵感_{日期}.md` + 标签文件，于是"行落在别的文件里就看不到"，反过来逼迫写入必须与日期对齐
-    /// （未到期待办因此被写进提醒日文件，而删除/云端落地又用别的口径找文件 → 同一行在两端分裂成不同身份）。
+    /// 按指定日期加载笔记（v5 2026-09-20：加载内核统一走 <see cref="LoadEntriesCore"/> ——
+    /// 两遍扫描 + **跨文件 ref 挂靠**，修复标记行跨端同步后"原始+编辑"双条并存/孤儿卡删不掉）。
+    /// 归类口径不变：<see cref="TodoDisplayTime"/>（待办=提醒日/创建日、笔记=行时间戳），
+    /// 与日历计数（LoadNoteCounts）、面板排序一致。
     /// </summary>
     public List<NoteEntry> LoadNotes(DateTime date)
+        => LoadEntriesCore(date);
+
+    /// <summary>
+    /// 加载内核（v5 2026-09-20 重构：**两遍扫描 + 跨文件 ref 挂靠**，取代旧的"逐文件边解析边挂靠"）。
+    ///
+    /// 修的两个实测 Bug（同一根因：旧版标记行合并是「同文件 + 原行先解析」的启发式，跨端同步落地
+    /// 按各行自己的时间戳算落地文件、落地顺序也不保证创建序，两个前提都会被打破）：
+    /// ① 【编辑】/【AI 释义】标记行与原笔记被拆进不同文件，或标记行物理位置先于原行 → 挂靠失败
+    ///    → 标记行独立成卡（来源"手动编辑/AI 回填"）→ 面板出现"原始笔记 + 编辑笔记"两条；
+    /// ② 孤儿卡删除必失败：孤儿卡的 Content 是剥掉前缀/ref 的展示文本，拿它重建行永远匹配不上
+    ///    带前缀/ref 的物理行 → 报"未在笔记文件中找到该条目"。
+    ///
+    /// 新逻辑：第一遍收集全部原笔记行（含 <see cref="NoteEntry.RawLine"/> 原始物理行）与全部标记行；
+    /// 第二遍把标记行按 ref **挂靠到全库任意文件**的原笔记（不再受文件边界与解析顺序限制），
+    /// 挂不上的才独立成条且带 RawLine（删除/改行按它精确定位物理行）。
+    /// 多条标记行挂同一目标时按标记行自身时间戳升序逐条套用 → "最新编辑内容赢"与物理顺序解耦。
+    /// <paramref name="dateFilter"/> 非空时按 <see cref="TodoDisplayTime"/> 过滤（LoadNotes 语义）。
+    /// </summary>
+    private List<NoteEntry> LoadEntriesCore(DateTime? dateFilter)
     {
-        var result = new List<NoteEntry>();
-        if (!Directory.Exists(_settings.NotesPath)) return result;
+        var entries = new List<NoteEntry>();
+        var markers = new List<DeferredMarker>();
+        if (!Directory.Exists(_settings.NotesPath)) return entries;
 
         foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
         {
@@ -581,26 +687,20 @@ public class NoteService
             var dateContext = isDayFile && DateTime.TryParse(fileName["灵感_".Length..], out var fileDate)
                 ? fileDate
                 : DateTime.Today;
-            result.AddRange(ParseNotes(file, tag, dateContext));
-        }
 
-        return result
-            .Where(e => TodoDisplayTime(e).Date == date.Date)
-            .Where(e => !_deletedService.IsDeleted(e))
-            .OrderByDescending(e => e.Timestamp)
-            .ToList();
-    }
+            string[] lines;
+            try { lines = File.ReadAllLines(file, Encoding.UTF8); }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FocusCapture] 读取笔记失败 ({file}): {ex.Message}");
+                continue;
+            }
 
-    private List<NoteEntry> ParseNotes(string filePath, string? tag, DateTime dateContext)
-    {
-        var entries = new List<NoteEntry>();
-        try
-        {
-            var lines = File.ReadAllLines(filePath, Encoding.UTF8);
-            foreach (var line in lines)
+            foreach (var rawLine in lines)
             {
                 // 新格式: - [yyyy-MM-dd HH:mm] 内容 — 来源: xxx
                 // 旧格式: - [HH:mm] 内容 — 来源: xxx（日期取 dateContext）
+                var line = rawLine.TrimEnd('\r');
                 var match = NoteLineRegex.Match(line);
                 if (!match.Success) continue;
 
@@ -612,39 +712,19 @@ public class NoteService
                 var rawContent = match.Groups[3].Value.Replace("\u23CE", "\n");
                 var source = match.Groups[4].Success ? match.Groups[4].Value : "";
 
-                // 标记行（AI 释义 / 编辑）：关联回最近原笔记，展示层合并为子条目/编辑内容
+                // 标记行（AI 释义 / 编辑）：第一遍只暂存，第二遍跨文件挂靠
                 var marker = ParseMarkerLine(rawContent, source, out var markerText, out var refTs);
                 if (marker != null)
                 {
-                    NoteEntry? target = null;
-                    // 有 ref → 精确关联；无 ref → 同文件、时间相近（±60s）的最近原笔记
-                    if (refTs.HasValue)
-                        target = entries.LastOrDefault(e => Math.Abs((e.Timestamp - refTs.Value).TotalMinutes) < 1);
-                    if (target == null)
-                        target = entries.LastOrDefault(e => Math.Abs((e.Timestamp - ts).TotalMinutes) < 1);
-
-                    if (target != null)
-                    {
-                        if (marker == "AI") target.AiFills.Add(markerText);
-                        else target.EditedContent = markerText;
-                        continue; // 关联成功，不生成独立条目
-                    }
-
-                    // 找不到相近原笔记 → 独立成条（内容去掉标记前缀，Tag 置空）
-                    entries.Add(new NoteEntry
-                    {
-                        Timestamp = ts,
-                        Content = markerText,
-                        SourceWindow = marker == "AI" ? "AI 回填" : "手动编辑",
-                        Tag = null
-                    });
+                    markers.Add(new DeferredMarker(marker, markerText, ts, refTs, line));
                     continue;
                 }
 
                 // 普通行（v3.5 待办解析：必须放在 ParseMarkerLine 判定之后，否则待办正文以【编辑】/【AI 释义】开头会被误判成标记行）
+                NoteEntry entry;
                 if (rawContent.StartsWith("【待办】", StringComparison.Ordinal))
                 {
-                    var entry = new NoteEntry
+                    entry = new NoteEntry
                     {
                         Timestamp = ts,
                         Type = NoteType.Todo,
@@ -671,26 +751,60 @@ public class NoteService
                         body = body.Remove(stMatch.Index, stMatch.Length).Trim();
                     }
                     entry.Content = body;
-                    entries.Add(entry);
-                    continue;
                 }
-
-                // 普通行
-                entries.Add(new NoteEntry
+                else
                 {
-                    Timestamp = ts,
-                    Content = rawContent,
-                    SourceWindow = source,
-                    Tag = tag
-                });
+                    entry = new NoteEntry
+                    {
+                        Timestamp = ts,
+                        Content = rawContent,
+                        SourceWindow = source,
+                        Tag = tag
+                    };
+                }
+                entry.RawLine = line;
+                entries.Add(entry);
             }
         }
-        catch (Exception ex)
+
+        // 第二遍：标记行跨文件挂靠（按标记行自身时间戳升序 → 最新编辑内容最后套用，与物理顺序解耦）
+        markers.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        foreach (var m in markers)
         {
-            Debug.WriteLine($"[FocusCapture] 读取笔记失败 ({filePath}): {ex.Message}");
+            NoteEntry? target = null;
+            // 有 ref → 全库精确关联；无 ref → 全库时间相近（±60s）的最近原笔记（口径同旧版，只是不再受文件边界限制）
+            if (m.RefTs.HasValue)
+                target = entries.LastOrDefault(e => Math.Abs((e.Timestamp - m.RefTs.Value).TotalMinutes) < 1);
+            if (target == null)
+                target = entries.LastOrDefault(e => Math.Abs((e.Timestamp - m.Timestamp).TotalMinutes) < 1);
+
+            if (target != null)
+            {
+                if (m.Marker == "AI") target.AiFills.Add(m.Text);
+                else target.EditedContent = m.Text;
+                continue; // 关联成功，不生成独立条目
+            }
+
+            // 找不到相近原笔记 → 独立成条（内容去掉标记前缀，Tag 置空；**必须带 RawLine**，
+            // 否则删除/改行永远定位不到物理行 —— 2026-09-20 "同步来的笔记删不掉"的根因）
+            entries.Add(new NoteEntry
+            {
+                Timestamp = m.Timestamp,
+                Content = m.Text,
+                SourceWindow = m.Marker == "AI" ? "AI 回填" : "手动编辑",
+                Tag = null,
+                RawLine = m.RawLine
+            });
         }
-        return entries;
+
+        var q = entries.Where(e => !_deletedService.IsDeleted(e));
+        if (dateFilter.HasValue)
+            q = q.Where(e => TodoDisplayTime(e).Date == dateFilter.Value.Date);
+        return q.OrderByDescending(e => e.Timestamp).ToList();
     }
+
+    /// <summary>暂存的标记行（第一遍收集、第二遍跨文件挂靠）。</summary>
+    private sealed record DeferredMarker(string Marker, string Text, DateTime Timestamp, DateTime? RefTs, string RawLine);
 
     /// <summary>识别标记行：返回 "AI"/"Edit" 与内容、可选 (ref 时间戳)；普通行返回 null。ref 可写在内容尾部或来源区。</summary>
     private static string? ParseMarkerLine(string content, string source, out string text, out DateTime? refTs)
@@ -1009,29 +1123,10 @@ public class NoteService
         return set;
     }
 
-    /// <summary>加载所有笔记（合并 AI 释义/编辑标记行），用于区间筛选和全局查找的基础集。</summary>
+    /// <summary>加载所有笔记（v5 2026-09-20：统一走 <see cref="LoadEntriesCore"/> 两遍扫描 + 跨文件 ref 挂靠；
+    /// 合并 AI 释义/编辑标记行），用于区间筛选和全局查找的基础集。</summary>
     public List<NoteEntry> LoadAllEntries()
-    {
-        var result = new List<NoteEntry>();
-        if (!Directory.Exists(_settings.NotesPath)) return result;
-
-        foreach (var file in Directory.GetFiles(_settings.NotesPath, "*.md"))
-        {
-            var fileName = Path.GetFileNameWithoutExtension(file);
-            var isDayFile = fileName.StartsWith("灵感_", StringComparison.Ordinal);
-            var tag = isDayFile ? null : fileName;
-            // 旧格式 [HH:mm] 行的归属日期（v4 2026-09-12 与 LoadNotes 统一）：灵感文件用文件名日期，标签文件用今天
-            var dateContext = isDayFile && DateTime.TryParse(fileName["灵感_".Length..], out var fileDate)
-                ? fileDate
-                : DateTime.Today;
-            result.AddRange(ParseNotes(file, tag, dateContext));
-        }
-
-        return result
-            .Where(e => !_deletedService.IsDeleted(e))
-            .OrderByDescending(e => e.Timestamp)
-            .ToList();
-    }
+        => LoadEntriesCore(null);
 
     /// <summary>区间加载：start..end（含两端）的所有笔记，按时间戳倒序。</summary>
     public List<NoteEntry> LoadNotesRange(DateTime start, DateTime end)

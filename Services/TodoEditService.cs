@@ -10,8 +10,10 @@ namespace FocusCapture.Services;
 /// <summary>
 /// 编辑待办公共服务（v3.5 → v2 时间识别）：两条保存路径（行内 SaveEditNote / 全屏 NoteEditWindow.Save）共用，
 /// 防逻辑漂移。
-/// - SaveEdited：待办内容变化 → UpdateTodo 原地改行（红线 2 例外，禁止追加【编辑】行）；
-///               普通笔记走原 AppendEdit（现状不变）。
+/// - SaveEdited：待办/笔记都**原地替换**（待办 UpdateTodo、笔记 UpdateNote，红线 2 例外）。
+///   2026-09-20 用户拍板：笔记编辑从 AppendEdit 追加【编辑】行改为原地替换 —— 追加语义跨端同步
+///   会双条并存/孤儿卡删不掉（标记行与原行被拆文件/乱顺序），替换语义同步模型是"删旧+加新"，
+///   天然只留一条。旧内容进回收站可恢复，旧【编辑】痕迹随替换清理（见 UpdateNote）。
 /// - ResolveDueAsync：时间识别统一入口。本地规则（TimeParser）优先，按结果分派：
 ///   ① 命中且未来 → 直接返回
 ///   ② 纯日期（无时刻，如"30号"）→ 弹"设置提醒"窗问几点（预填识别日期 09:00）
@@ -21,14 +23,14 @@ namespace FocusCapture.Services;
 /// </summary>
 public static class TodoEditService
 {
-    /// <summary>编辑保存：待办原地改行 / 笔记 AppendEdit。返回是否保存成功。</summary>
+    /// <summary>编辑保存：待办/笔记原地替换改行。返回是否保存成功。</summary>
     public static bool SaveEdited(NoteService notes, NoteEntry entry, string newContent)
     {
         var content = newContent.Trim();
         if (string.IsNullOrEmpty(content)) return false;
         if (entry.Type == NoteType.Todo)
             return notes.UpdateTodo(entry, newContent: content);
-        return notes.AppendEdit(entry, content);
+        return notes.UpdateNote(entry, content);
     }
 
     /// <summary>
