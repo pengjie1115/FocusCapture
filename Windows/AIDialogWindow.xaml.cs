@@ -227,6 +227,7 @@ public partial class AIDialogWindow : Window
         public NoteEntry? TargetNote { get; }        // 关联的目标笔记（翻译/搜索来源）
         public bool AgentRulesAdded;                // Agent 系统规则每会话只注入一次
         public string? DraftText;                   // 未发送草稿（切会话各自保留；关窗时落盘、重开回填）
+        public bool Deleted;                        // 已删标记：其流跑完的 finally 不得再 Save，否则会复活已删文件
 
         public ConversationRuntime(ChatSessionService session, ExplainMode mode, NoteEntry? targetNote)
         {
@@ -337,7 +338,8 @@ public partial class AIDialogWindow : Window
     /// <summary>把指定 runtime 切为活跃：消息列表指向其 Bubbles、按其状态刷新按钮与标题。</summary>
     private void Activate(ConversationRuntime runtime)
     {
-        SaveActiveDraft();   // 切走前把当前输入框草稿存到旧 runtime（每会话各自保留）
+        SaveActiveDraft();        // 切走前把当前输入框草稿存到旧 runtime（每会话各自保留）
+        PersistActiveSession();   // 切走前把旧会话落盘，使它进历史列表、用户可点它切回看答案
         _active = runtime;
         MessagesList.ItemsSource = runtime.Bubbles;
         TitleText.Text = GetModeTitle(runtime.Mode);
@@ -353,6 +355,15 @@ public partial class AIDialogWindow : Window
         if (_active == null) return;
         var (text, _) = ExtractInput();   // 草稿只留纯文本；附件不跨会话保留（方案已确认）
         _active.DraftText = string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    /// <summary>切走/关窗前把活跃会话落盘（有对话才写；空会话不落盘由 ChatSessionService 守卫）。
+    /// 目的：让仍在后台回答的会话进入历史列表，用户可点它切回、复用内存 runtime 看最新内容。</summary>
+    private void PersistActiveSession()
+    {
+        if (_active == null || _active.Deleted) return;
+        if (!HasConversation(_active)) return;
+        try { _active.Session.Save(); } catch { /* best effort，落盘失败不阻断切换 */ }
     }
 
     /// <summary>把目标会话的草稿回填到输入框；无草稿则复位为空。</summary>
@@ -1590,7 +1601,7 @@ public partial class AIDialogWindow : Window
             cts.Dispose();
             // 仅当该 runtime 仍是前台活跃会话时才复位发送按钮；后台完成的 runtime 不打扰前台按钮状态
             if (_active == runtime) SetBusyUi(false);
-            runtime.Session.Save();   // 多会话并行：每个 runtime 回答完各自落盘（阶段1 空会话守卫仍生效）
+            if (!runtime.Deleted) runtime.Session.Save();   // 已删会话不复活；多会话并行各自落盘（阶段1 空会话守卫仍生效）
             // 后台 runtime 跑完时新会话已进历史列表，刷新展开的抽屉让用户看见
             if (_active != runtime) _ = Dispatcher.BeginInvoke(new Action(RefreshDrawerIfOpen));
         }
@@ -1964,6 +1975,7 @@ public partial class AIDialogWindow : Window
             // 内存里有 runtime（含后台回答中）→ 先 cancel 它再移除，避免流还在往已删会话写
             if (_runtimes.TryGetValue(item.Id, out var rt))
             {
+                rt.Deleted = true;   // 标记已删：其流跑完的 finally 不得再 Save，否则会把移入回收站的文件复活
                 try { rt.Cts?.Cancel(); } catch (ObjectDisposedException) { /* 已结束 */ }
                 _runtimes.Remove(item.Id);
                 if (_active == rt)
