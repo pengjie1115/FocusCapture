@@ -460,8 +460,10 @@ function Invoke-Start {
     Write-Head 'start 开分支'
 
     if ([string]::IsNullOrWhiteSpace($Name)) {
-        Write-Fail 'start 参数' 'dev.ps1 start <分支名>' '没给分支名' '例：dev.ps1 start 悬浮球角标修复' $ExScriptFail
-        return $ExScriptFail
+        # 参数没给是【调用方】的问题，不是脚本坏了 → 用 1（任务失败），
+        # 避免误触发「脚本异常报告」流程（那套流程是给真的脚本故障用的）。
+        Write-Fail 'start 参数' 'dev.ps1 start <分支名>' '没给分支名' '例：dev.ps1 start 悬浮球角标修复' $ExTaskFail
+        return $ExTaskFail
     }
 
     $prefixes = @('feature/', 'fix/', 'docs/', 'release/', 'experiment/')
@@ -567,15 +569,16 @@ function Invoke-Commit {
     Write-Head 'commit 提交'
 
     if (-not (Test-Path -LiteralPath $MsgFile)) {
+        # 缺提交信息是【调用方没准备好】→ 1，不是脚本故障
         Write-Fail '读提交信息' "存在 $MsgFile" '没找到提交信息文件' `
-            "用编辑器/Write 工具把提交信息（UTF-8）写到 $MsgFile，再跑本命令。中文不要走命令行参数——本机实测会被 GBK 破坏" $ExScriptFail
-        return $ExScriptFail
+            "用编辑器 / Write 工具把提交信息（UTF-8）写到 $MsgFile，再跑本命令。中文不要走命令行参数 —— 本机实测会被 GBK 破坏" $ExTaskFail
+        return $ExTaskFail
     }
 
     $msg = Get-Content -LiteralPath $MsgFile -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($msg)) {
-        Write-Fail '读提交信息' '提交信息非空' '文件是空的' "把内容写进 $MsgFile" $ExScriptFail
-        return $ExScriptFail
+        Write-Fail '读提交信息' '提交信息非空' '文件是空的' "把内容写进 $MsgFile" $ExTaskFail
+        return $ExTaskFail
     }
 
     $cached = Get-Git @('diff', '--cached', '--stat')
