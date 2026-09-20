@@ -226,7 +226,7 @@ public partial class AIDialogWindow : Window
         public ExplainMode Mode { get; }
         public NoteEntry? TargetNote { get; }        // 关联的目标笔记（翻译/搜索来源）
         public bool AgentRulesAdded;                // Agent 系统规则每会话只注入一次
-        // 未发送草稿字段（DraftText）在阶段3「问题三草稿保留」引入，此处先不声明以免带未赋值警告
+        public string? DraftText;                   // 未发送草稿（切会话各自保留；关窗时落盘、重开回填）
 
         public ConversationRuntime(ChatSessionService session, ExplainMode mode, NoteEntry? targetNote)
         {
@@ -337,12 +337,91 @@ public partial class AIDialogWindow : Window
     /// <summary>把指定 runtime 切为活跃：消息列表指向其 Bubbles、按其状态刷新按钮与标题。</summary>
     private void Activate(ConversationRuntime runtime)
     {
+        SaveActiveDraft();   // 切走前把当前输入框草稿存到旧 runtime（每会话各自保留）
         _active = runtime;
         MessagesList.ItemsSource = runtime.Bubbles;
         TitleText.Text = GetModeTitle(runtime.Mode);
         Title = GetModeTitle(runtime.Mode);
         SetBusyUi(runtime.IsStreaming);
+        RestoreDraft(runtime);   // 回填目标 runtime 的草稿
         FocusInput();
+    }
+
+    /// <summary>把当前输入框的纯文本草稿存到活跃会话（切会话/关窗前调用）。</summary>
+    private void SaveActiveDraft()
+    {
+        if (_active == null) return;
+        var (text, _) = ExtractInput();   // 草稿只留纯文本；附件不跨会话保留（方案已确认）
+        _active.DraftText = string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    /// <summary>把目标会话的草稿回填到输入框；无草稿则复位为空。</summary>
+    private void RestoreDraft(ConversationRuntime runtime)
+    {
+        if (string.IsNullOrEmpty(runtime.DraftText))
+        {
+            ResetInput();
+            return;
+        }
+        InsertPlainText(runtime.DraftText);
+    }
+
+    /// <summary>清空输入区并插入一段纯文本草稿（多行用 LineBreak 还原，与 ExtractInput 的换行语义对齐）。</summary>
+    private void InsertPlainText(string text)
+    {
+        ResetInput();
+        var doc = InputBox.Document;
+        if (doc.Blocks.FirstBlock is not Paragraph p) return;
+        var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (i > 0) p.Inlines.Add(new LineBreak());
+            if (lines[i].Length > 0) p.Inlines.Add(new Run(lines[i]));
+        }
+        InputBox.CaretPosition = doc.ContentEnd;
+        UpdatePlaceholder();
+    }
+
+    /// <summary>草稿文件路径：放数据根下（不进 chat_history，因此不被会话同步引擎扫描/上传；红线12 数据只留本机）。</summary>
+    private static string DraftFilePath => FocusCapturePaths.Combine("ai_chat_draft.txt");
+
+    /// <summary>把草稿落到本机文件；草稿为空则清掉文件，避免残留误回填。</summary>
+    private static void SaveDraftToDisk(string? text)
+    {
+        try
+        {
+            var path = DraftFilePath;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                if (File.Exists(path)) File.Delete(path);
+                return;
+            }
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(path, text, Encoding.UTF8);
+        }
+        catch (Exception ex) { AppLog.Warn("AI", "草稿落盘失败：" + ex.Message); }
+    }
+
+    /// <summary>重开窗口时把上次关窗落盘的草稿回填到当前会话输入框，随后清盘（只回填一次）。</summary>
+    internal void RestoreDraftFromDisk()
+    {
+        try
+        {
+            var path = DraftFilePath;
+            if (!File.Exists(path)) return;
+            var text = File.ReadAllText(path, Encoding.UTF8);
+            File.Delete(path);   // 无论是否回填都清盘，避免下次重复回填
+            if (string.IsNullOrWhiteSpace(text) || _active == null) return;
+
+            var (cur, _) = ExtractInput();
+            if (!string.IsNullOrEmpty(cur)) return;   // 输入框已有内容 → 不覆盖用户正在打的字
+
+            _active.DraftText = text;
+            InsertPlainText(text);
+            FocusInput();
+        }
+        catch (Exception ex) { AppLog.Warn("AI", "草稿回填失败：" + ex.Message); }
     }
 
     /// <summary>runtime 是否已有实质对话（非 system 消息）</summary>
@@ -783,6 +862,7 @@ public partial class AIDialogWindow : Window
         }
 
         ResetInput();
+        if (_active != null) _active.DraftText = null;   // 发送成功即清该会话草稿
         SendAsync(text, attachments);
     }
 
@@ -2238,6 +2318,8 @@ public partial class AIDialogWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _closed = true;
+        SaveActiveDraft();                      // 关窗前把当前输入框草稿存到活跃会话
+        SaveDraftToDisk(_active?.DraftText);    // 只落盘活跃会话那份草稿（方案确认的边界）
         // 关窗即停止所有后台回答（多会话并行：每个 runtime 各自 cancel + 落盘）
         foreach (var r in _runtimes.Values)
         {
@@ -2382,6 +2464,10 @@ public static class AIDialogHelper
         // 2026-09-14 修复：输入框必须显式聚焦，且要等窗口显示并完成布局之后再聚焦。
         // 此前只调了窗口级 Activate()/Focus()，用户看到的现象是"打开后打字没反应，得先用鼠标点一下输入框"。
         _dialog.Dispatcher.BeginInvoke(new Action(_dialog.FocusInput), DispatcherPriority.Input);
+
+        // 草稿回填（问题三，2026-09-21）：上次关窗落盘的未发送文本，重开时回填到当前会话输入框。
+        // 同为 Input 优先级、排在 FocusInput 之后 —— 回填完光标落在文末仍是聚焦态。
+        _dialog.Dispatcher.BeginInvoke(new Action(_dialog.RestoreDraftFromDisk), DispatcherPriority.Input);
 
         // 拖放保存（2026-09-16）：附件在**窗口显示之后**才落。
         // 走 Normal 优先级，早于上面 Input 优先级的聚焦 —— 先落附件、再把光标还给输入框。
