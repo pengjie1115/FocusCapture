@@ -4,6 +4,7 @@ using FocusCapture.Services.Baidu;
 using FocusCapture.Services.Destinations;
 using FocusCapture.Services.Destinations.GetNote;
 using FocusCapture.Services.Files;
+using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 using Microsoft.Win32;
 using System.Threading;
@@ -327,6 +328,111 @@ public partial class SettingsWindow : Window
         _suppressEvents = false;
         RefreshHotkeyWarning();           // v3.8：回显上次注册失败的键位（多为被其他程序占用）
         _ = LoadGetNoteTopicsQuietly();   // 凭证已配置时后台拉取知识库列表（不阻塞设置打开）
+        RefreshSkillSection();            // Skill 分区（2026-09-20）：目录 / 运行时状态 / 已授权列表
+    }
+
+    // ══════════════════ Skill 扩展（2026-09-20） ══════════════════
+    //
+    // 这里只负责「让 Skill 可见、可控」，刻意**不做**装 / 删 / 停用 —— 那会让用户多学一套概念。
+    //   装 = 把文件夹拷进目录；授权 = 首次执行脚本时弹一次窗；撤销 = 下面这个列表。
+    // 目录扫描与运行时探测复用 Services/Skills 里的同一套组件，与 AI 问答走的是同一份逻辑，
+    // 不另起一份"设置页专用"的实现（两份实现必然漂移）。
+
+    private void RefreshSkillSection()
+    {
+        try
+        {
+            var catalog = new SkillCatalog(FocusCapturePaths.Combine("Skills"),
+                                           msg => AppLog.Warn("Skill", msg));
+            var runtime = new SkillRuntime(AppContext.BaseDirectory);
+            var skills = catalog.GetSkills(forceRescan: true);
+            var executable = skills.Count(s => !s.HasScripts || runtime.IsPresent);
+
+            SkillSummaryText.Text = skills.Count == 0
+                ? $"还没装 Skill。（目录：{catalog.Root}）"
+                : $"已装 {skills.Count} 个，其中 {executable} 个可执行。（目录：{catalog.Root}）";
+
+            SkillRuntimeText.Text = File.Exists(runtime.PythonPath)
+                ? "内置 Python 运行时：已就位。"
+                : "内置 Python 运行时：未安装 —— 含脚本的 Skill 暂时跑不了，双击 tools\\fetch-python-runtime.bat 获取（约 11MB）。";
+
+            RebuildTrustedSkillList();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Skill", $"设置页刷新 Skill 分区失败：{ex.Message}");
+            SkillSummaryText.Text = "读取 Skill 信息失败：" + ex.Message;
+        }
+    }
+
+    private void RebuildTrustedSkillList()
+    {
+        SkillTrustedPanel.Children.Clear();
+
+        var names = _settings.SkillTrusted.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (names.Count == 0)
+        {
+            SkillTrustedPanel.Children.Add(new TextBlock
+            {
+                Text = "（还没有授权任何 Skill）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize = 11,
+                Margin = new Thickness(0, 2, 0, 0),
+            });
+            return;
+        }
+
+        foreach (var name in names)
+        {
+            var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
+
+            var revoke = new Button { Content = "撤销", Width = 56, Height = 24, Tag = name };
+            revoke.Click += BtnSkillRevoke_Click;
+            DockPanel.SetDock(revoke, Dock.Right);
+            row.Children.Add(revoke);
+
+            row.Children.Add(new TextBlock
+            {
+                Text = name,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            SkillTrustedPanel.Children.Add(row);
+        }
+    }
+
+    private void BtnSkillOpenFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dir = FocusCapturePaths.Combine("Skills");
+            Directory.CreateDirectory(dir);   // 没有就先建好，用户直接往里拷
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{dir}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            // 打开资源管理器失败不该弹模态框（UI 事件里的外部操作一律自己兜住）
+            AppLog.Warn("Skill", $"打开 Skill 目录失败：{ex.Message}");
+        }
+    }
+
+    private void BtnSkillRescan_Click(object sender, RoutedEventArgs e)
+    {
+        // RefreshSkillSection 内部就是 forceRescan: true —— 用户刚拷完 Skill，用这个按钮立刻认出来
+        RefreshSkillSection();
+    }
+
+    private void BtnSkillRevoke_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string name }) return;
+
+        // 撤销 = 从配置里删掉。只是一个名字，删掉不涉及任何文件；下次执行会重新弹窗询问。
+        _settings.SkillTrusted.RemoveAll(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase));
+        _settings.Save();
+        AppLog.Info("Skill", $"已撤销执行授权：{name}");
+        RebuildTrustedSkillList();
     }
 
     /// <summary>v3.8：注册失败提示——键位被其他程序占用时 RegisterHotKey 会失败，

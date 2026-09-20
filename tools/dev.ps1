@@ -24,7 +24,13 @@ param(
     [Parameter(Position = 1)]
     [string]$Arg1,
 
-    [switch]$Apply
+    [switch]$Apply,
+
+    # 慢层开关。注意：AGENTS.md / REGRESSION.md / 本脚本 help 一直写的是 `test -Slow`，
+    # 但顶层 param 里原先只有 -Apply，导致 `dev.ps1 test -Slow` **参数绑定直接失败且零输出**
+    # （2026-09-20 实测：排查了半天，脚本看起来"什么都没干"）。这里补上 -Slow，
+    # 并保留 -Apply 作为兼容别名 —— 文档说什么能跑，就该真能跑。
+    [switch]$Slow
 )
 
 # 注意：这里【不要】设 [Console]::OutputEncoding = UTF8。
@@ -201,8 +207,13 @@ function Test-DocRefs {
         # 不能贪心匹配任意 `xxx.md`：MIGRATION.md 里举例用到的数据文件名
         # （如 `灵感_2026-09-15.md`）会被误判成失效引用，导致 ready 假红 —— 狼来了会让门禁失效。
         $m = [regex]::Matches($text, '`([A-Za-z0-9][A-Za-z0-9._/\-]*\.md)`')
+        # 外部生态的格式文件名不算项目引用 —— 它们必然出现在文档里，但不是本仓库的文件。
+        # 2026-09-20 实测：B-17 段写 SKILL.md（Skill 机制约定的入口文件名）触发了假红。
+        # 判据保持不变（宁可漏报也不扩大匹配面），只加已知的外部名白名单。
+        $foreignNames = @('SKILL.md')
         foreach ($one in $m) {
             $target = $one.Groups[1].Value
+            if ($foreignNames -contains $target) { continue }
             $total = $total + 1
             $tp = Join-Path $RepoRoot ($target -replace '/', '\')
             if (-not (Test-Path -LiteralPath $tp)) {
@@ -696,7 +707,7 @@ $final = $ExOk
 try {
     switch ($Command.ToLower()) {
         'build'   { $final = Invoke-Build }
-        'test'    { if ($Apply) { $final = Invoke-Test -Slow } else { $final = Invoke-Test } }
+        'test'    { if ($Slow -or $Apply) { $final = Invoke-Test -Slow } else { $final = Invoke-Test } }
         'ready'   { $final = Invoke-Ready }
         'push'    { $final = Invoke-Push }
         'recover' { $final = Invoke-Recover }

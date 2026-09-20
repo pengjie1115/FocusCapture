@@ -15,6 +15,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using FocusCapture.Services;
+using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
@@ -215,6 +216,127 @@ Check(normalResult && normalSleeps == 0, "首次即成功时不得有任何退�
 Check(SafeClipboard.DefaultAttempts == 3 && SafeClipboard.DefaultBaseDelayMs == 25,
       "默认参数必须是 3 次尝试 / 25ms 退避基数（改动会同时改变所有调用点行为）",
       $"实际 {SafeClipboard.DefaultAttempts} 次 / {SafeClipboard.DefaultBaseDelayMs}ms");
+
+// ── [6] Skill 目录扫描与解析 SkillCatalog ──
+// 坏了的表现：装的 Skill 在对话里"看不见"（清单空）/ 中文说明变乱码 / 一个畸形文件把整列表搞没。
+// 本组是纯逻辑（解析 + 扫描 + 清单拼装），所以能留在秒级的快层；
+// 执行器 SkillScriptRunner 依赖 AppLog，只能进慢层（见 tests/sync）。
+Console.WriteLine("[6] Skill 目录扫描与解析 SkillCatalog");
+
+// 6.1 frontmatter 解析（直接调解析方法，不经文件系统）
+var fmOk = SkillCatalog.ParseFrontmatter(
+    "---\nname: demo-skill\ndescription: 一个示例说明\n---\n\n# 正文标题\n正文内容\n");
+Check(fmOk.Name == "demo-skill" && fmOk.Description == "一个示例说明" && fmOk.Body.Contains("正文内容"),
+      "标准 frontmatter 必须解析出 name / description / 正文",
+      $"实际 name=「{Cut(fmOk.Name)}」 desc=「{Cut(fmOk.Description)}」");
+
+var fmNone = SkillCatalog.ParseFrontmatter("# 只有标题\n正文\n");
+Check(fmNone.Name == null && fmNone.Description == null && fmNone.Body.Contains("只有标题"),
+      "没有 frontmatter 时不得抛异常，且正文要完整保留",
+      $"实际 name=「{Cut(fmNone.Name)}」");
+
+var fmOpen = SkillCatalog.ParseFrontmatter("---\nname: broken\n从未闭合\n");
+Check(fmOpen.Name == null && fmOpen.Body.Contains("从未闭合"),
+      "frontmatter 未闭合时按「没有 frontmatter」处理，不得把正文吞掉");
+
+var fmQuote = SkillCatalog.ParseFrontmatter(
+    "---\nname: \"中文名称\"\ndescription: '带单引号的说明：记一下，别搞乱'\n---\n正文");
+Check(fmQuote.Name == "中文名称" && fmQuote.Description == "带单引号的说明：记一下，别搞乱",
+      "带引号的值必须脱掉引号，中文与标点不得被破坏",
+      $"实际 name=「{Cut(fmQuote.Name)}」 desc=「{Cut(fmQuote.Description)}」");
+
+var fmMulti = SkillCatalog.ParseFrontmatter("---\nname: multi\ndescription: >\n  第一行\n  第二行\n---\n正文");
+Check(fmMulti.Description == "第一行 第二行",
+      "YAML 多行标量（>）必须拼成一行，不能把 > 本身当成描述",
+      $"实际「{Cut(fmMulti.Description)}」");
+
+// 6.2 真实目录扫描
+var skillTmp = Path.Combine(Path.GetTempPath(), "fc-skillcheck-" + Guid.NewGuid().ToString("N")[..8]);
+var skillTmpMissing = Path.Combine(Path.GetTempPath(), "fc-skillcheck-missing-" + Guid.NewGuid().ToString("N")[..8]);
+try
+{
+    Directory.CreateDirectory(skillTmp);
+
+    void WriteSkill(string dirName, string content)
+    {
+        var d = Path.Combine(skillTmp, dirName);
+        Directory.CreateDirectory(d);
+        File.WriteAllText(Path.Combine(d, "SKILL.md"), content, new UTF8Encoding(false));
+    }
+
+    WriteSkill("normal-skill", "---\nname: 正常技能\ndescription: 正常描述\n---\n正文");
+    WriteSkill("dir-name-fallback", "---\ndescription: 没有 name 字段\n---\n正文");
+    WriteSkill("no-desc", "---\nname: 无描述技能\n---\n\n# 从正文首行取描述\n其余内容");
+    WriteSkill("飞书知识库", "---\nname: 飞书知识库\ndescription: 中文目录名\n---\n正文");
+    WriteSkill("broken-skill", "这不是 frontmatter，只是一段普通文本");
+    WriteSkill("long-desc", "---\nname: 长描述\ndescription: " + new string('长', 500) + "\n---\n正文");
+    Directory.CreateDirectory(Path.Combine(skillTmp, "not-a-skill"));   // 没有 SKILL.md
+
+    var catalog = new SkillCatalog(skillTmp);
+    var skills = catalog.GetSkills();
+
+    Check(skills.Count == 6,
+          "有 SKILL.md 的目录都要扫到，没有的要跳过",
+          $"期望 6 个，实际 {skills.Count} 个：{string.Join("、", skills.Select(s => s.DirectoryName))}");
+
+    Check(!skills.Any(s => s.DirectoryName == "not-a-skill"),
+          "没有 SKILL.md 的目录不得被当成 Skill（用户会在 Skills\\ 下放自己的杂物）");
+
+    var sNormal = skills.FirstOrDefault(s => s.DirectoryName == "normal-skill");
+    Check(sNormal?.Name == "正常技能", "frontmatter 里的 name 优先于目录名", $"实际「{Cut(sNormal?.Name)}」");
+
+    var sFallback = skills.FirstOrDefault(s => s.DirectoryName == "dir-name-fallback");
+    Check(sFallback?.Name == "dir-name-fallback",
+          "frontmatter 缺 name 时用目录名兜底（否则这个 Skill 会从清单里静默消失）",
+          $"实际「{Cut(sFallback?.Name)}」");
+
+    var sNoDesc = skills.FirstOrDefault(s => s.DirectoryName == "no-desc");
+    Check(sNoDesc != null && sNoDesc.Description.Contains("从正文首行取描述"),
+          "frontmatter 缺 description 时取正文首个非空行",
+          $"实际「{Cut(sNoDesc?.Description)}」");
+
+    Check(skills.Any(s => s.Name == "飞书知识库"),
+          "中文 Skill 目录名必须能正常扫描（用户很可能用中文命名）");
+
+    var sBroken = skills.FirstOrDefault(s => s.DirectoryName == "broken-skill");
+    Check(sBroken != null && sBroken.Name == "broken-skill",
+          "畸形 SKILL.md 不得让整次扫描失败 —— 它自己降级为「用目录名」，其他 Skill 照常出清单");
+
+    var sLong = skills.FirstOrDefault(s => s.DirectoryName == "long-desc");
+    Check(sLong != null && sLong.Description.Length < 300 && sLong.Description.Contains("省略"),
+          "超长 description 必须截断（否则装几个长说明的 Skill 就会把每轮上下文撑爆）",
+          $"实际长度 {sLong?.Description.Length}");
+
+    // 6.3 缓存
+    var c1 = catalog.GetSkills();
+    var c2 = catalog.GetSkills();
+    Check(ReferenceEquals(c1, c2), "目录没变时必须命中缓存（否则每轮对话都要重扫一遍目录）");
+
+    // 6.4 Skills 目录不存在（首次启动就是这个状态）
+    var missingCatalog = new SkillCatalog(skillTmpMissing);
+    Check(missingCatalog.GetSkills().Count == 0,
+          "Skills 目录不存在时必须返回空清单且不抛异常");
+
+    // 6.5 清单拼装
+    Check(SkillManifest.Build(new List<SkillInfo>(), true).Contains("没有安装任何 Skill"),
+          "一个 Skill 都没有时，清单必须明说「没有」，避免模型自行脑补能力");
+
+    var fakeMany = Enumerable.Range(0, 300)
+        .Select(i => new SkillInfo($"skill-{i}", $"skill-{i}", skillTmp,
+                                   new string('描', 180), "body", new List<string> { "a.py" }, ""))
+        .ToList();
+    var bigManifest = SkillManifest.Build(fakeMany, true);
+    Check(bigManifest.Length <= SkillManifest.MaxChars + 300,
+          "Skill 再多，清单也必须封顶（否则每轮请求的上下文会爆炸）",
+          $"实际 {bigManifest.Length} 字符，上限 {SkillManifest.MaxChars}");
+
+    Check(SkillManifest.Build(fakeMany.Take(1).ToList(), false).Contains("缺少运行时"),
+          "运行时缺失时清单必须如实标注，不能假装可执行");
+}
+finally
+{
+    try { Directory.Delete(skillTmp, true); } catch { }
+}
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");

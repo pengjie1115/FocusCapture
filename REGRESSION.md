@@ -63,8 +63,8 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **31** | 纯逻辑，秒级 | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **278** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Windows/AIDialogWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*` 时**；交付前 |
+| **快层** | `tests/` | **49** | 纯逻辑，秒级 | **每次代码改动后** |
+| **慢层** | `tests/sync/` | **298** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*` 时**；交付前 |
 
 当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**（慢层）。
 
@@ -763,6 +763,47 @@
 上表带 ⚠ 的条目需要在真实对话里跑一遍（涉及模型选工具、真实文件格式、真实拖放）。
 机器能证的部分已全部进慢层检查组；**"模型会不会挑对工具、会不会谎报"只能靠真人对话验收**，
 交付时请按上表逐条走一遍。
+
+### B-17 Skill 运行时（Services/Skills/ + AIDialogWindow·ExtraSystemContext + SettingsWindow，2026-09-20 新增）
+
+> 设计依据与全部决策记录：`docs/skill-runtime-plan.md`（含开工当天的 18 条实测补记）。
+> 涉及文件：`Services/Skills/`（SkillCatalog / SkillScriptRunner / SkillRuntime / SkillManifest / SkillTools，五个新文件）、
+> `Windows/AIDialogWindow.xaml.cs`（装配两行 + ExtraSystemContext 注入清单）、`Models/AppSettings.cs`（SkillTrusted）、
+> `Windows/SettingsWindow.xaml(.cs)`（AI 模型板块里的「Skill 扩展」分区）、`FocusCapture.csproj`（runtime 复制规则）、
+> `Diagnostics/UiSnapshot.cs`（新增截图项 03b）、`tools/fetch-python-runtime.ps1` + `.bat`（新增）、`.gitignore`（`/runtime/`）。
+
+**它是什么**：让 AI 问答能加载并执行 **WorkBuddy 格式**的 Skill（`SKILL.md` + `scripts/`），**不改写 Skill 格式**。
+装 Skill = 把文件夹整个拷进 `%AppData%\FocusCapture\Skills\`；某个 Skill 首次要跑脚本时弹一次授权确认；
+撤销入口在「设置 → AI 模型 → Skill 扩展」。
+
+> **三条红线（改这块之前必读）**：
+> ① **九条硬规则写死在 `SkillScriptRunner` 里**，不得下放给模型、也不做成配置项。最要紧的两条：
+>    **Skill 名只在已扫描目录表里查、取表中预存的绝对路径**（绝不拼串）；**脚本解析后必须仍在
+>    `<skill>\scripts\` 内**（`..`、路径分隔符、绝对路径一律拒）。安全边界只能靠机器守。
+> ② **`runtime\python` 里必须没有 `python313._pth`** —— 留着它 Python 进 isolated 模式：同目录模块 import
+>    直接失败、`PYTHONPATH` 被忽略、`Lib\` 不加载。症状是 local-rag 那类「公共逻辑拆在同目录模块」的 Skill
+>    **静默失效**。慢层有专门检查点守它（「同目录模块 import 必须成功」）。
+> ③ **缺运行时或执行失败时，返回给模型的文本不得含「已完成 / 已执行 / 成功 / EXIT=0」字样** ——
+>    这是「AI 谎报已上传成功」那条红线在 Skill 场景下的同一道防线。
+
+**为什么它对主循环零侵入**：清单走 `AgentRunService.ExtraSystemContext`（每轮求值、不落会话历史），
+`AgentRunService` 一行未改；核心全在 `Services/Skills/` 独立目录 —— **出问题可整目录删掉回退**，不牵存量功能。
+
+**前置**：`runtime\python` 由 `tools\fetch-python-runtime.bat` 拉取（约 11MB，国内镜像）。缺了它，
+含脚本的 Skill 会明确报错（**不假装成功**），纯提示词型 Skill 不受影响 —— 这是刻意的「降级而非崩溃」。
+
+**机器可验的部分**：快层组 `[6] Skill 目录扫描与解析`（18 条：frontmatter 各种畸形 / 中文目录名 / 超长截断 /
+清单封顶 / 缓存命中 / 目录不存在）+ 慢层组 `Skill 执行`（20 条：路径越界四条 / 扩展名白名单 / 准入确认闭环 /
+真实执行 / 同目录 import / 中文参数 / CWD / 环境变量清理 / 超时杀进程 / **缺运行时的防假成功**）。
+
+| 验收动作 | 期望现象 |
+|---|---|
+| 把 `feishu-kb-manager` 整个目录拷进 Skill 目录（**一个字节不改**） | 设置页显示「已装 1 个，其中 N 个可执行」 |
+| 在 AI 问答说「记一下 Promise 是 JS 异步对象」 | 首次弹授权确认 → 允许 → **飞书多维表格里真的出现这条记录**（需先处理好飞书授权，见设计稿 §十一） |
+| 断开网络再说一句「记一下 XXX」 | AI **明确说失败**，绝不出现「已记录」 |
+| 把某个脚本改坏（写成语法错）再执行 | 返回原始 stderr 与非零退出码，AI 如实汇报 |
+| 在设置里点某 Skill 的「撤销」再执行它 | 重新弹授权确认 |
+| 把 `runtime\python` 整个删掉，再执行含脚本的 Skill | 明确报「未检测到可用的 Python 运行时」并给出获取方式；**不得出现任何「成功」字样** |
 
 ---
 

@@ -9,6 +9,7 @@ using FocusCapture.Services.AI;
 using FocusCapture.Services.Agent;
 using FocusCapture.Services.Destinations;
 using FocusCapture.Services.Files;
+using FocusCapture.Services.Skills;
 using FocusCapture.Windows.Controls;
 
 namespace FocusCapture.Windows;
@@ -213,6 +214,8 @@ public partial class AIDialogWindow : Window
     private bool _drawerOpen;               // 历史抽屉展开状态
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
     private bool _agentRulesAdded;        // Agent 系统规则每会话只注入一次
+    private SkillCatalog? _skillCatalog;  // Skill 目录扫描（2026-09-20；带目录时间戳缓存，装完不必重启）
+    private SkillRuntime? _skillRuntime;  // 内置 Python 运行时（只读状态，探测带缓存）
 
     /// <summary>附件悬停预览 + 双击大图（输入区卡片与气泡卡片共用一份实例）</summary>
     private readonly AttachmentPreviewHost _preview = new();
@@ -1522,6 +1525,13 @@ public partial class AIDialogWindow : Window
 
                 var handleText = FileHandleStore.DescribeForModel();
                 if (handleText.Length > 0) sb.Append('\n').Append(handleText);
+
+                // Skill 清单（2026-09-20）：与「当前时间」「文件牌号」同类 —— 随手会变（装/删 Skill），
+                // 但没必要写进会话历史。走这条既有通道，主循环一行都不用改。
+                var skills = _skillCatalog?.GetSkills();
+                if (skills is { Count: > 0 })
+                    sb.Append('\n').Append(SkillManifest.Build(skills, _skillRuntime?.IsPresent ?? false));
+
                 return sb.ToString();
             },
         };
@@ -1976,7 +1986,68 @@ public partial class AIDialogWindow : Window
         foreach (var capability in getNote.Capabilities)
             registry.Register(new OutboundTool(getNote, capability));
 
+        // Skill 运行时（2026-09-20）：扫描 Skills\ 目录 + 挂两个工具（load_skill / run_skill_script）。
+        // 核心逻辑全在 Services/Skills/ 里，这里只是装配 —— 出问题可整目录删掉回退，不牵存量功能。
+        _skillCatalog = new SkillCatalog(FocusCapturePaths.Combine("Skills"), msg => AppLog.Warn("Skill", msg));
+        _skillRuntime = new SkillRuntime(AppContext.BaseDirectory);
+
+        var scriptRunner = new SkillScriptRunner(_skillCatalog, _skillRuntime)
+        {
+            TrustedSkills = new HashSet<string>(_settings.SkillTrusted, StringComparer.OrdinalIgnoreCase),
+            OnTrusted = RememberSkillTrust,
+            TrustPrompt = ConfirmSkillTrustAsync,
+        };
+        registry.Register(new LoadSkillTool(_skillCatalog));
+        registry.Register(new RunSkillScriptTool(scriptRunner));
+
         _registry = registry;
+    }
+
+    /// <summary>
+    /// Skill 准入确认（2026-09-20）：某个 Skill 第一次要跑脚本时问一次，允许后记进设置，之后不再问。
+    ///
+    /// <para>
+    /// 为什么不每次弹：会烦死人。为什么不能不弹：脚本执行的风险比"新增一条笔记"高一个量级，
+    /// 沿用写工具"默认不弹窗"的既有策略不合适。**准入式确认是这一整套安全模型的地基** ——
+    /// 脚本跑起来之后读什么、连什么，宿主管不了，所以防线只能放在"谁被允许跑"上。
+    /// </para>
+    /// 
+    /// <para>撤销入口在「设置 → Skill」；只能授权不能撤销的安全机制是残缺的。</para>
+    /// </summary>
+    private Task<bool> ConfirmSkillTrustAsync(SkillInfo skill)
+    {
+        var scripts = skill.ScriptFiles.Count > 0 ? string.Join("、", skill.ScriptFiles) : "（无）";
+        var msg =
+            $"允许 Skill「{skill.Name}」在你的电脑上执行脚本吗？\n\n" +
+            $"目录：{skill.RootPath}\n" +
+            $"脚本：{scripts}\n\n" +
+            "允许后，这个 Skill 再次执行脚本时不再询问（可在「设置 → Skill」里撤销）。\n\n" +
+            "注意：脚本运行起来之后做什么，本应用拦不住 —— 请只允许你信任来源的 Skill。";
+
+        var ok = System.Windows.MessageBox.Show(this, msg, "Skill 执行确认",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning) == MessageBoxResult.OK;
+
+        AppLog.Info("Skill", $"准入确认：{skill.Name} → {(ok ? "允许" : "用户取消")}");
+        return Task.FromResult(ok);
+    }
+
+    /// <summary>把刚授权的 Skill 名落盘（去重后 Save）</summary>
+    private void RememberSkillTrust(string skillName)
+    {
+        if (_settings.SkillTrusted.Any(s => string.Equals(s, skillName, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        _settings.SkillTrusted.Add(skillName);
+        try
+        {
+            _settings.Save();
+            AppLog.Info("Skill", $"已记住授权：{skillName}");
+        }
+        catch (Exception ex)
+        {
+            // 记不住不影响本次执行（内存里已加入），只是下次会再问一遍
+            AppLog.Warn("Skill", $"保存 Skill 授权失败：{ex.Message}");
+        }
     }
 
     /// <summary>回填-追加到原笔记（受沉浸式锁定约束）</summary>

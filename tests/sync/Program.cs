@@ -17,6 +17,7 @@ using FocusCapture.Services.AI;
 using FocusCapture.Services.Agent;
 using FocusCapture.Services.Baidu;
 using FocusCapture.Services.Files;
+using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 
 /// <summary>
@@ -75,6 +76,7 @@ internal static class Program
             Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
@@ -95,6 +97,127 @@ internal static class Program
         }
         Console.WriteLine(_failed == 0 ? "\n===== ALL TESTS PASSED =====" : $"\n===== {_failed} TEST(S) FAILED =====");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ══════════════════ Skill 脚本执行器（2026-09-20） ══════════════════
+    //
+    // 本组是慢层里唯一「真的启动外部进程」的组，也是 Skill 机制里唯一危险的部分。守三件事：
+    //   ① 路径 / 扩展名校验能不能拦住越界 —— 安全红线，只能靠机器守住，不能靠自觉；
+    //   ② 内置运行时到底跑不跑得通（含**同目录 import** —— 那条红了就说明 python313._pth 没删干净，
+    //      症状是 local-rag 这类"公共逻辑拆在同目录模块"的 Skill 会静默失效）；
+    //   ③ 运行时缺失时返回给模型的文本里**不许出现任何「已完成 / 成功 / EXIT=0」字样** ——
+    //      那是「AI 谎报已上传成功」那类事故在 Skill 场景下的同一条防线。
+    //
+    // 前置：必须先跑过 tools\fetch-python-runtime.ps1（runtime\python 存在）。
+    // 缺了本组会红 —— 这是刻意的，不跳过、不降级（红不许瞒）。
+
+    private const string DemoEchoScript = """
+import sys, json, os
+import sibling
+print(json.dumps({
+    "argv": sys.argv[1:],
+    "sibling": sibling.V,
+    "cwd_is_skill_root": os.path.basename(os.getcwd()),
+    "hermes": os.environ.get("HERMES_HOME", "<absent>"),
+    "pythonpath": os.environ.get("PYTHONPATH", "<absent>"),
+}, ensure_ascii=False))
+""";
+
+    private static async Task TestSkillRunner()
+    {
+        static string Short(string? s) => s is null ? "(null)" : (s.Length <= 120 ? s : s[..120] + "…");
+
+        // 项目根：tests\sync\bin\Debug\net8.0-windows → 上 5 级
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var runtime = new SkillRuntime(repoRoot);
+
+        var skillsRoot = Path.Combine(_sandbox, "Skills");
+        var demoDir = Path.Combine(skillsRoot, "demo-skill");
+        var scriptsDir = Path.Combine(demoDir, "scripts");
+        Directory.CreateDirectory(scriptsDir);
+
+        File.WriteAllText(Path.Combine(demoDir, "SKILL.md"),
+            "---\nname: demo-skill\ndescription: 执行器检查点用\n---\n正文", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(scriptsDir, "echo.py"), DemoEchoScript, new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(scriptsDir, "sibling.py"), "V = 'SIBLING_OK'\n", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(scriptsDir, "hang.py"), "import time\ntime.sleep(600)\n", new UTF8Encoding(false));
+        // 越界目标：放在 scripts 之外，任何情况下都不该被执行
+        File.WriteAllText(Path.Combine(demoDir, "outside.py"), "print('SHOULD_NOT_RUN')\n", new UTF8Encoding(false));
+
+        var catalog = new SkillCatalog(skillsRoot);
+        var runner = new SkillScriptRunner(catalog, runtime, timeoutMs: 3000);
+
+        // ── 1. 越界与白名单：这几条是安全红线 ──
+        var rMissing = await runner.RunAsync("no-such-skill", "echo.py", null, null, default);
+        Check(rMissing.Contains("不存在"), "不存在的 Skill 必须拒绝并说明", $"实际：{Short(rMissing)}");
+
+        var rDotDot = await runner.RunAsync("demo-skill", "../outside.py", null, null, default);
+        Check(rDotDot.Contains("错误") && !rDotDot.Contains("SHOULD_NOT_RUN"),
+              "script 带 .. 必须拒绝（否则可以执行 Skill 目录外任意脚本）", $"实际：{Short(rDotDot)}");
+
+        var rAbs = await runner.RunAsync("demo-skill", Path.Combine(demoDir, "outside.py"), null, null, default);
+        Check(rAbs.Contains("错误") && !rAbs.Contains("SHOULD_NOT_RUN"),
+              "script 传绝对路径必须拒绝", $"实际：{Short(rAbs)}");
+
+        var rSub = await runner.RunAsync("demo-skill", @"scripts\echo.py", null, null, default);
+        Check(rSub.Contains("错误"), "script 带子目录必须拒绝（只接受纯文件名）", $"实际：{Short(rSub)}");
+
+        var rBat = await runner.RunAsync("demo-skill", "boom.bat", null, null, default);
+        Check(rBat.Contains("不支持"), "非白名单扩展名（.bat）必须拒绝", $"实际：{Short(rBat)}");
+
+        var rNoFile = await runner.RunAsync("demo-skill", "never-created.py", null, null, default);
+        Check(rNoFile.Contains("不存在"), "脚本文件不存在必须明确报错", $"实际：{Short(rNoFile)}");
+
+        // ── 2. 准入确认：首次必问；拒绝则不得执行 ──
+        var prompted = 0;
+        runner.TrustPrompt = _ => { prompted++; return Task.FromResult(false); };
+        var rDenied = await runner.RunAsync("demo-skill", "echo.py", null, null, default);
+        Check(prompted == 1, "首次执行某个 Skill 的脚本必须问一次用户（准入确认是这套安全模型的地基）");
+        Check(rDenied.Contains("取消") && !rDenied.Contains("SIBLING_OK"),
+              "用户拒绝后不得执行脚本", $"实际：{Short(rDenied)}");
+
+        // ── 3. 授权后真跑，且授权被记住 ──
+        runner.TrustPrompt = _ => { prompted++; return Task.FromResult(true); };
+        var rOk = await runner.RunAsync("demo-skill", "echo.py",
+            new List<string> { "add", "{\"名称\":\"中文参数\"}" }, null, default);
+
+        Check(prompted == 2, "被拒绝过之后再次执行仍应询问（拒绝不该被记成授权）");
+        Check(rOk.Contains("EXIT=0"), "授权后脚本必须真的跑起来", $"实际：{Short(rOk)}");
+        Check(rOk.Contains("SIBLING_OK"),
+              "同目录模块 import 必须成功 —— 红了说明 python313._pth 没删干净（local-rag 那类 Skill 会静默失效）",
+              $"实际：{Short(rOk)}");
+        Check(rOk.Contains("中文参数"), "中文参数经 argv 传给脚本不得乱码", $"实际：{Short(rOk)}");
+        Check(rOk.Contains("demo-skill"),
+              "脚本的工作目录必须固定为该 Skill 根目录（相对路径才不会跑到别处）", $"实际：{Short(rOk)}");
+        Check(rOk.Contains("\"hermes\": \"<absent>\""),
+              "子进程必须清掉宿主标记变量 HERMES_HOME（否则会串到别的宿主账号上去）", $"实际：{Short(rOk)}");
+        Check(rOk.Contains("\"pythonpath\": \"<absent>\""),
+              "子进程必须清掉 PYTHONPATH（否则宿主环境的路径会污染脚本的模块查找）", $"实际：{Short(rOk)}");
+
+        var rAgain = await runner.RunAsync("demo-skill", "echo.py", null, null, default);
+        Check(prompted == 2 && rAgain.Contains("EXIT=0"),
+              "已授权的 Skill 再次执行不得重复弹窗，且要正常执行", $"询问次数 {prompted}");
+
+        // ── 4. 超时：到点必须真的杀得掉 ──
+        var sw = Stopwatch.StartNew();
+        var rTimeout = await runner.RunAsync("demo-skill", "hang.py", null, null, default);
+        sw.Stop();
+        Check(rTimeout.Contains("超时"), "脚本超时必须明确报错", $"实际：{Short(rTimeout)}");
+        Check(sw.ElapsedMilliseconds < 30_000,
+              "超时后必须真的结束（进程树被终止，不能挂着等）", $"实际耗时 {sw.ElapsedMilliseconds} ms");
+
+        // ── 5. 运行时缺失：最重要的一条 —— 不许出现任何"成功"字样 ──
+        var brokenRunner = new SkillScriptRunner(catalog,
+            new SkillRuntime(Path.Combine(_sandbox, "no-runtime-here")), timeoutMs: 3000);
+        brokenRunner.TrustedSkills.Add("demo-skill");
+        var rNoRuntime = await brokenRunner.RunAsync("demo-skill", "echo.py", null, null, default);
+
+        Check(rNoRuntime.Contains("错误") && rNoRuntime.Contains("运行时"),
+              "运行时缺失必须明确报错并说清缺什么", $"实际：{Short(rNoRuntime)}");
+        Check(!rNoRuntime.Contains("已完成") && !rNoRuntime.Contains("已执行") &&
+              !rNoRuntime.Contains("成功") && !rNoRuntime.Contains("EXIT=0"),
+              "运行时缺失时返回文本不得含「已完成/已执行/成功」字样（防假成功 —— 最重要的一条）",
+              $"实际：{Short(rNoRuntime)}");
     }
 
     // ══════════════════ 应用图标与悬浮球角标（2026-09-19） ══════════════════

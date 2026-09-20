@@ -78,6 +78,20 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // AI 模型板块（2026-09-20 新增）：Skill 分区住在这里。
+            // 为什么必须单独出一张：这块有三类"静态代码看不出来"的东西 ——
+            //   ① 已授权 Skill 列表是 code-behind 动态生成的控件（模板样式可能不继承）
+            //   ② Skill 目录是长路径，深色底上要能看清、要会换行不撑破布局
+            //   ③ 分区在板块底部，不滚到底根本看不见 —— 上一版就漏了这张图
+            Capture("03b-设置-AI 模型板块（含 Skill 分区）", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 1;      // 1 = 「AI 模型」
+                w.UpdateLayout();                 // 先布局，否则 ScrollToEnd 无效
+                w.ContentScroller.ScrollToEnd();  // Skill 分区在板块底部
+                return w;
+            }, outDir, log);
+
             // 其余可无副作用构造的窗口：用于横向排查同一类 UI 写法（按钮内边距 / 图标字形 / 对齐）
             Capture("04-全局查找弹窗", () => new SearchDialog(), outDir, log);
             Capture("05-待办汇总", () => new TodoSummaryWindow(notes, settings), outDir, log);

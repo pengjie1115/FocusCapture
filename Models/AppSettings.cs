@@ -76,6 +76,13 @@ public class AppSettings
     public int AgentMaxToolRounds { get; set; } = 15;  // 工具调用往返轮数上限：原硬编码 5 偏低（多步工具易触顶），默认 15
     public double AiDrawerWidth { get; set; } = 240;   // AI 对话历史抽屉记忆宽度（拖拽后跨启动恢复；收起状态不记忆）
 
+    // ── Skill 运行时（2026-09-20）──
+    /// <summary>
+    /// 已被用户授权执行脚本的 Skill 名（首次执行某 Skill 的脚本时弹窗确认，允许后记在这里）。
+    /// 撤销 = 从这个列表里删掉，下次执行会重新询问 —— 只能授权不能撤销的安全机制是残缺的。
+    /// </summary>
+    public List<string> SkillTrusted { get; set; } = new();
+
     // ── 运行日志 ──
     public int LogRetentionDays { get; set; } = 30;   // 日志保留天数（1-365，超期自动清理）
     public string GetNoteApiKey { get; set; } = "";   // 得到大脑开放平台凭证（设置面板得到大脑区配置）

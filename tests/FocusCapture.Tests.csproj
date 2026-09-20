@@ -20,11 +20,22 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 主项目通过 GlobalUsings.cs 提供这些命名空间；快层刻意不引主项目，需自己补一份。 -->
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="..\Services\Sync\CryptoService.cs" Link="Src\CryptoService.cs" />
     <Compile Include="..\Services\TimeParser.cs" Link="Src\TimeParser.cs" />
     <Compile Include="..\Services\QuickViewToolbarCatalog.cs" Link="Src\QuickViewToolbarCatalog.cs" />
     <Compile Include="..\Services\SafeClipboard.cs" Link="Src\SafeClipboard.cs" />
+    <!-- Skill 目录扫描与解析（2026-09-20）：这两个文件刻意零项目依赖（根目录由构造注入、
+         不用 AppLog），就是为了能在这里直接链接编译 —— 解析是最需要反复测的部分，
+         真实 SKILL.md 的写法千奇百怪。执行器（SkillScriptRunner）依赖 AppLog，只能进慢层。 -->
+    <Compile Include="..\Services\Skills\SkillCatalog.cs" Link="Src\SkillCatalog.cs" />
+    <Compile Include="..\Services\Skills\SkillManifest.cs" Link="Src\SkillManifest.cs" />
   </ItemGroup>
 
 </Project>

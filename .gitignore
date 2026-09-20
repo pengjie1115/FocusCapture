@@ -10,6 +10,10 @@ obj/
 # Python venv
 asr_venv/
 
+# Skill 运行时（便携版 Python，解压后约 20MB）
+# 由 tools/fetch-python-runtime.ps1 拉取；不进 git（二进制，且可随时重建）
+/runtime/
+
 # Build outputs
 *.exe
 *.pdb
