@@ -30,7 +30,11 @@ param(
     # 但顶层 param 里原先只有 -Apply，导致 `dev.ps1 test -Slow` **参数绑定直接失败且零输出**
     # （2026-09-20 实测：排查了半天，脚本看起来"什么都没干"）。这里补上 -Slow，
     # 并保留 -Apply 作为兼容别名 —— 文档说什么能跑，就该真能跑。
-    [switch]$Slow
+    [switch]$Slow,
+
+    # start 的起点（2026-09-21 补）：原先写死从 main 开，而分支链场景（后一个 feature 从前一个开出）
+    # 只能手敲 git —— 脚本能力与实际用法脱节。默认仍是 main，老用法不变。
+    [string]$From = 'main'
 )
 
 # 注意：这里【不要】设 [Console]::OutputEncoding = UTF8。
@@ -544,14 +548,14 @@ function Invoke-Start {
         $similar -split "`n" | ForEach-Object { if ($_.Trim() -ne '') { Write-Host "    $_" } }
     }
 
-    $code = Invoke-External 'git' @('-C', $RepoRoot, 'checkout', '-b', $Name, 'main')
+    $code = Invoke-External 'git' @('-C', $RepoRoot, 'checkout', '-b', $Name, $From)
     if ($code -ne 0) {
-        Write-Fail "git checkout -b $Name main" '退出码 0' "退出码 $code" '建分支失败；把输出报给用户' $ExScriptFail
+        Write-Fail "git checkout -b $Name $From" '退出码 0' "退出码 $code" '建分支失败；把输出报给用户' $ExScriptFail
         return $ExScriptFail
     }
 
     Write-Host ''
-    Write-Host "  已从 main 新建并切到：$Name" -ForegroundColor Green
+    Write-Host "  已从 $From 新建并切到：$Name" -ForegroundColor Green
     Write-Host '  开完立刻验一次工作区（本机 checkout 有触发索引异常的历史）：' -ForegroundColor Yellow
     return Invoke-Status
 }
@@ -690,7 +694,7 @@ function Show-Help {
     Write-Host '  test -Slow            跑慢层检查点'
     Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
     Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
-    Write-Host '  start <分支名>        从 main 新建分支（自动补类型前缀 + 开工查重）'
+    Write-Host '  start <分支名>        新建分支（自动补类型前缀 + 开工查重；默认从 main，-From 指定起点）'
     Write-Host '  merge                 把当前分支 ff-only 合并到 main（合并后自动校验索引）'
     Write-Host '  push                  推 main 到双远程（origin=Gitee, github）'
     Write-Host '  recover               诊断 git 索引异常（默认只诊断+备份，加 -Apply 才恢复）'
