@@ -243,6 +243,9 @@ print(json.dumps({
         // ── 1. 定位：自带优先，不猜别人的安装目录 ──
         Check(deps.Count >= 1, "依赖表至少有一项（当前应含飞书 lark-cli）");
         var lark = deps[0];
+        // 2026-09-21：授权协议从依赖基类搬进实现类，飞书这份必须提供协议，否则界面无流程可走
+        var larkFlow = lark.Flow;
+        Check(larkFlow != null, "飞书依赖必须提供授权协议（协议在实现类里，基类只负责起进程）");
         var exe = lark.Locate();
         Check(exe != null, "应能定位到 lark-cli（应用自带 runtime\\lark-cli 或系统 PATH）", $"实际：{exe}");
         // 定位语义 2026-09-21 更新：候选从「只有自带」扩成「自带 → 数据目录 → 系统 PATH」。
@@ -250,6 +253,10 @@ print(json.dumps({
         Check(exe != null && lark.BundledDir != null &&
               string.Equals(Path.GetDirectoryName(exe), lark.BundledDir, StringComparison.OrdinalIgnoreCase),
               "定位必须命中应用自带那一份（自带优先；靠'别的应用恰好装过'是不可移植的）", $"实际：{exe}");
+
+        // 协议现在收「stdout + stderr」两路（成功走 stdout、错误走 stderr）；
+        // 下面多数用例只关心一路，故给个简写。
+        DependencyStatus ParseOf(string text) => larkFlow!.ParseStatus(exe, text, "");
 
         // ── 1b. 候选目录：自带 → 数据目录（2026-09-21 新增，设计稿 R2/R3）──
         // 为什么要守：顺序错了的后果是**静默的** —— 照样跑得起来，但跑的是旧的那一份。
@@ -272,26 +279,80 @@ print(json.dumps({
 
         // ── 3. 状态解析：判据是 JSON 字段，不是退出码 ──
         // 实测：用户身份缺失时 `auth status` 照样返回退出码 0 —— 只看退出码会得出"一切正常"。
-        var pReady = lark.ParseStatus(exe, """{"identities":{"user":{"available":true,"status":"ready","userName":"张三"}}}""");
+        var pReady = ParseOf("""{"identities":{"user":{"available":true,"status":"ready","userName":"张三"}}}""");
         Check(pReady.Auth == DependencyAuth.Ready && pReady.Account == "张三" && !pReady.NeedsAuth,
               "available=true 必须判为已授权并取到用户名", $"实际：{pReady.Auth}/{pReady.Account}");
 
-        var pMissing = lark.ParseStatus(exe, """{"identities":{"user":{"available":false,"status":"missing"}}}""");
+        var pMissing = ParseOf("""{"identities":{"user":{"available":false,"status":"missing"}}}""");
         Check(pMissing.Auth == DependencyAuth.Missing && pMissing.NeedsAuth,
               "available=false 必须判为未授权（这是「该弹二维码」的信号）", $"实际：{pMissing.Auth}");
 
-        var pExpired = lark.ParseStatus(exe, """{"identities":{"user":{"available":false,"status":"expired"}}}""");
+        var pExpired = ParseOf("""{"identities":{"user":{"available":false,"status":"expired"}}}""");
         Check(pExpired.Auth == DependencyAuth.Expired, "status=expired 必须判为过期", $"实际：{pExpired.Auth}");
 
-        var pWordOnly = lark.ParseStatus(exe, """{"identities":{"user":{"status":"ready"}}}""");
+        var pWordOnly = ParseOf("""{"identities":{"user":{"status":"ready"}}}""");
         Check(pWordOnly.Auth == DependencyAuth.Ready, "没有 available 字段时应回落到 status 词判断", $"实际：{pWordOnly.Auth}");
 
-        var pEmpty = lark.ParseStatus(exe, "");
-        var pGarbage = lark.ParseStatus(exe, "这不是 JSON");
-        var pNoIdentities = lark.ParseStatus(exe, """{"ok":true}""");
+        var pEmpty = ParseOf("");
+        var pGarbage = ParseOf("这不是 JSON");
+        var pNoIdentities = ParseOf("""{"ok":true}""");
         Check(pEmpty.Auth == DependencyAuth.Unknown && pGarbage.Auth == DependencyAuth.Unknown &&
               pNoIdentities.Auth == DependencyAuth.Unknown,
               "畸形/缺失输出一律判为未知 —— 绝不因为读不懂就乐观当成已授权（也不能反过来当成未授权）");
+
+        // ── 3b. 「还没配应用凭据」必须与「读不懂」分开（2026-09-21 增，本组最重要的一条）──
+        // 当初那场事故的根就在这儿：机器没配应用凭据，代码把它报成"状态查询失败"，
+        // 于是用户看到一句像故障的话，而实际该做的是"先去创建一个应用"。
+        const string notConfiguredJson = """
+            {
+              "ok": false,
+              "error": {
+                "type": "config",
+                "subtype": "not_configured",
+                "message": "not configured",
+                "hint": "run lark-cli config init --new in the background."
+              }
+            }
+            """;
+        var pNotCfg = ParseOf(notConfiguredJson);
+        Check(pNotCfg.Auth == DependencyAuth.NotConfigured,
+              "未配置应用凭据必须判为 NotConfigured，不能混成 Unknown/失败", $"实际：{pNotCfg.Auth}");
+        Check(pNotCfg.NeedsPrepare && pNotCfg.NeedsAuth,
+              "NotConfigured 必须同时给出「需要前置配置」与「需要授权」两个信号（界面先建应用再扫码）");
+        Check(!pNotCfg.Detail.Contains("失败"),
+              "这个状态的文案里不许出现「失败」—— 第一次用本来就是正常流程，不是故障",
+              $"实际：{pNotCfg.Detail}");
+
+        // 实测：错误 JSON 走 stderr。只喂 stdout 时也必须能认出来（协议两路都看）
+        var pNotCfgOnErr = larkFlow!.ParseStatus(exe, "", notConfiguredJson);
+        Check(pNotCfgOnErr.Auth == DependencyAuth.NotConfigured,
+              "输出只出现在 stderr 时也要认出来（实测 not_configured 就在 stderr，退出码 3）",
+              $"实际：{pNotCfgOnErr.Auth}");
+
+        // 结构读不出来时退回朴素匹配：宁可多认一次，也不要把这个状态漏成"读不懂"
+        var pNotCfgPlain = ParseOf("oops: not_configured");
+        Check(pNotCfgPlain.Auth == DependencyAuth.NotConfigured,
+              "非 JSON 但含 not_configured 字样时也要认出来（漏了就等于用户又看到一句像故障的话）",
+              $"实际：{pNotCfgPlain.Auth}");
+
+        // ── 3c. 验证链接提取（config init --new 的输出是纯文本，不是 JSON）──
+        const string realUrl = "https://open.feishu.cn/page/cli?user_code=ABCD-1234&lpv=1.0.96&ocv=1&from=cli";
+        Check(DepAuthText.ExtractVerificationUrl("  " + realUrl) == realUrl,
+              "真实那行输出（带前导空格）里必须能取出完整链接",
+              $"实际：{Short(DepAuthText.ExtractVerificationUrl("  " + realUrl))}");
+        Check(DepAuthText.ExtractVerificationUrl("打开以下链接配置应用:") == null,
+              "提示文字里没有链接时必须返回 null（不能瞎猜一个出来）");
+        Check(DepAuthText.ExtractVerificationUrl("ftp://example.com/x") == null,
+              "非 http(s) 一律不认（免得把别的东西当链接交给用户）");
+        Check(DepAuthText.ExtractVerificationUrl(null) == null,
+              "null 输入不得抛异常");
+
+        // ── 3d. 前置配置：本机已配置，必须"什么都不做"（真跑）──
+        var prepareAskedUrl = false;
+        var prepare = await lark.PrepareAsync(_ => { prepareAskedUrl = true; return Task.CompletedTask; });
+        Check(prepare.State == DepPrepareState.NotNeeded && !prepareAskedUrl,
+              "应用凭据已就绪时，前置配置必须什么都不做、也不索要链接",
+              $"实际：{prepare.State}，索要链接={prepareAskedUrl}，{Short(prepare.Message)}");
 
         // ── 4. 真跑一次状态查询（字段真的能被解析出来）──
         var live = await lark.ProbeAsync();
@@ -299,7 +360,7 @@ print(json.dumps({
               "真跑 auth status 必须能解析出登录态（Unknown 说明输出格式变了）", $"实际：{Short(live.Detail)}");
 
         // ── 5. 设备码流：拿得到 device_code 与验证链接 ──
-        var (startOk, startMsg, session) = await lark.StartAuthAsync();
+        var (startOk, startMsg, session) = await larkFlow!.StartAuthAsync();
         Check(startOk && session != null, "应能发起设备码授权", $"实际：{Short(startMsg)}");
         if (startOk && session != null)
         {
@@ -311,7 +372,7 @@ print(json.dumps({
             // ── 6. 二维码：产出真实 PNG（产物判据）──
             var tmp = Path.Combine(_sandbox, "qr-" + Guid.NewGuid().ToString("N")[..6]);
             Directory.CreateDirectory(tmp);
-            var png = await lark.MakeQrPngAsync(session.VerificationUrl, tmp);
+            var png = await larkFlow!.MakeQrPngAsync(session.VerificationUrl, tmp);
             var pngSize = png != null && File.Exists(png) ? new FileInfo(png).Length : 0;
             Check(png != null && pngSize > 500,
                   "必须真的生成二维码 PNG（>500 字节）—— 用户要扫的就是它", $"实际：{png}（{pngSize} 字节）");
@@ -332,7 +393,7 @@ print(json.dumps({
 
             // 失败语义：给一个不存在的目录 → 必须返回 null，绝不能返回一个看起来成功的假路径
             var badDir = Path.Combine(_sandbox, "no-such-dir-" + Guid.NewGuid().ToString("N")[..6]);
-            var pngBad = await lark.MakeQrPngAsync(session.VerificationUrl, badDir);
+            var pngBad = await larkFlow!.MakeQrPngAsync(session.VerificationUrl, badDir);
             Check(pngBad == null, "生成失败时必须返回 null（拿不到产物 ≠ 假装拿到了）", $"实际：{pngBad}");
         }
 
@@ -426,6 +487,34 @@ print(json.dumps({
             // 复原：别把「造出来的数据目录」留成后续检查点的环境
             if (!dataRuntimeExisted) { try { Directory.Delete(dataRuntimeDir, true); } catch { } }
         }
+
+        // ── 9c. 没有授权协议的依赖："在位即可用"，不跑任何探测命令（2026-09-21 增）──
+        var noAuthDir = Path.Combine(_sandbox, "runtime", "no-auth-probe");
+        Directory.CreateDirectory(noAuthDir);
+        File.WriteAllText(Path.Combine(noAuthDir, "no-auth-probe.exe"), "stub", new UTF8Encoding(false));
+        var noAuth = new NoAuthProbeDependency(_sandbox);
+        var noAuthStatus = await noAuth.ProbeAsync();
+        Check(noAuthStatus.Resolved && noAuthStatus.Auth == DependencyAuth.Ready && !noAuthStatus.NeedsAuth,
+              "没有授权协议的依赖：文件在位就判可用（不该去跑一条 auth status —— 基类里不许再写死任何 CLI 命令）",
+              $"实际：{noAuthStatus.Auth} / {Short(noAuthStatus.Detail)}");
+        Check(noAuth.Flow == null, "没有授权协议的依赖 Flow 必须为 null（界面据此不给授权/退出按钮）");
+        var noAuthPrepare = await noAuth.PrepareAsync(_ => Task.CompletedTask);
+        Check(noAuthPrepare.State == DepPrepareState.NotNeeded,
+              "没有授权协议的依赖不需要前置配置", $"实际：{noAuthPrepare.State}");
+
+        // ── 9d. 依赖表是注册式：加依赖 = 写一个类 + 注册一行（2026-09-21 增）──
+        // 守的是"机制层不为某个具体 CLI 动刀"这件事：改之前加依赖必须去改 All() 那一行。
+        // 本组会真的注册一个桩依赖（Id 唯一、脚本标记不会误命中），故放在最后，免得影响前面的用例。
+        var depsBefore = SkillDependencies.All(repoRoot).Count;
+        SkillDependencies.Register(baseDir => new RegistryProbeDependency(baseDir));
+        var depsAfter = SkillDependencies.All(repoRoot);
+        Check(depsAfter.Count == depsBefore + 1 && depsAfter.Any(d => d.Id == "registry-probe"),
+              "注册一行后依赖表必须多一项", $"实际：{depsBefore} -> {depsAfter.Count}");
+        Check(depsAfter.Any(d => d.Id == SkillDependencies.LarkCliId),
+              "注册新依赖不得把内置的飞书挤掉");
+        SkillDependencies.Register(baseDir => new RegistryProbeDependency(baseDir));
+        Check(SkillDependencies.All(repoRoot).Count(d => d.Id == "registry-probe") == 1,
+              "同 Id 重复注册只应留一项（否则设置页会出现两行同一个依赖）");
 
         // ── 10. 面向用户的文案纪律：不许出现开发者路径 ──
         // 实测教训：模型会把文案里的 `tools\xxx.bat` 原样抄进给用户的回答里，用户根本执行不了。
@@ -2012,6 +2101,25 @@ print(json.dumps({
         public override Task<DependencyStatus> ProbeAsync(CancellationToken ct = default)
             => Task.FromResult(new DependencyStatus(Id, DisplayName, true, null,
                 DependencyAuth.Missing, "", "桩：固定返回未授权"));
+    }
+
+    /// <summary>
+    /// "在位即可用"那类依赖的桩（2026-09-21 增）：**刻意不提供 Flow**。
+    /// 用来守「基类里不再写死任何 CLI 命令」—— 它应该直接判可用，而不是去跑一条 auth status。
+    /// </summary>
+    private sealed class NoAuthProbeDependency : SkillDependency
+    {
+        public NoAuthProbeDependency(string? baseDir) : base(
+            id: "no-auth-probe", displayName: "无授权桩依赖", exeName: "no-auth-probe",
+            scriptMarkers: new[] { "no-auth-probe" }, baseDir: baseDir) { }
+    }
+
+    /// <summary>依赖表注册式检查点用的桩（2026-09-21 增）：Id 唯一、脚本标记不会误命中任何真实脚本。</summary>
+    private sealed class RegistryProbeDependency : SkillDependency
+    {
+        public RegistryProbeDependency(string? baseDir) : base(
+            id: "registry-probe", displayName: "注册表桩依赖", exeName: "registry-probe",
+            scriptMarkers: new[] { "__registry_probe_marker__" }, baseDir: baseDir) { }
     }
 
     // ── 双设备模拟（验收 C 全流程 + 回声 + D 密钥重置 + E 自愈） ──

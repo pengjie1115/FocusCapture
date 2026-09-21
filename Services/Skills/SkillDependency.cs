@@ -14,6 +14,18 @@ public enum DependencyAuth
     /// <summary>有 token 但已失效</summary>
     Expired,
 
+    /// <summary>
+    /// 可执行文件在位，但**连应用凭据都还没配**（2026-09-21 增，第一次使用时的常见状态）。
+    ///
+    /// <para>
+    /// 与 <see cref="Missing"/> 的区别很关键：Missing 是"扫一次码就能好"，
+    /// NotConfigured 是"扫码根本开始不了"（拿不到 device_code → 没有验证链接 → 二维码画不出来）。
+    /// 当初那场事故就是没把这两者分开：用户看到的是"永远停在正在生成二维码"，
+    /// 而真正该做的事是"先去创建一个应用"。
+    /// </para>
+    /// </summary>
+    NotConfigured,
+
     /// <summary>可用</summary>
     Ready,
 }
@@ -28,8 +40,14 @@ public sealed record DependencyStatus(
     string Account,
     string Detail)
 {
-    /// <summary>在位但登录态不是 ready —— 这时候授权是有意义的动作</summary>
+    /// <summary>在位但登录态不是 ready —— 这时候授权是有意义的动作（含「还没配应用凭据」）</summary>
     public bool NeedsAuth => Resolved && Auth != DependencyAuth.Ready;
+
+    /// <summary>
+    /// 需要**先做前置配置**才能谈授权（2026-09-21 增）。
+    /// 有它，界面才能先走"创建应用"再走"扫码"；没有它，窗口只会永远停在"正在生成二维码"。
+    /// </summary>
+    public bool NeedsPrepare => Resolved && Auth == DependencyAuth.NotConfigured;
 
     /// <summary>能不能做授权（文件不在就没得授权，只能先解决"没有它"这件事）</summary>
     public bool CanAuthorize => Resolved;
@@ -58,7 +76,7 @@ public enum DependencySource
 }
 
 /// <summary>
-/// 一个外部依赖：某个外部可执行程序 + 它的登录态 + 授权方式（2026-09-20）。
+/// 一个外部依赖：某个外部可执行程序 + 它的登录态 + 它的授权协议（2026-09-20；2026-09-21 拆出协议）。
 ///
 /// <para>
 /// <b>为什么需要这一层：</b>Skill 的脚本常常要调外部 CLI（写飞书要 lark-cli、发 GitHub 要 gh…），
@@ -67,26 +85,32 @@ public enum DependencySource
 /// 绝对路径当命令写给了用户。**这是宿主该做的事被外包给了用户**，不是措辞问题。
 /// </para>
 /// <para>
+/// <b>本类只干三件事：</b>① 找到可执行文件（<see cref="Locate"/>）；
+/// ② 起进程去探测登录态（<see cref="ProbeAsync"/>）；③ 判断这个 Skill 用没用到它（<see cref="Matches"/>）。
+/// <b>授权协议本身不在本类</b> —— 它归 <see cref="IDepAuthFlow"/> 的实现
+/// （2026-09-21 拆的：拆之前申请码/出码/领 token/解析全在本类的 <c>virtual</c> 默认实现里，
+/// 而那里面写死了 lark 的命令与字段名，等于把一个"通用依赖层"变成了"飞书专用层"）。
+/// </para>
+/// <para>
 /// <b>定位顺序（刻意的）：</b>① 应用自带的 <c>&lt;应用目录&gt;\runtime\&lt;id&gt;\</c> —— 确定、可随包分发；
 /// ② 数据目录 <c>&lt;数据根&gt;\runtime\&lt;id&gt;\</c> —— 按需下载落这里（2026-09-21 增，R2/R3）；
 /// ③ 系统 PATH —— 兼容用户自己装过的情况。**不认识"别的应用安装目录里恰好有一份"**：
-/// 那既不可移植，也让宿主的行为取决于别人装了什么。
+/// 那既不可移植，也让宿主的行为取决于别人装了什么。规则唯一入口 = <see cref="SkillRuntimeLocations"/>。
 /// </para>
 /// <para>
-/// <b>授权走标准设备码流</b>（三步，全部由宿主驱动，用户只扫一次码）：
-/// <c>auth login --no-wait --json</c> 拿 device_code + verification_url →
-/// <c>auth qrcode</c> 生成二维码图片 → 用户扫码并在飞书里点确认 →
-/// <c>auth login --device-code</c> 领回 token。全程不出应用、用户不碰命令行。
+/// <b>两步才能用起来（这台机器上）：</b>先有<b>应用凭据</b>（<c>config init</c>，每台机器各建一次），
+/// 再有<b>用户授权</b>（设备码流）。少了第一步，第二步连码都发不出来 —— 见
+/// <see cref="IDepAuthFlow.PrepareAsync"/>。
 /// </para>
 /// </summary>
 public class SkillDependency
 {
-    /// <summary>授权类命令的超时（扫码要人操作，不能用执行脚本那套 150 秒）</summary>
-    private const int QuickCommandTimeoutMs = 30_000;
+    /// <summary>探测类命令的超时（扫码要人操作，不能用执行脚本那套 150 秒）</summary>
+    private const int ProbeTimeoutMs = 30_000;
 
     private readonly string? _baseDir;
 
-    /// <param name="id">稳定标识，同时也是自带目录名（<c>runtime\&lt;id&gt;\</c>）</param>
+    /// <param name="id">稳定标识，同时也是运行时候选目录名（<c>runtime\&lt;id&gt;\</c>）</param>
     /// <param name="displayName">给用户看的名字</param>
     /// <param name="exeName">可执行文件名（不含扩展名）</param>
     /// <param name="scriptMarkers">静态扫描脚本时用来判断"这个 Skill 用到了它"的关键词</param>
@@ -115,6 +139,12 @@ public class SkillDependency
 
     /// <summary>给用户看的权限域说明（透明优先：让他在扫码前知道要批什么）</summary>
     public virtual string AuthScopeText => "";
+
+    /// <summary>
+    /// 这个依赖的授权协议；<b>null = 它不需要登录</b>（"在位即可用"那类，如将来的 ffmpeg / gh 只读用法）。
+    /// 界面据此决定要不要给"授权"按钮 —— 没有协议的依赖点了也没意义。
+    /// </summary>
+    public virtual IDepAuthFlow? Flow => null;
 
     /// <summary>自带目录（候选里的第一档）</summary>
     public string? BundledDir => SkillRuntimeLocations.BundledDir(_baseDir, Id);
@@ -169,6 +199,9 @@ public class SkillDependency
     /// <summary>
     /// 探测登录态。**永不抛** —— 探测不出来就是 <see cref="DependencyAuth.Unknown"/>，
     /// 绝不因为"读不懂输出"而当成已授权或未授权。
+    ///
+    /// <para>保留 <c>virtual</c> 是有意的：有些依赖的"在不在位"根本不需要起进程（或需要别的判据），
+    /// 实现可以整体覆盖；默认实现是"起进程 → 交给协议解析"。</para>
     /// </summary>
     public virtual async Task<DependencyStatus> ProbeAsync(CancellationToken ct = default)
     {
@@ -177,159 +210,37 @@ public class SkillDependency
             return new DependencyStatus(Id, DisplayName, false, null, DependencyAuth.Unknown, "",
                 $"未找到 {ExeName}（应用未自带、按需目录里没有、系统 PATH 里也没有）");
 
-        var psi = SkillProcess.Build(exe, new[] { "auth", "status" }, Path.GetDirectoryName(exe) ?? "", false);
-        var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
+        // 没有授权协议的依赖：文件在位就是可用，不去跑任何探测命令
+        // （基类里**不再写死任何 CLI 的命令** —— 那正是 2026-09-21 拆出 flow 的直接原因）
+        if (Flow == null)
+            return new DependencyStatus(Id, DisplayName, true, exe, DependencyAuth.Ready, "", "在位（无需登录）");
 
-        if (!r.Ok)
+        var psi = SkillProcess.Build(exe, Flow.ProbeArgs, Path.GetDirectoryName(exe) ?? "", false);
+        var r = await SkillProcess.RunAsync(psi, null, ProbeTimeoutMs, ct).ConfigureAwait(false);
+
+        if (r.StartError != null)
             return new DependencyStatus(Id, DisplayName, true, exe, DependencyAuth.Unknown, "",
-                r.TimedOut ? "状态查询超时" : $"状态查询失败（退出码 {r.ExitCode}）：{Short(r.Combined)}");
+                $"状态查询无法启动：{r.StartError}");
+        if (r.TimedOut)
+            return new DependencyStatus(Id, DisplayName, true, exe, DependencyAuth.Unknown, "", "状态查询超时");
 
-        return ParseStatus(exe, r.Stdout);
+        // ⚠ 刻意**不**在退出码非 0 时一刀切判"探测失败"：实测"未配置凭据"时退出码就是 3，
+        //    而那条输出里带着判据（not_configured）+ 它走的是 stderr。一刀切会把
+        //    "第一次用、该去创建应用"误报成"查询失败"，用户拿到的指引正好是错的。
+        //    两路输出都交给协议去解析，判不出来的才落到 Unknown。
+        return Flow.ParseStatus(exe, r.Stdout, r.Stderr);
     }
 
     /// <summary>
-    /// 解析 <c>auth status</c> 的 JSON。
-    ///
-    /// <para>
-    /// 判据是 <c>identities.user.available</c> / <c>identities.user.status</c> ——
-    /// **不能看退出码**：实测用户身份缺失时它照样返回 0，只看退出码会得出"一切正常"。
-    /// </para>
-    /// <para>抽成 public 是为了让检查点能直接喂畸形 JSON（这一段全是解析，正是最容易出错的地方）。</para>
+    /// 前置配置：授权之前"把前提搞齐"（2026-09-21 增）。没有协议的依赖直接返回"无需准备"。
     /// </summary>
-    public DependencyStatus ParseStatus(string? exe, string json)
-    {
-        var status = DependencyAuth.Unknown;
-        var account = "";
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("identities", out var ids) && ids.TryGetProperty("user", out var user))
-            {
-                account = user.TryGetProperty("userName", out var n) ? (n.GetString() ?? "") : "";
-                var available = user.TryGetProperty("available", out var a) && a.ValueKind == JsonValueKind.True;
-                var word = user.TryGetProperty("status", out var s) ? (s.GetString() ?? "") : "";
-                status = available || string.Equals(word, "ready", StringComparison.OrdinalIgnoreCase)
-                    ? DependencyAuth.Ready
-                    : string.Equals(word, "expired", StringComparison.OrdinalIgnoreCase)
-                        ? DependencyAuth.Expired
-                        : DependencyAuth.Missing;
-            }
-        }
-        catch (JsonException)
-        {
-            return new DependencyStatus(Id, DisplayName, true, exe, DependencyAuth.Unknown, "",
-                $"状态输出不是合法 JSON：{Short(json)}");
-        }
+    public Task<DepPrepareResult> PrepareAsync(Func<string, Task>? showVerificationUrl, CancellationToken ct = default)
+        => Flow == null
+            ? Task.FromResult(DepPrepareResult.NotNeeded)
+            : Flow.PrepareAsync(showVerificationUrl, ct);
 
-        var detail = status switch
-        {
-            DependencyAuth.Ready => account.Length > 0 ? $"已授权：{account}" : "已授权",
-            DependencyAuth.Expired => "授权已过期，需要重新授权",
-            DependencyAuth.Missing => "尚未授权",
-            _ => "状态未知",
-        };
-        return new DependencyStatus(Id, DisplayName, true, exe, status, account, detail);
-    }
-
-    /// <summary>
-    /// 发起设备码授权：返回 device_code 与验证链接（<c>--no-wait</c>，不阻塞）。
-    /// </summary>
-    public virtual async Task<(bool Ok, string Message, DeviceCodeSession? Session)> StartAuthAsync(CancellationToken ct = default)
-    {
-        var exe = Locate();
-        if (exe == null) return (false, $"未找到 {ExeName}，无法发起授权。", null);
-
-        var args = new List<string> { "auth", "login", "--no-wait", "--json" };
-        if (AuthDomains.Count > 0)
-        {
-            args.Add("--domain");
-            args.Add(string.Join(",", AuthDomains));
-        }
-
-        var psi = SkillProcess.Build(exe, args, Path.GetDirectoryName(exe) ?? "", false);
-        var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
-        if (!r.Ok) return (false, r.TimedOut ? "发起授权超时。" : $"发起授权失败：{Short(r.Combined)}", null);
-
-        try
-        {
-            using var doc = JsonDocument.Parse(r.Stdout);
-            var root = doc.RootElement;
-            var code = root.TryGetProperty("device_code", out var c) ? c.GetString() : null;
-            var url = root.TryGetProperty("verification_url", out var u) ? u.GetString() : null;
-            var expires = root.TryGetProperty("expires_in", out var e) && e.TryGetInt32(out var sec) ? sec : 600;
-
-            if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(url))
-                return (false, $"授权响应缺少必要字段：{Short(r.Stdout)}", null);
-
-            return (true, "", new DeviceCodeSession(code!, url!, expires));
-        }
-        catch (JsonException)
-        {
-            return (false, $"授权响应不是合法 JSON：{Short(r.Stdout)}", null);
-        }
-    }
-
-    /// <summary>
-    /// 把验证链接转成二维码 PNG，返回图片绝对路径（失败返回 null）。
-    ///
-    /// <para>
-    /// ⚠ <b>统一用「相对名 + 调用方指定的 CWD」</b>，因为这里踩过一个版本差异（都实测过）：
-    /// CLI <b>1.0.92</b> 拒绝绝对输出路径
-    /// （<c>"unsafe output path: --output must be a relative path within the current directory"</c>，退出码 2），
-    /// 而 <b>1.0.96</b> 接受绝对路径。相对名在两个版本上都成立 —— 选它是为了不依赖具体版本。
-    /// </para>
-    /// </summary>
-    public virtual async Task<string?> MakeQrPngAsync(string verificationUrl, string workDir, CancellationToken ct = default)
-    {
-        var exe = Locate();
-        if (exe == null) return null;
-
-        const string fileName = "qr.png";
-        var args = new[] { "auth", "qrcode", verificationUrl, "-o", "./" + fileName, "--size", "360" };
-        var psi = SkillProcess.Build(exe, args, workDir, false);
-        var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
-        if (!r.Ok)
-        {
-            AppLog.Warn("Skill", $"{Id} 二维码生成失败：exit={r.ExitCode} {Short(r.Combined)}");
-            return null;
-        }
-
-        var png = Path.Combine(workDir, fileName);
-        // 产物优先：不信它输出的 JSON，只认文件真的在
-        return File.Exists(png) ? png : null;
-    }
-
-    /// <summary>
-    /// 用 device_code 领回 token（这一步会阻塞轮询，直到用户扫码确认或超时）。
-    /// </summary>
-    public virtual async Task<(bool Ok, string Message)> CompleteAuthAsync(
-        string deviceCode, int timeoutMs, CancellationToken ct = default)
-    {
-        var exe = Locate();
-        if (exe == null) return (false, $"未找到 {ExeName}。");
-
-        var args = new[] { "auth", "login", "--device-code", deviceCode };
-        var psi = SkillProcess.Build(exe, args, Path.GetDirectoryName(exe) ?? "", false);
-        var r = await SkillProcess.RunAsync(psi, null, timeoutMs, ct).ConfigureAwait(false);
-
-        if (r.TimedOut) return (false, "等待扫码超时（授权码已过期），请重新发起。");
-        if (!r.Ok) return (false, $"授权未完成：{Short(r.Combined)}");
-        return (true, "已授权");
-    }
-
-    /// <summary>撤销授权（登出）。设置页的撤销入口靠它 —— 只能授权不能撤销的安全机制是残缺的。</summary>
-    public virtual async Task<(bool Ok, string Message)> LogoutAsync(CancellationToken ct = default)
-    {
-        var exe = Locate();
-        if (exe == null) return (false, $"未找到 {ExeName}。");
-
-        var psi = SkillProcess.Build(exe, new[] { "auth", "logout", "--json" }, Path.GetDirectoryName(exe) ?? "", false);
-        var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
-        return r.Ok ? (true, "已退出登录") : (false, $"退出登录失败：{Short(r.Combined)}");
-    }
-
-    private static string Short(string? s)
+    /// <summary>把一段输出压成单行短文本（日志与细节文案用）—— 两个实现（基类与协议）共用</summary>
+    internal static string Short(string? s)
     {
         var t = (s ?? "").Trim().Replace('\r', ' ').Replace('\n', ' ');
         return t.Length <= 200 ? t : t[..200] + "…";
@@ -337,28 +248,66 @@ public class SkillDependency
 }
 
 /// <summary>
-/// 依赖表：**一个依赖一项配置，机制不绑定任何一个具体 CLI**（当前只有飞书一项，因为 Skill 生态里
-/// 它是第一个需要登录态的）。加 <c>gh</c> / <c>ffmpeg</c> 这类只需"在位"的依赖时，
-/// 走同一个类、把授权相关方法留空即可。
+/// 依赖表：**注册式**（2026-09-21 由硬编码数组改）。
+///
+/// <para>
+/// 改之前是 <c>All() =&gt; new[] { new LarkCliDependency(baseDir) }</c> —— 加一个依赖必须改这一行，
+/// 也就意味着"机制层"每次都要为一个具体 CLI 动一次刀。现在加依赖 = **写一个类 + 注册一行**：
+/// </para>
+/// <code>
+/// SkillDependencies.Register(baseDir =&gt; new MyCliDependency(baseDir));
+/// </code>
+/// <para>
+/// 内置依赖的注册点在本类的静态构造函数里（唯一一处），外部依赖包通过 <see cref="Register"/> 追加。
+/// </para>
 /// </summary>
 public static class SkillDependencies
 {
-    /// <summary>飞书 CLI 的依赖标识（同时也是自带目录名 <c>runtime\lark-cli\</c>）</summary>
+    /// <summary>飞书 CLI 的依赖标识（同时也是运行时候选目录名 <c>runtime\lark-cli\</c>）</summary>
     public const string LarkCliId = "lark-cli";
+
+    private static readonly object Gate = new();
+    private static readonly List<Func<string?, SkillDependency>> Factories = new();
+
+    static SkillDependencies()
+    {
+        // 内置依赖的注册处（唯一一处）：加一个内置依赖就在这儿加一行
+        Register(baseDir => new LarkCliDependency(baseDir));
+    }
+
+    /// <summary>
+    /// 注册一个依赖。<paramref name="factory"/> 收应用目录、返回依赖实例。
+    /// **加依赖不需要动 <see cref="All"/>**，也不需要在共享代码里引用具体 CLI 类型。
+    /// </summary>
+    public static void Register(Func<string?, SkillDependency> factory)
+    {
+        if (factory == null) return;
+        lock (Gate) Factories.Add(factory);
+    }
 
     /// <summary>
     /// 全部已知依赖。<paramref name="baseDir"/> 传应用目录。
     ///
-    /// <para>
-    /// 飞书这项申请的权限域是<b>判断而非权威依据</b>：取自 Skill 生态里最常见的写入目标
-    /// （多维表格 / 文档 / 云盘 / 电子表格 / 知识库）。窗口会把这份清单原文显示给用户，
-    /// 让他扫码前就知道要批什么；要收窄或扩大只改这一处。
-    /// </para>
+    /// <para>同 <c>Id</c> 只保留先注册的那一项（重复注册不该让界面上出现两行同一依赖）；
+    /// 某个 factory 造不出来就跳过 —— 一个依赖出问题不许拖垮整张表。</para>
     /// </summary>
-    public static IReadOnlyList<SkillDependency> All(string? baseDir) => new[]
+    public static IReadOnlyList<SkillDependency> All(string? baseDir)
     {
-        new LarkCliDependency(baseDir),
-    };
+        var list = new List<SkillDependency>();
+        lock (Gate)
+        {
+            foreach (var factory in Factories)
+            {
+                SkillDependency? dep;
+                try { dep = factory(baseDir); }
+                catch { continue; }
+                if (dep == null) continue;
+                if (list.Any(d => string.Equals(d.Id, dep.Id, StringComparison.OrdinalIgnoreCase))) continue;
+                list.Add(dep);
+            }
+        }
+        return list;
+    }
 
     /// <summary>从脚本文本里找出该 Skill 用到的依赖（用来做"跑之前先看缺什么"的预检）</summary>
     public static IReadOnlyList<SkillDependency> DetectIn(
@@ -401,7 +350,10 @@ public static class SkillDependencies
         DetectIn(all, ReadScriptTexts(skill));
 }
 
-/// <summary>飞书 CLI 的具体接线（命令名与权限域放在这里，机制在 <see cref="SkillDependency"/>）</summary>
+/// <summary>
+/// 飞书 CLI 的具体接线：命令名、权限域、以及它的授权协议（机制见 <see cref="SkillDependency"/>，
+/// 协议见 <see cref="LarkDeviceCodeFlow"/>）。
+/// </summary>
 internal sealed class LarkCliDependency : SkillDependency
 {
     public LarkCliDependency(string? baseDir)
@@ -412,10 +364,18 @@ internal sealed class LarkCliDependency : SkillDependency
             scriptMarkers: new[] { "lark-cli", "lark_cli", "larkcli" },
             baseDir: baseDir)
     {
+        Flow = new LarkDeviceCodeFlow(this);
     }
 
+    /// <summary>
+    /// 权限域是<b>判断而非权威依据</b>：取自 Skill 生态里最常见的写入目标
+    /// （多维表格 / 文档 / 云盘 / 电子表格 / 知识库）。窗口会把这份清单原文显示给用户，
+    /// 让他扫码前就知道要批什么；要收窄或扩大只改这一处。
+    /// </summary>
     public override IReadOnlyList<string> AuthDomains { get; } =
         new[] { "base", "docs", "drive", "sheets", "wiki" };
 
     public override string AuthScopeText => "多维表格 / 文档 / 云盘 / 电子表格 / 知识库";
+
+    public override IDepAuthFlow? Flow { get; }
 }

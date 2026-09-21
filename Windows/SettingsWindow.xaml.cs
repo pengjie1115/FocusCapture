@@ -459,33 +459,37 @@ public partial class SettingsWindow : Window
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
 
+        // 没有授权协议的依赖（"在位即可用"那类）不该给可点的授权按钮 —— 点了也没有流程可走
+        var canAuthorize = status.CanAuthorize && dep.Flow != null;
         var authButton = new Button
         {
             Content = status.Auth == DependencyAuth.Ready ? "重新授权" : "授权（扫一次码）",
             Width = 132,
             Height = 28,
-            IsEnabled = status.CanAuthorize,
+            IsEnabled = canAuthorize,
         };
         // 禁用态必须**看得出来**：SettingsWindow 的按钮样式只有 hover 态，
         // 不动前景色的话"不能点"和"能点"长得一样，用户会以为按钮坏了（快照对比中发现，2026-09-20）。
-        if (!status.CanAuthorize) authButton.Foreground = DisabledTextBrush;
+        if (!canAuthorize) authButton.Foreground = DisabledTextBrush;
         authButton.Click += async (_, _) => await RunDependencyAuthAsync(dep, status).ConfigureAwait(true);
         row.Children.Add(authButton);
 
+        // 没有登录态可撤的依赖（无协议 / 未登录）不给可点的退出按钮，避免出现"点了没反应"
+        var canLogout = dep.Flow != null && status.Auth == DependencyAuth.Ready;
         var logoutButton = new Button
         {
             Content = "退出登录",
             Width = 96,
             Height = 28,
             Margin = new Thickness(8, 0, 0, 0),
-            IsEnabled = status.Auth == DependencyAuth.Ready,
+            IsEnabled = canLogout,
         };
-        if (status.Auth != DependencyAuth.Ready) logoutButton.Foreground = DisabledTextBrush;
+        if (!canLogout) logoutButton.Foreground = DisabledTextBrush;
         logoutButton.Click += async (_, _) =>
         {
             logoutButton.IsEnabled = false;
             logoutButton.Foreground = DisabledTextBrush;
-            var (ok, message) = await dep.LogoutAsync().ConfigureAwait(true);
+            var (ok, message) = await RunLogoutAsync(dep).ConfigureAwait(true);
             AppLog.Info("Skill", $"依赖退出登录（{dep.Id}）：ok={ok} {message}");
             await RefreshSkillDepsAsync().ConfigureAwait(true);
         };
@@ -493,6 +497,17 @@ public partial class SettingsWindow : Window
 
         panel.Children.Add(row);
         return panel;
+    }
+
+    /// <summary>
+    /// 撤销登录态 —— 走协议（2026-09-21 起协议由依赖自己提供）。
+    /// 没有协议的依赖本来就不该有登录态，这里兜住并如实说明，**不抛**。
+    /// </summary>
+    private static async Task<(bool Ok, string Message)> RunLogoutAsync(SkillDependency dep)
+    {
+        var flow = dep.Flow;
+        if (flow == null) return (false, $"{dep.DisplayName} 没有可撤销的登录状态。");
+        return await flow.LogoutAsync().ConfigureAwait(false);
     }
 
     /// <summary>从设置页发起授权 —— 走的是和 AI 问答里同一个窗口，不另起一套</summary>

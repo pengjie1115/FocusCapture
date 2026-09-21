@@ -27,6 +27,13 @@ namespace FocusCapture.Windows;
 public partial class SkillAuthWindow : Window
 {
     private readonly SkillDependency _dep;
+
+    /// <summary>
+    /// 授权协议（2026-09-21 起从依赖基类搬到实现类）。为 null = 这个依赖不需要登录，
+    /// 此时本窗口无事可做 —— 如实报错，**不抛异常**（异常冒泡到全局处理器会弹模态框，把后续点击吃掉）。
+    /// </summary>
+    private IDepAuthFlow? Flow => _dep.Flow;
+
     private CancellationTokenSource? _cts;
     private DispatcherTimer? _timer;
     private DateTime _deadline;
@@ -63,7 +70,14 @@ public partial class SkillAuthWindow : Window
         var cts = new CancellationTokenSource();
         _cts = cts;
 
-        var (ok, message, session) = await _dep.StartAuthAsync(cts.Token).ConfigureAwait(true);
+        var flow = Flow;
+        if (flow == null)
+        {
+            ShowFailure($"{_dep.DisplayName} 不需要登录，没有可执行的授权流程。");
+            return;
+        }
+
+        var (ok, message, session) = await flow.StartAuthAsync(cts.Token).ConfigureAwait(true);
         if (_cancelled || _closed) return;
         if (!ok || session == null)
         {
@@ -73,7 +87,7 @@ public partial class SkillAuthWindow : Window
 
         UrlBox.Text = session.VerificationUrl;
 
-        var png = await _dep.MakeQrPngAsync(session.VerificationUrl, TempDir(), cts.Token).ConfigureAwait(true);
+        var png = await flow.MakeQrPngAsync(session.VerificationUrl, TempDir(), cts.Token).ConfigureAwait(true);
         if (_cancelled || _closed) return;
 
         if (png != null)
@@ -104,7 +118,7 @@ public partial class SkillAuthWindow : Window
 
         StartCountdown(session.ExpiresInSeconds);
 
-        var (done, doneMsg) = await _dep.CompleteAuthAsync(
+        var (done, doneMsg) = await flow.CompleteAuthAsync(
             session.DeviceCode, session.ExpiresInSeconds * 1000, cts.Token).ConfigureAwait(true);
 
         if (_cancelled || _closed) return;
