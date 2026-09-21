@@ -680,6 +680,17 @@ print(json.dumps({
         // ── 3. 死样式不许复活：只定义未引用的 ScrollbarStyle 已删，别再加回来 ──
         Check(!aiXaml.Contains("x:Key=\"ScrollbarStyle\""),
               "AI 问答窗口里不许再放只定义未引用的 ScrollbarStyle（它会让人误以为滚动条已被它治好，2026-09-21 已删）");
+
+        // ── 4. ContextMenu 模板必须整体替换（2026-09-21 追加）──
+        // 默认 Aero2 模板在菜单左侧硬编码 28px 浅色图标槽（#F1F1F1 圆角矩形 + #E2E3E3 / White 高光线），
+        // 深色背景下就是悬浮球右键菜单那条白条 —— 它不是滚动条，滚动条样式治不了，必须换模板。
+        Check(appXaml.Contains("<Style TargetType=\"ContextMenu\">"),
+              "App.xaml 必须有隐式（无 Key）ContextMenu 模板 —— 默认 Aero2 模板左侧的浅色图标槽就是右键菜单那条白条",
+              "找不到 <Style TargetType=\"ContextMenu\">");
+        Check(!appXaml.Contains("#F1F1F1") && !appXaml.Contains("#E2E3E3"),
+              "App.xaml 不许出现默认模板的浅色图标槽色值（#F1F1F1 / #E2E3E3，出现 = 白条回归）");
+        Check(appXaml.Contains("IsSharedSizeScope") && appXaml.Contains("<ItemsPresenter"),
+              "ContextMenu 模板必须保留 IsSharedSizeScope 与 ItemsPresenter（前者供 MenuItem 对齐图标列，后者丢了菜单不出内容）");
     }
 
     // ══════════════════ 运行时按需下载的配方（2026-09-21，授权闭环步骤 5） ══════════════════

@@ -116,6 +116,35 @@
                     </Trigger>
                 </Style.Triggers>
             </Style>
+
+            <!-- 2026-09-21：全局深色 ContextMenu 模板。
+                 默认 Aero2 模板在菜单左侧硬编码 28px 浅色图标槽（一块浅灰圆角矩形 + 浅灰/纯白两条高光线），
+                 深色背景下就是一条刺眼白条（悬浮球右键菜单实测；它不是滚动条，滚动条样式治不了）。
+                 整体换干净模板（深色圆角边框 + ScrollViewer，无图标槽），全 App 右键菜单统一生效。
+                 注意：本段注释刻意不写出那三个色值 —— 慢层检查点全文禁这些色值，写出来就自己把自己打红。 -->
+            <Style TargetType="ContextMenu">
+                <Setter Property="Background" Value="#2B2B28"/>
+                <Setter Property="BorderBrush" Value="#3A3A37"/>
+                <Setter Property="Foreground" Value="#E6E6E2"/>
+                <Setter Property="Padding" Value="4"/>
+                <Setter Property="Grid.IsSharedSizeScope" Value="True"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ContextMenu">
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ScrollViewer CanContentScroll="True">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                </ScrollViewer>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
