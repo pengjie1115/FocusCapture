@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FocusCapture.DepDiag</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目/clipdiag 一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 隔离探针：起 lark-cli 子进程 + 流式读 stdout/stderr + 超时 kill 但保留已读。
+         刻意不引用主项目：独立编译、独立运行，不进主 sln，不影响产品代码（参考 tools/clipdiag/） -->
+  </PropertyGroup>
+
+</Project>
