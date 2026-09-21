@@ -53,7 +53,6 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="42"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- 标题栏（底部 2px 品牌绿 accent 线，配色方案 B 的标志） -->
@@ -86,14 +85,8 @@
                                 Foreground="#888888"
                                 BorderThickness="0"
                                 Click="BtnNewSession_Click"/>
-                        <Button x:Name="BtnClose"
-                                Content="×"
-                                FontSize="18"
-                                Width="28" Height="28"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                BorderThickness="0"
-                                Click="BtnClose_Click"/>
+                        <!-- 2026-09-21：窗口内关闭按钮已删 —— 全局按钮样式的 Padding(12,5) 把 28×28 按钮里的
+                             "×"字形裁成一条竖缝，看着像两个点（用户反馈）。关窗走原生标题栏 ×。 -->
                     </StackPanel>
                 </Grid>
             </Border>
@@ -119,9 +112,18 @@
                         </ControlTemplate>
                     </Thumb.Template>
                 </Thumb>
-                <ScrollViewer x:Name="MessagesScroll" Grid.Column="2"
-                              VerticalScrollBarVisibility="Auto"
-                              Padding="14,10">
+
+                <!-- 2026-09-21 重排：对话列（消息区 + 输入区）收进第三列 —— 历史抽屉列纵贯全窗，
+                     输入区与对话区同宽，拖抽屉时输入区实时跟随（用户要求"分区管理"）。
+                     原结构：消息区在 Row1 的第三列、输入区横贯整窗底部（Row2）。 -->
+                <Grid Grid.Column="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
+                                  VerticalScrollBarVisibility="Auto"
+                                  Padding="14,10">
                     <ItemsControl x:Name="MessagesList">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
@@ -341,15 +343,16 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
-            </Grid>
 
-            <!-- 输入区（2026-09-14：支持图片/文档，文字与附件混排）
-                 结构：加号按钮 + 富文本输入区 + 发送按钮。
-                 AllowDrop 设在本 Border 上（拖文件到输入区即添加；不设窗口级，避免与消息区滚动冲突）。
-                 注意：输入框自身也要接受拖放 —— RichTextBox 内置了文本拖放处理，会先把拖拽事件标记为
-                 已处理，只有显式接管（见 InitInputArea）才能在框内正上方生效。 -->
-            <Border Grid.Row="2" Background="#252525" CornerRadius="0,0,6,6" Padding="12,10"
-                    AllowDrop="True" DragOver="InputArea_DragOver" Drop="InputArea_Drop">
+                <!-- 输入区（2026-09-14：支持图片/文档，文字与附件块混排）
+                     结构：加号按钮 + 富文本输入区 + 发送按钮。
+                     AllowDrop 设在本 Border 上（拖文件到输入区即添加；不设窗口级，避免与消息区滚动冲突）。
+                     注意：输入框自身也要接受拖放 —— RichTextBox 内置了文本拖放处理，会先把拖拽事件标记为
+                     已处理，只有显式接管（见 InitInputArea）才能在框内正上方生效。
+                     2026-09-21 重排：从窗口底行挪进对话列（Row1），宽度跟随历史抽屉联动。
+                     左下圆角由代码按抽屉开合切换（InputAreaCornerRadius）。 -->
+                <Border x:Name="InputArea" Grid.Row="1" Background="#252525" CornerRadius="0,0,6,6" Padding="12,10"
+                        AllowDrop="True" DragOver="InputArea_DragOver" Drop="InputArea_Drop">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -369,11 +372,14 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
+                                <!-- 2026-09-21：MaxWidth 卡住卡片上限 —— 长文件名此前会把"×"挤出窗口
+                                     （WrapPanel 无法从中间折断一张卡片）。文件名用省略号截断，全名悬停可见。 -->
                                 <Border Background="#2A2A1E"
                                         BorderBrush="#C9A227"
                                         BorderThickness="1"
                                         CornerRadius="4"
                                         Padding="6,2"
+                                        MaxWidth="320"
                                         Margin="0,0,6,4"
                                         VerticalAlignment="Center"
                                         Cursor="Hand"
@@ -388,7 +394,8 @@
                                         <TextBlock Text="{Binding FileName}"
                                                    FontSize="12"
                                                    Foreground="#DDDDDD"
-                                                   VerticalAlignment="Center"/>
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"/>
                                         <TextBlock Text="{Binding Id}"
                                                    FontSize="10"
                                                    Foreground="#8A8A8A"
@@ -421,7 +428,7 @@
                          图标用矢量 Path 而非 "+" 字符：字体里的加号字形在行框内本身不居中，
                          无论怎么调字号/内边距都消不掉那点偏差，矢量图形才能真居中。 -->
                     <Button x:Name="BtnAttach"
-                            Width="30" Height="30"
+                            Width="30" Height="36"
                             Padding="0"
                             Background="#1E1E1E"
                             Foreground="#AAAAAA"
@@ -440,7 +447,7 @@
                     <!-- 选择文件（2026-09-16）：只签发一个牌号让 AI 能引用，文件本身不发给模型、不复制。
                          与「+」的区别：+ 是把文件当附件发给 AI 看，这里是让 AI 能对它动手（存到网盘）。 -->
                     <Button x:Name="BtnPickFile"
-                            Width="30" Height="30"
+                            Width="30" Height="36"
                             Padding="0"
                             Margin="6,0,0,0"
                             Background="#1E1E1E"
@@ -467,18 +474,19 @@
 
                     <!-- 富文本输入区：文字与附件块混排。
                          MaxHeight 放在外框上，内部 ScrollViewer 管滚动 —— 输入区随内容长高，到上限后内部滚动。
-                         MinHeight 给足两行，避免刚打开会话时只有窄窄一条。 -->
+                         2026-09-21：MinHeight 压到 22（外框约 36px = 原来的 2/3，用户拍板），
+                         两侧按钮与外框等高；圆角 4→8。 -->
                     <Border Grid.Column="1"
                             Background="#1E1E1E"
                             BorderBrush="#555555"
                             BorderThickness="1"
-                            CornerRadius="4"
+                            CornerRadius="8"
                             Padding="8,6"
                             MaxHeight="160">
                         <Grid>
                             <ScrollViewer x:Name="InputScroll" VerticalScrollBarVisibility="Auto">
                                 <RichTextBox x:Name="InputBox"
-                                             MinHeight="40"
+                                             MinHeight="22"
                                              Background="Transparent"
                                              Foreground="#E0E0E0"
                                              CaretBrush="#E0E0E0"
@@ -505,7 +513,7 @@
                     <Button x:Name="BtnSend"
                             Grid.Column="2"
                             Content="发送"
-                            Width="72" Height="30"
+                            Width="72" Height="36"
                             Margin="8,0,0,0"
                             VerticalAlignment="Bottom"
                             Background="#3A3A3A"
@@ -515,6 +523,8 @@
                 </Grid>
                 </Grid>
             </Border>
+                </Grid>
+            </Grid>
         </Grid>
     </Border>
 </Window>

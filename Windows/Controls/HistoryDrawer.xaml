@@ -103,8 +103,10 @@
 
     <!-- 历史会话抽屉：默认 Width=0 收起，宿主窗口用 DoubleAnimation 控制展开/收起。
          列表项操作经 ItemAction/BatchAction 事件抛给宿主（改字段/删除/导出等业务在宿主），
-         分组分区（置顶区 → 各分组 → 未分组）由 Load() 组织，分组头与条目用隐式 DataTemplate 区分。 -->
+         分组分区（置顶区 → 各分组 → 未分组）由 Load() 组织，分组头与条目用隐式 DataTemplate 区分。
+         2026-09-21：抽屉列纵贯到窗口底部，左下补圆角与窗口外框衔接。 -->
     <Border Background="#252525" BorderBrush="#3A3A3A" BorderThickness="0,0,1,0"
+            CornerRadius="0,0,0,6"
             ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>

@@ -229,6 +229,12 @@ public partial class AIDialogWindow : Window
         public string? DraftText;                   // 未发送草稿（切会话各自保留；关窗时落盘、重开回填）
         public bool Deleted;                        // 已删标记：其流跑完的 finally 不得再 Save，否则会复活已删文件
 
+        // 本会话用户选过的文件牌号（2026-09-21，用户拍板）：
+        // 卡片显示与对模型的注入都只认本会话的牌号 —— 切到别的会话看不见、模型也操作不了；
+        // 切回本会话卡片恢复显示、AI 仍可操作。牌号本体仍留在 FileHandleStore（24h 过期不变），
+        // TryResolve 保持全局：后台回答中的会话只要注入时见过牌号，工具调用就还能解析。
+        public List<string> HandleIds { get; } = new();
+
         public ConversationRuntime(ChatSessionService session, ExplainMode mode, NoteEntry? targetNote)
         {
             Session = session;
@@ -346,6 +352,7 @@ public partial class AIDialogWindow : Window
         TitleText.Text = GetModeTitle(runtime.Mode);
         Title = GetModeTitle(runtime.Mode);
         SetBusyUi(runtime.IsStreaming);
+        RefreshHandleChips();     // 牌号卡片跟会话走（2026-09-21）：切到哪个会话就摆哪个会话选的文件
         RestoreDraft(runtime);   // 回填目标 runtime 的草稿
         FocusInput();
     }
@@ -947,6 +954,7 @@ public partial class AIDialogWindow : Window
         if (sender is FrameworkElement fe && fe.Tag is string id)
         {
             FileHandleStore.Remove(id);
+            _active?.HandleIds.Remove(id);   // 卡片跟会话走：从当前会话摘掉
             RefreshHandleChips();
         }
     }
@@ -1683,7 +1691,7 @@ public partial class AIDialogWindow : Window
                 sb.Append("当前时间：").Append(PromptBuilder.DescribeNow(DateTime.Now))
                   .Append("。用户说「今天/明天/上周/这个月」等相对时间时，一律以这个时间为基准。");
 
-                var handleText = FileHandleStore.DescribeForModel();
+                var handleText = FileHandleStore.DescribeForModel(runtime.HandleIds);   // 按会话注入（2026-09-21）
                 if (handleText.Length > 0) sb.Append('\n').Append(handleText);
 
                 // Skill 清单（2026-09-20）：与「当前时间」「文件牌号」同类 —— 随手会变（装/删 Skill），
@@ -1831,6 +1839,12 @@ public partial class AIDialogWindow : Window
         };
         anim.Completed += (_, _) =>
         {
+            // 2026-09-21 修复"抽屉拖不动"：BeginAnimation 默认 HoldEnd —— 动画播完后仍占着 Width 属性，
+            // 之后 DragDelta 对 Width 的赋值全被它覆盖，拖拽形同虚设（用户反馈：有双箭头但拖不动）。
+            // 先落一个本地值再解除占用，属性不会回落。收起后输入区左下圆角恢复（抽屉不在了，窗口角归它）。
+            HistoryPanel.Width = target;
+            HistoryPanel.BeginAnimation(WidthProperty, null);
+            InputArea.CornerRadius = _drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6);
             if (_drawerOpen) HistoryPanel.MinWidth = DrawerMinWidth;
             DrawerSplitter.IsEnabled = true;
         };
@@ -2325,8 +2339,6 @@ public partial class AIDialogWindow : Window
         }
         return null;
     }
-
-    private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
 
     private void OnWindowClosed(object? sender, EventArgs e)
     {

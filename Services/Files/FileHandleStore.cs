@@ -112,6 +112,16 @@ public static class FileHandleStore
         }
     }
 
+    /// <summary>按牌号取单个句柄（不存在或已过期返回 null）。供界面按会话渲染卡片用。</summary>
+    public static FileHandleInfo? Get(string handleId)
+    {
+        lock (Gate)
+        {
+            PurgeExpiredLocked();
+            return Handles.TryGetValue((handleId ?? "").Trim(), out var h) ? ToInfo(h) : null;
+        }
+    }
+
     /// <summary>当前有效句柄快照（注入系统提示，让模型知道有哪些牌号可用）。</summary>
     public static List<FileHandleInfo> Snapshot()
     {
@@ -132,10 +142,18 @@ public static class FileHandleStore
         lock (Gate) Handles.Clear();
     }
 
-    /// <summary>注入系统提示的文本（无句柄时返回空串，不占 token）。</summary>
-    public static string DescribeForModel()
+    /// <summary>注入系统提示的文本（无句柄时返回空串，不占 token）。
+    /// 2026-09-21：支持按会话过滤 —— <paramref name="handleIds"/> 非空时只描述这些牌号
+    /// （牌号跨会话隔离：别的会话里选的文件，本会话的模型看不见也操作不了，用户拍板）。
+    /// 传 null = 全量（保持旧行为，供诊断用）。</summary>
+    public static string DescribeForModel(IEnumerable<string>? handleIds = null)
     {
         var items = Snapshot();
+        if (handleIds != null)
+        {
+            var ids = new HashSet<string>(handleIds, StringComparer.Ordinal);
+            items = items.Where(h => ids.Contains(h.Id)).ToList();
+        }
         if (items.Count == 0) return "";
 
         var lines = items.Select(h =>
