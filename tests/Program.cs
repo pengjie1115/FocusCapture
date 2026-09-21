@@ -14,11 +14,30 @@ using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using FocusCapture;                 // FocusCapturePaths（数据根，候选目录里的"数据目录"一档取自它）
 using FocusCapture.Services;
 using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
+
+// ── 子进程模式（只供下面 [8] 组当被测子进程用）──
+// 拿自己这个可执行文件当「说完就挂住 / 说完就退出」的被测进程：不依赖 Python 运行时、
+// 不联网、不碰任何用户数据，跑在哪儿都成立。
+// 必须放在最前面 —— 子进程进来要是一路把全量检查点跑完，那一次就白等几十秒。
+if (args.Contains("--child-echo"))
+{
+    Console.WriteLine("ECHO_OK");
+    Console.Out.Flush();
+    return 0;
+}
+if (args.Contains("--child-hold"))
+{
+    Console.WriteLine("KEEP_ME");
+    Console.Out.Flush();
+    Thread.Sleep(30_000);   // 挂住等父进程超时把它杀掉（"输出完就卡住"的最小复现）
+    return 3;
+}
 
 int pass = 0, fail = 0;
 
@@ -336,6 +355,122 @@ try
 finally
 {
     try { Directory.Delete(skillTmp, true); } catch { }
+}
+
+Console.WriteLine();
+Console.WriteLine("[7] 运行时部件候选目录 SkillRuntimeLocations");
+
+// 守的是什么（2026-09-21 新增）：运行时部件（lark-cli / 内置 Python）有「自带」与「数据目录
+// （按需下载）」两处来源，找的顺序必须固定且可预期。顺序错了的后果是**静默的** ——
+// 照样跑得起来，但跑的是旧的那一份，这类"看着对其实错"最难查，所以由检查点守。
+// 本组会把数据根临时指到沙箱（候选里的"数据目录"一档取自 FocusCapturePaths.Root），跑完还原。
+const string skillId = "lark-cli";
+var locTmp = Path.Combine(Path.GetTempPath(), "fc-tests-runtimeloc-" + Guid.NewGuid().ToString("N")[..8]);
+var locOldRoot = FocusCapturePaths.RootOverride;   // 记住原值：跑完还原，别影响后面的组
+FocusCapturePaths.RootOverride = locTmp;
+try
+{
+    var appDir = Path.Combine(locTmp, "app");                 // 假装的应用目录
+    var locBundled = Path.Combine(appDir, "runtime", skillId); // 自带那一档
+    var locData = SkillRuntimeLocations.DataDir(skillId);      // 数据目录那一档
+
+    // 7.1 顺序：自带 → 数据目录
+    var cands = SkillRuntimeLocations.CandidateDirs(appDir, skillId);
+    Check(cands.Count == 2 &&
+          string.Equals(cands[0], locBundled, StringComparison.OrdinalIgnoreCase) &&
+          string.Equals(cands[1], locData, StringComparison.OrdinalIgnoreCase),
+          "候选顺序必须是「自带 → 数据目录」",
+          $"实际：{string.Join(" | ", cands)}");
+
+    // 7.2 数据目录取自数据根，不是写死的 %AppData%
+    Check(locData.StartsWith(locTmp, StringComparison.OrdinalIgnoreCase),
+          "数据目录必须来自数据根（写死 %AppData% 会出现「下载到 A、使用找 B」）",
+          $"实际：{locData}");
+
+    // 7.3 两处都没有 → null，不抛也不猜
+    Check(SkillRuntimeLocations.FindInCandidates(appDir, skillId, "lark-cli") is null,
+          "候选目录都没有该文件时必须返回 null（不抛异常、也不乱猜一个路径出来）");
+
+    // 7.4 只有数据目录有 → 命中数据目录（按需下载之后的常态）
+    Directory.CreateDirectory(locData);
+    File.WriteAllText(Path.Combine(locData, "lark-cli.exe"), "stub");
+    var hitData = SkillRuntimeLocations.FindInCandidates(appDir, skillId, "lark-cli");
+    Check(hitData != null && string.Equals(Path.GetDirectoryName(hitData), locData, StringComparison.OrdinalIgnoreCase),
+          "自带没有、数据目录有时，必须命中数据目录那一份（否则按需下载等于白下）",
+          $"实际：{hitData}");
+
+    // 7.5 两处都有 → 必须命中自带那一份（证明顺序真的生效，不是"哪个存在就返回哪个"）
+    Directory.CreateDirectory(locBundled);
+    File.WriteAllText(Path.Combine(locBundled, "lark-cli.exe"), "stub");
+    var hitBundled = SkillRuntimeLocations.FindInCandidates(appDir, skillId, "lark-cli");
+    Check(hitBundled != null && string.Equals(Path.GetDirectoryName(hitBundled), locBundled, StringComparison.OrdinalIgnoreCase),
+          "两处都有时必须命中自带的那一份（自带优先，顺序不能反）",
+          $"实际：{hitBundled}");
+
+    // 7.6 拿不到应用目录时不抛，候选退化为数据目录一档
+    var noBase = SkillRuntimeLocations.CandidateDirs(null, skillId);
+    Check(noBase.Count == 1 && string.Equals(noBase[0], locData, StringComparison.OrdinalIgnoreCase),
+          "拿不到应用目录时候选应退化为只剩数据目录，且不抛异常",
+          $"实际：{string.Join(" | ", noBase)}");
+
+    // 7.7 自带与数据目录重合（应用恰好装在数据根里）时不重复前置同一个目录
+    var overlapped = SkillRuntimeLocations.CandidateDirs(locTmp, skillId);
+    Check(overlapped.Count == 1, "自带目录与数据目录重合时不应重复列出", $"实际 {overlapped.Count} 条");
+}
+finally
+{
+    FocusCapturePaths.RootOverride = locOldRoot;
+    try { Directory.Delete(locTmp, true); } catch { }
+}
+
+// ── [8] 子进程流式读与超时保留 SkillProcess ──
+// 守的是什么（2026-09-21 新增）：「输出完就卡住」是子进程真实存在的形态 ——
+// lark-cli 的 `config init --new` 就是这样：启动约 1 秒把验证链接吐完（走 stderr），
+// 然后一直等使用者在浏览器里把应用建完才退出。
+// 旧实现按「进程退出后才读输出」写（ReadToEndAsync），于是链接明明已经出来了却永远读不到；
+// 超时分支还把已读内容丢成空字符串 —— 等于把唯一的证据也扔了。
+// 本组拿「自己这个 exe」当被测子进程，两端都可控。
+Console.WriteLine();
+Console.WriteLine("[8] 子进程流式读与超时保留 SkillProcess");
+
+var selfExe = Environment.ProcessPath;
+Check(!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe),
+      "应能拿到自身的可执行文件路径（本组要拿它当被测子进程）", $"实际：{selfExe}");
+
+if (!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe))
+{
+    // 8.1 超时保留已读：进程「说完就挂住」时，已经读到的 stdout 不许丢
+    var holdPsi = SkillProcess.Build(selfExe!, new[] { "--child-hold" }, Path.GetTempPath(), false);
+    var rHeld = await SkillProcess.RunAsync(holdPsi, null, 1500);
+    Check(rHeld.TimedOut, "该子进程应当是在超时点被杀掉的（否则本组前提不成立）",
+          $"实际 TimedOut={rHeld.TimedOut}，exit={rHeld.ExitCode}");
+    Check(rHeld.Stdout.Contains("KEEP_ME"),
+          "超时被杀时，已经读到的 stdout 必须原样交出来（旧实现丢弃成空字符串）",
+          $"实际 stdout：{Cut(rHeld.Stdout)}");
+
+    // 8.2 流式回调：进程还活着的时候就要能收到行，不必等它退出
+    var streamed = new List<string>();
+    var streamGate = new object();
+    var rStream = await SkillProcess.RunAsync(holdPsi, null, 1500, default,
+                                              line => { lock (streamGate) streamed.Add(line); });
+    Check(streamed.Any(l => l.Contains("KEEP_ME")),
+          "行回调必须在进程还活着时就收到输出（等退出才回调 = 阻塞命令永远拿不到链接）",
+          $"实际收到 {streamed.Count} 行，TimedOut={rStream.TimedOut}");
+
+    // 8.3 正常路径不许被改坏：退出码与完整输出都要在
+    var echoPsi = SkillProcess.Build(selfExe!, new[] { "--child-echo" }, Path.GetTempPath(), false);
+    var rEcho = await SkillProcess.RunAsync(echoPsi, null, 20_000);
+    Check(rEcho.Ok && rEcho.ExitCode == 0 && rEcho.Stdout.Contains("ECHO_OK"),
+          "正常退出的路径必须照旧：退出码 0 + 完整 stdout（改成流式读不能把这条改坏）",
+          $"实际 exit={rEcho.ExitCode}，stdout：{Cut(rEcho.Stdout)}");
+
+    // 8.4 启动失败也必须如实返回，不许抛（SkillProcess 的「永不抛」契约）
+    var noSuchExe = Path.Combine(Path.GetTempPath(), "fc-no-such-" + Guid.NewGuid().ToString("N")[..6] + ".exe");
+    var badPsi = SkillProcess.Build(noSuchExe, new[] { "x" }, Path.GetTempPath(), false);
+    var rBad = await SkillProcess.RunAsync(badPsi, null, 2000);
+    Check(!rBad.Ok && rBad.StartError != null,
+          "启动失败必须走 StartError 返回、不抛异常（调用方要按场景自己措辞）",
+          $"实际 StartError：{Cut(rBad.StartError)}");
 }
 
 Console.WriteLine();

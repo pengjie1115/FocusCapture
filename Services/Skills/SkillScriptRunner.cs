@@ -17,7 +17,7 @@ namespace FocusCapture.Services.Skills;
 /// <item>超时 150 秒，到点杀进程树（必须大于脚本内部超时：kb.py 自己就设了 90 秒）</item>
 /// <item>输出截断（保留头尾）</item>
 /// <item>CWD 固定为该 Skill 根目录</item>
-/// <item>环境变量：注入 Python 行为控制项、清掉宿主标记（防串号）、把自带依赖目录前置到 PATH</item>
+/// <item>环境变量：注入 Python 行为控制项、清掉宿主标记（防串号）、把依赖的全部候选目录（自带 → 数据目录）前置到 PATH</item>
 /// <item>首次执行某 Skill 必须用户确认一次，之后记住</item>
 /// <item><b>跑之前预检外部依赖</b>（在不在 / 要不要先授权）—— 授权在宿主内闭环，绝不外包给用户</item>
 /// </list>
@@ -160,7 +160,7 @@ public sealed class SkillScriptRunner
             new[] { scriptPath }.Concat(args ?? Array.Empty<string>()),
             skill.RootPath,                                  // 规则 7
             redirectStdin: stdin != null,
-            prependPath: BundledPathPrefix(),                 // 让脚本里的 which 命中应用自带的依赖
+            prependPath: DependencyPathPrefix(),              // 让脚本里的 which 命中候选目录（自带 + 数据目录）
             pythonFlags: true);
 
         AppLog.Info("Skill", $"执行 {skill.Name}\\scripts\\{file}，参数 {args?.Count ?? 0} 个" +
@@ -252,14 +252,26 @@ public sealed class SkillScriptRunner
         return null;
     }
 
-    /// <summary>把自带依赖目录组成 PATH 前缀（只包含真的存在的目录）</summary>
-    private string? BundledPathPrefix()
+    /// <summary>
+    /// 把依赖的**全部候选目录**组成 PATH 前缀（自带 + 数据目录；只包含真的存在的目录）。
+    ///
+    /// <para>
+    /// 只前置自带那一份是不够的：按需下载的 CLI 落在数据目录，
+    /// 脚本里的 <c>shutil.which("lark-cli")</c> 就找不到 → 桥接脚本静默失效（设计稿 R2）。
+    /// 顺序与候选一致（自带优先），命中哪一份由 PATH 顺序自己决定。
+    /// </para>
+    /// </summary>
+    private string? DependencyPathPrefix()
     {
         var dirs = new List<string>();
         foreach (var dep in _dependencies)
         {
-            var dir = dep.BundledDir;
-            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dirs.Add(dir!);
+            foreach (var dir in dep.CandidateDirs)
+            {
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;
+                if (dirs.Contains(dir, StringComparer.OrdinalIgnoreCase)) continue;   // 自带与数据目录重合时不重复塞
+                dirs.Add(dir);
+            }
         }
         return dirs.Count == 0 ? null : string.Join(Path.PathSeparator, dirs);
     }

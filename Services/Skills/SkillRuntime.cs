@@ -17,24 +17,39 @@ namespace FocusCapture.Services.Skills;
 /// </summary>
 public sealed class SkillRuntime
 {
-    private readonly string _pythonPath;
+    /// <summary>解释器在运行时候选目录里的末级目录名（即 <c>runtime\python\</c>）</summary>
+    private const string PythonFolderId = "python";
+
+    /// <summary>内置解释器的候选路径，顺序即优先级：自带 → 数据目录（规则见 <see cref="SkillRuntimeLocations"/>）</summary>
+    private readonly IReadOnlyList<string> _pythonCandidates;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private (bool Ok, string Message)? _cached;
 
     /// <param name="baseDir">应用目录（调用方传 <c>AppContext.BaseDirectory</c>）</param>
     public SkillRuntime(string? baseDir)
     {
-        _pythonPath = Path.Combine(baseDir ?? "", "runtime", "python", "python.exe");
+        // 候选而不是固定拼接：运行时将来可能来自「随包分发」或「按需下载到数据目录」两处之一
+        // （2026-09-21，设计稿 R3）。固定拼自带目录时，按需下载完照样说"未安装"。
+        var list = SkillRuntimeLocations.CandidateDirs(baseDir, PythonFolderId)
+            .Where(d => !string.IsNullOrEmpty(d))
+            .Select(d => Path.Combine(d, "python.exe"))
+            .ToList();
+        if (list.Count == 0) list.Add("python.exe");   // 兜底：拿不到任何根目录时也别让下标越界
+        _pythonCandidates = list;
     }
 
-    /// <summary>内置解释器的预期路径（设置页展示用）</summary>
-    public string PythonPath => _pythonPath;
+    /// <summary>
+    /// 内置解释器的实际路径：候选里**第一个真的存在的**；都不在时返回第一档（自带）的预期路径 ——
+    /// 报错文案要指着它，使用者才知道去哪儿找。
+    /// </summary>
+    public string PythonPath => _pythonCandidates.FirstOrDefault(File.Exists) ?? _pythonCandidates[0];
 
     /// <summary>内置解释器是否在位（只查文件，不启动进程）</summary>
-    public bool IsPresent => File.Exists(_pythonPath);
+    public bool IsPresent => _pythonCandidates.Any(File.Exists);
 
     /// <summary>运行时的初始状态（只查文件，不启动进程）—— 用于清单生成这种同步热路径</summary>
-    public string QuickStatus => IsPresent ? "已就位" : $"未安装（缺少 {_pythonPath}）";
+    public string QuickStatus => IsPresent ? "已就位" : $"未安装（缺少 {_pythonCandidates[0]}）";
 
     /// <summary>
     /// 真跑一次（结果缓存到进程结束）。
@@ -62,14 +77,14 @@ public sealed class SkillRuntime
 
     private async Task<(bool Ok, string Message)> DoProbeAsync(CancellationToken ct)
     {
-        if (!File.Exists(_pythonPath))
-            return (false, $"未检测到内置 Python 运行时。预期位置：{_pythonPath}");
+        if (!File.Exists(PythonPath))
+            return (false, $"未检测到内置 Python 运行时。预期位置：{PythonPath}");
 
         try
         {
             var psi = new ProcessStartInfo
             {
-                FileName = _pythonPath,
+                FileName = PythonPath,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -123,7 +138,7 @@ public sealed class SkillRuntime
     /// </para>
     /// </summary>
     public string MissingHint =>
-        $"未检测到可用的 Python 运行时（预期位置：{_pythonPath}）。\n" +
+        $"未检测到可用的 Python 运行时（预期位置：{PythonPath}）。\n" +
         "这是**应用自身的组件缺失**，不是用户的操作问题：请如实说明该 Skill 现在执行不了，" +
         "并提示用户到「设置 → AI 模型 → Skill 扩展」查看运行时状态。" +
         "**不要建议用户去命令行、也不要让用户去找脚本文件操作。**";

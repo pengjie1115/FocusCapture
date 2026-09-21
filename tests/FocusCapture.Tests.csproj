@@ -23,6 +23,8 @@
     <!-- 主项目通过 GlobalUsings.cs 提供这些命名空间；快层刻意不引主项目，需自己补一份。 -->
     <Using Include="System.Text" />
     <Using Include="System.Text.RegularExpressions" />
+    <!-- SkillProcess 用 Process/ProcessStartInfo（主项目由 GlobalUsings 提供 System.Diagnostics） -->
+    <Using Include="System.Diagnostics" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,6 +38,15 @@
          真实 SKILL.md 的写法千奇百怪。执行器（SkillScriptRunner）依赖 AppLog，只能进慢层。 -->
     <Compile Include="..\Services\Skills\SkillCatalog.cs" Link="Src\SkillCatalog.cs" />
     <Compile Include="..\Services\Skills\SkillManifest.cs" Link="Src\SkillManifest.cs" />
+    <!-- 运行时部件的候选目录（2026-09-21）：SkillRuntimeLocations 刻意零项目依赖，
+         只依赖数据根 FocusCapturePaths（同样零依赖），所以两个文件都能在这里直接链接。
+         顺序错了的后果是静默的 —— 能跑起来、但跑的是旧的那一份，正因如此必须由检查点守。 -->
+    <Compile Include="..\Services\Skills\SkillRuntimeLocations.cs" Link="Src\SkillRuntimeLocations.cs" />
+    <Compile Include="..\Services\FocusCapturePaths.cs" Link="Src\FocusCapturePaths.cs" />
+    <!-- 子进程装配与读取（2026-09-21）：SkillProcess 同样零项目依赖（不用 AppLog、不碰 WPF），
+         所以能在这里直接测「流式读 + 超时保留已读」—— 这两条以前没有防线，
+         而它们错了的后果是"输出明明出来了却永远读不到"（阻塞命令直接死锁）。 -->
+    <Compile Include="..\Services\Skills\SkillProcess.cs" Link="Src\SkillProcess.cs" />
   </ItemGroup>
 
 </Project>

@@ -245,9 +245,26 @@ print(json.dumps({
         var lark = deps[0];
         var exe = lark.Locate();
         Check(exe != null, "应能定位到 lark-cli（应用自带 runtime\\lark-cli 或系统 PATH）", $"实际：{exe}");
+        // 定位语义 2026-09-21 更新：候选从「只有自带」扩成「自带 → 数据目录 → 系统 PATH」。
+        // 判据同时从"字符串前缀"换成"所在目录相等"—— 前缀判法会把相邻目录（如 lark-cli-old\）误判成同一档。
         Check(exe != null && lark.BundledDir != null &&
-              exe.StartsWith(lark.BundledDir, StringComparison.OrdinalIgnoreCase),
+              string.Equals(Path.GetDirectoryName(exe), lark.BundledDir, StringComparison.OrdinalIgnoreCase),
               "定位必须命中应用自带那一份（自带优先；靠'别的应用恰好装过'是不可移植的）", $"实际：{exe}");
+
+        // ── 1b. 候选目录：自带 → 数据目录（2026-09-21 新增，设计稿 R2/R3）──
+        // 为什么要守：顺序错了的后果是**静默的** —— 照样跑得起来，但跑的是旧的那一份。
+        var larkCands = lark.CandidateDirs;
+        var candFirst = larkCands.Count > 0 ? larkCands[0] : "(缺失)";
+        var candSecond = larkCands.Count > 1 ? larkCands[1] : "(缺失)";
+        Check(larkCands.Count >= 2, "候选目录应有两档（自带 + 数据目录）", $"实际：{string.Join(" | ", larkCands)}");
+        Check(lark.BundledDir != null &&
+              string.Equals(candFirst, lark.BundledDir, StringComparison.OrdinalIgnoreCase),
+              "候选第一档必须是自带目录（自带优先）", $"实际：{candFirst}，自带目录：{lark.BundledDir}");
+        Check(candSecond.StartsWith(FocusCapturePaths.Root, StringComparison.OrdinalIgnoreCase),
+              "候选第二档必须落在数据根下（按需下载就落这里；写死 %AppData% 会跟不上自定义数据根）",
+              $"实际：{candSecond}，数据根：{FocusCapturePaths.Root}");
+        Check(lark.SourceOf(exe) == DependencySource.Bundled,
+              "自带那一份必须被判为 Bundled（设置页据此显示「应用自带」）", $"实际：{lark.SourceOf(exe)}");
 
         // ── 2. 静态扫描：认出用到它的 Skill，且不误判 ──
         Check(lark.Matches("LARK = shutil.which(\"lark-cli\")"), "静态扫描应认出脚本里用到 lark-cli");
@@ -371,6 +388,44 @@ print(json.dumps({
               "脚本自己报'未授权'时，宿主必须补上应用内入口", $"实际：{Short(rUnauth)}");
         Check(!rUnauth.Contains("已完成") && !rUnauth.Contains("已执行"),
               "失败文本不得含「已完成/已执行」（防假成功 —— 最重要的一条）");
+
+        // ── 9b. R2：脚本子进程的 PATH 必须含**全部候选目录**（自带 + 数据目录）──
+        // 只前置自带那一份时，按需下载到数据目录的 CLI 在脚本里 os/shutil.which() 找不到 —— 静默失效。
+        // 判据落在产物上：让脚本把它自己的 PATH 打出来，而不是"读代码看着对"。
+        var pathSkillDir = Path.Combine(skillsRoot, "pathprobe");
+        Directory.CreateDirectory(Path.Combine(pathSkillDir, "scripts"));
+        File.WriteAllText(Path.Combine(pathSkillDir, "SKILL.md"),
+            "---\nname: pathprobe\ndescription: PATH 前置检查点用\n---\n正文", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(pathSkillDir, "scripts", "showpath.py"),
+            "import os\nprint('PATH_IS=' + os.environ.get('PATH', ''))\n", new UTF8Encoding(false));
+
+        // 造出「按需下载之后」的数据目录（只有目录真的存在才会被前置进去）
+        var dataRuntimeDir = SkillRuntimeLocations.DataDir(SkillDependencies.LarkCliId);
+        var dataRuntimeExisted = Directory.Exists(dataRuntimeDir);
+        Directory.CreateDirectory(dataRuntimeDir);
+        try
+        {
+            var pathCatalog = new SkillCatalog(skillsRoot);
+            var pathRunner = new SkillScriptRunner(pathCatalog, runtime, timeoutMs: 5000,
+                                                  dependencies: SkillDependencies.All(repoRoot));
+            pathRunner.TrustedSkills.Add("pathprobe");   // 跳过准入确认，本组只测 PATH
+            var rPath = await pathRunner.RunAsync("pathprobe", "showpath.py", null, null, default);
+
+            var pathLine = rPath.Split('\n').FirstOrDefault(l => l.StartsWith("PATH_IS=")) ?? "";
+            var bundledRuntimeDir = SkillRuntimeLocations.BundledDir(repoRoot, SkillDependencies.LarkCliId) ?? "";
+            Check(bundledRuntimeDir.Length > 0 &&
+                  pathLine.Contains(bundledRuntimeDir, StringComparison.OrdinalIgnoreCase),
+                  "子进程 PATH 必须前置自带依赖目录（脚本里的 which 才会命中我们的那份）",
+                  $"实际：{Short(pathLine)}");
+            Check(pathLine.Contains(dataRuntimeDir, StringComparison.OrdinalIgnoreCase),
+                  "子进程 PATH 也必须前置数据目录 —— 否则按需下载的 CLI 在脚本里找不到（R2 的要害）",
+                  $"实际：{Short(pathLine)}");
+        }
+        finally
+        {
+            // 复原：别把「造出来的数据目录」留成后续检查点的环境
+            if (!dataRuntimeExisted) { try { Directory.Delete(dataRuntimeDir, true); } catch { } }
+        }
 
         // ── 10. 面向用户的文案纪律：不许出现开发者路径 ──
         // 实测教训：模型会把文案里的 `tools\xxx.bat` 原样抄进给用户的回答里，用户根本执行不了。

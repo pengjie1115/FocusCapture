@@ -429,12 +429,18 @@ public partial class SettingsWindow : Window
     {
         var panel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
 
+        // 位置三态与候选顺序对齐（自带 → 数据目录 → 系统 PATH，2026-09-21）：
+        // 按需下载的那一份必须能一眼看出来是「已下载」——否则使用者会以为它来自系统，
+        // 将来排查"到底跑的是哪一份"时无从下手。
         var location = !status.Resolved
             ? "未找到"
-            : dep.BundledDir != null && status.ExePath != null &&
-              status.ExePath.StartsWith(dep.BundledDir, StringComparison.OrdinalIgnoreCase)
-                ? "应用自带"
-                : "系统 PATH";
+            : dep.SourceOf(status.ExePath) switch
+            {
+                DependencySource.Bundled => "应用自带",
+                DependencySource.DataDir => "已下载",
+                DependencySource.SystemPath => "系统 PATH",
+                _ => "位置未知",
+            };
 
         var color = status.Auth switch
         {

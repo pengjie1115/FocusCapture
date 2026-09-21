@@ -39,6 +39,25 @@ public sealed record DependencyStatus(
 public sealed record DeviceCodeSession(string DeviceCode, string VerificationUrl, int ExpiresInSeconds);
 
 /// <summary>
+/// 可执行文件是从哪一档找到的（只用于展示，不参与任何判定）。
+/// 与 <see cref="SkillRuntimeLocations"/> 的候选顺序一一对应。
+/// </summary>
+public enum DependencySource
+{
+    /// <summary>说不清（路径为空 / 取不到所在目录）</summary>
+    Unknown,
+
+    /// <summary>随包分发的那一份（<c>&lt;应用目录&gt;\runtime\&lt;id&gt;\</c>）</summary>
+    Bundled,
+
+    /// <summary>按需下载落在数据目录的那一份（<c>&lt;数据根&gt;\runtime\&lt;id&gt;\</c>）</summary>
+    DataDir,
+
+    /// <summary>使用者自己装的那一份（系统 PATH 里找到的）</summary>
+    SystemPath,
+}
+
+/// <summary>
 /// 一个外部依赖：某个外部可执行程序 + 它的登录态 + 授权方式（2026-09-20）。
 ///
 /// <para>
@@ -49,7 +68,8 @@ public sealed record DeviceCodeSession(string DeviceCode, string VerificationUrl
 /// </para>
 /// <para>
 /// <b>定位顺序（刻意的）：</b>① 应用自带的 <c>&lt;应用目录&gt;\runtime\&lt;id&gt;\</c> —— 确定、可随包分发；
-/// ② 系统 PATH —— 兼容用户自己装过的情况。**不认识"别的应用安装目录里恰好有一份"**：
+/// ② 数据目录 <c>&lt;数据根&gt;\runtime\&lt;id&gt;\</c> —— 按需下载落这里（2026-09-21 增，R2/R3）；
+/// ③ 系统 PATH —— 兼容用户自己装过的情况。**不认识"别的应用安装目录里恰好有一份"**：
 /// 那既不可移植，也让宿主的行为取决于别人装了什么。
 /// </para>
 /// <para>
@@ -64,7 +84,7 @@ public class SkillDependency
     /// <summary>授权类命令的超时（扫码要人操作，不能用执行脚本那套 150 秒）</summary>
     private const int QuickCommandTimeoutMs = 30_000;
 
-    private readonly string? _bundledDir;
+    private readonly string? _baseDir;
 
     /// <param name="id">稳定标识，同时也是自带目录名（<c>runtime\&lt;id&gt;\</c>）</param>
     /// <param name="displayName">给用户看的名字</param>
@@ -82,7 +102,7 @@ public class SkillDependency
         DisplayName = displayName;
         ExeName = exeName;
         ScriptMarkers = scriptMarkers;
-        _bundledDir = string.IsNullOrEmpty(baseDir) ? null : Path.Combine(baseDir, "runtime", id);
+        _baseDir = string.IsNullOrEmpty(baseDir) ? null : baseDir;
     }
 
     public string Id { get; }
@@ -96,8 +116,41 @@ public class SkillDependency
     /// <summary>给用户看的权限域说明（透明优先：让他在扫码前知道要批什么）</summary>
     public virtual string AuthScopeText => "";
 
-    /// <summary>自带目录（执行器会把它前置到子进程 PATH，让脚本里的 which 命中我们的那份）</summary>
-    public string? BundledDir => _bundledDir;
+    /// <summary>自带目录（候选里的第一档）</summary>
+    public string? BundledDir => SkillRuntimeLocations.BundledDir(_baseDir, Id);
+
+    /// <summary>
+    /// 候选目录清单，顺序即优先级：<b>自带 → 数据目录</b>（规则见 <see cref="SkillRuntimeLocations"/>）。
+    /// 执行器会把**全部**候选前置到子进程 PATH —— 只前置自带那一份时，
+    /// 按需下载到数据目录的 CLI 在脚本里 <c>shutil.which()</c> 会找不到。
+    /// </summary>
+    public IReadOnlyList<string> CandidateDirs => SkillRuntimeLocations.CandidateDirs(_baseDir, Id);
+
+    /// <summary>
+    /// 这个可执行文件是从哪一档找到的（设置页显示「应用自带 / 已下载 / 系统 PATH」用）。
+    /// 判据是**所在目录相等**，不是字符串前缀 —— 前缀判法会把相邻目录（如 <c>lark-cli-old\</c>）误判成同一档。
+    /// </summary>
+    public DependencySource SourceOf(string? exePath)
+    {
+        if (string.IsNullOrEmpty(exePath)) return DependencySource.Unknown;
+
+        string? dir;
+        try { dir = Path.GetDirectoryName(exePath!); } catch { dir = null; }
+        if (string.IsNullOrEmpty(dir)) return DependencySource.Unknown;
+
+        if (SameDir(dir!, BundledDir)) return DependencySource.Bundled;
+        if (SameDir(dir!, SkillRuntimeLocations.DataDir(Id))) return DependencySource.DataDir;
+        return DependencySource.SystemPath;
+    }
+
+    private static bool SameDir(string a, string? b)
+    {
+        if (string.IsNullOrEmpty(b)) return false;
+        return string.Equals(TrimEnd(a), TrimEnd(b!), StringComparison.OrdinalIgnoreCase);
+
+        static string TrimEnd(string p) =>
+            p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
 
     /// <summary>确认这个依赖被某段脚本文本用到（大小写不敏感的朴素匹配，宁可多判不可漏判）</summary>
     public bool Matches(string scriptText)
@@ -108,27 +161,10 @@ public class SkillDependency
         return false;
     }
 
-    /// <summary>定位可执行文件：应用自带优先，其次 PATH。找不到返回 null（**不抛**）</summary>
-    public string? Locate()
-    {
-        if (_bundledDir != null)
-        {
-            var bundled = Path.Combine(_bundledDir, ExeName + ".exe");
-            if (File.Exists(bundled)) return bundled;
-        }
-
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            try
-            {
-                var candidate = Path.Combine(dir.Trim().Trim('"'), ExeName + ".exe");
-                if (File.Exists(candidate)) return candidate;
-            }
-            catch { /* PATH 里有畸形项是常态，跳过 */ }
-        }
-        return null;
-    }
+    /// <summary>定位可执行文件：候选目录（自带 → 数据目录）优先，其次系统 PATH。找不到返回 null（**不抛**）</summary>
+    public string? Locate() =>
+        SkillRuntimeLocations.FindInCandidates(_baseDir, Id, ExeName)
+        ?? SkillRuntimeLocations.FindOnPath(ExeName);
 
     /// <summary>
     /// 探测登录态。**永不抛** —— 探测不出来就是 <see cref="DependencyAuth.Unknown"/>，
@@ -139,7 +175,7 @@ public class SkillDependency
         var exe = Locate();
         if (exe == null)
             return new DependencyStatus(Id, DisplayName, false, null, DependencyAuth.Unknown, "",
-                $"未找到 {ExeName}（应用未自带、系统 PATH 里也没有）");
+                $"未找到 {ExeName}（应用未自带、按需目录里没有、系统 PATH 里也没有）");
 
         var psi = SkillProcess.Build(exe, new[] { "auth", "status" }, Path.GetDirectoryName(exe) ?? "", false);
         var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
