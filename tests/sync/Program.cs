@@ -84,6 +84,7 @@ internal static class Program
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
+            Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
             Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
@@ -642,6 +643,43 @@ print(json.dumps({
         {
             try { Directory.Delete(tmp, true); } catch { }
         }
+    }
+
+    // ══════════════════ 全局深色滚动条与标题栏（2026-09-21，UI 配色 A+B 方案） ══════════════════
+    //
+    // 守的是什么：全 App 的滚动条不再是 WPF 默认白条；AI 问答窗口的原生标题栏不再靠系统心情。
+    // 这些性质主要活在 XAML/源码文本里，没有轻量的产物级验法（渲染结果只有快照能看，快照不进门禁），
+    // 所以用源码文本断言 —— 断言的是「方案落地的最小完整形态」，任何一条被删 = 配色走样。
+    private static void TestDarkUiChrome()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var appXaml = File.ReadAllText(Path.Combine(repoRoot, "App.xaml"));
+        var aiXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AIDialogWindow.xaml"));
+        var aiCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AIDialogWindow.xaml.cs"));
+        var darkSrc = File.ReadAllText(Path.Combine(repoRoot, "Services", "DarkTitleBar.cs"));
+
+        // ── 1. 隐式样式必须在 App.xaml（不带 Key 才能对全 App 生效；写成 x:Key 就没人引用得到）──
+        Check(appXaml.Contains("<Style TargetType=\"ScrollBar\">"),
+              "App.xaml 必须有隐式（无 Key）ScrollBar 样式 —— 全部窗口/弹出层的滚动条都靠它变深色",
+              "找不到 <Style TargetType=\"ScrollBar\">");
+        Check(appXaml.Contains("#3E3E3A") && appXaml.Contains("#5FA46A"),
+              "滚动条配色必须落实 A+B 方案：常态 #3E3E3A（隐入背景）+ 悬停/拖动 #5FA46A（品牌绿）");
+        Check(appXaml.Contains("PART_Track"),
+              "ScrollBar 模板必须带名为 PART_Track 的 Track（名字写错 = 滑块不随内容滚动，看着在却拖不动）");
+        Check(appXaml.Contains("ScrollBar.PageUpCommand") && appXaml.Contains("IsEnabled=\"False\""),
+              "轨道两端的翻页按钮必须隐藏且禁用（IsEnabled=False 让点击轨道翻页仍然可用）");
+
+        // ── 2. AI 问答窗口：主动申请深色标题栏 + 品牌绿 accent 线 ──
+        Check(aiCs.Contains("DarkTitleBar.Enable(this)"),
+              "AI 问答窗口必须主动申请深色原生标题栏（WPF 默认白底；设置窗口的深色是系统行为，不可依赖）");
+        Check(darkSrc.Contains("{ 19, 20 }"),
+              "深色标题栏必须同时尝试 DWM 属性 19 与 20（1809 旧值 / 1903 正式值，缺一个老系统就回退白底）");
+        Check(aiXaml.Contains("BorderBrush=\"#4CAF50\" BorderThickness=\"0,0,0,2\""),
+              "AI 问答窗口内标题栏必须有 2px 品牌绿 accent 线（方案 B 的标志，丢了 = 配色走样）");
+
+        // ── 3. 死样式不许复活：只定义未引用的 ScrollbarStyle 已删，别再加回来 ──
+        Check(!aiXaml.Contains("x:Key=\"ScrollbarStyle\""),
+              "AI 问答窗口里不许再放只定义未引用的 ScrollbarStyle（它会让人误以为滚动条已被它治好，2026-09-21 已删）");
     }
 
     // ══════════════════ 运行时按需下载的配方（2026-09-21，授权闭环步骤 5） ══════════════════

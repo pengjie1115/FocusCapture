@@ -44,10 +44,7 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="ScrollbarStyle" TargetType="ScrollBar">
-            <Setter Property="Background" Value="#1E1E1E"/>
-            <Setter Property="Width" Value="8"/>
-        </Style>
+        <!-- 2026-09-21：滚动条样式上收到 App.xaml 全局隐式样式（原窗口内的 ScrollbarStyle 只定义未引用，已删） -->
     </Window.Resources>
 
     <Border CornerRadius="6" Background="#1E1E1E"
@@ -59,8 +56,9 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- 标题栏 -->
-            <Border Grid.Row="0" Background="#252525" CornerRadius="6,6,0,0">
+            <!-- 标题栏（底部 2px 品牌绿 accent 线，配色方案 B 的标志） -->
+            <Border Grid.Row="0" Background="#252525" CornerRadius="6,6,0,0"
+                    BorderBrush="#4CAF50" BorderThickness="0,0,0,2">
                 <Grid Margin="14,0">
                     <TextBlock x:Name="TitleText"
                                Text="AI 问答"

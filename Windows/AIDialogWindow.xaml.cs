@@ -249,6 +249,7 @@ public partial class AIDialogWindow : Window
         _settings = settings;
         _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel, settings.AiMaxTokens);
         InitializeComponent();
+        DarkTitleBar.Enable(this);   // 2026-09-21：主动申请深色原生标题栏（WPF 默认白底，不申请就靠系统心情）
         // MessagesList.ItemsSource 在 Activate() 时按活跃会话绑定（多会话并行：切会话即切 Bubbles 源）
         InitInputArea();
         // 预览浮层预热：Popup 首次显示要创建宿主窗口（低配机上可感知），
