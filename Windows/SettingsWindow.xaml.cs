@@ -445,7 +445,9 @@ public partial class SettingsWindow : Window
         var color = status.Auth switch
         {
             DependencyAuth.Ready => Color.FromRgb(0x8F, 0xD1, 0x8F),
+            // 「还没配应用凭据」是第一次用的正常状态，不是故障 —— 用提示色而不是报错色
             DependencyAuth.Unknown => Color.FromRgb(0xE0, 0xC0, 0x8F),
+            DependencyAuth.NotConfigured => Color.FromRgb(0xE0, 0xC0, 0x8F),
             _ => Color.FromRgb(0xE0, 0x9A, 0x9A),
         };
 
@@ -461,9 +463,17 @@ public partial class SettingsWindow : Window
 
         // 没有授权协议的依赖（"在位即可用"那类）不该给可点的授权按钮 —— 点了也没有流程可走
         var canAuthorize = status.CanAuthorize && dep.Flow != null;
+        // 没配应用凭据时，"扫一次码"这个说法是误导的（那时连码都出不来）——
+        // 按钮文案要如实说清第一步是创建应用（2026-09-21）
+        var authButtonText = status.Auth switch
+        {
+            DependencyAuth.Ready => "重新授权",
+            DependencyAuth.NotConfigured => "创建应用并授权",
+            _ => "授权（扫一次码）",
+        };
         var authButton = new Button
         {
-            Content = status.Auth == DependencyAuth.Ready ? "重新授权" : "授权（扫一次码）",
+            Content = authButtonText,
             Width = 132,
             Height = 28,
             IsEnabled = canAuthorize,

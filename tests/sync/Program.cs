@@ -20,6 +20,7 @@ using FocusCapture.Services.Baidu;
 using FocusCapture.Services.Files;
 using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
+using FocusCapture.Windows;
 
 /// <summary>
 /// FocusCapture 同步验收测试（单机双设备模拟，验收 B/C/D/E/F）。
@@ -81,6 +82,7 @@ internal static class Program
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
             await RunAsync("Skill 依赖", TestSkillDependency); // 定位自带优先 / 设备码流 / 二维码产物 / 授权闸（2026-09-20）
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
+            Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
@@ -354,6 +356,14 @@ print(json.dumps({
               "应用凭据已就绪时，前置配置必须什么都不做、也不索要链接",
               $"实际：{prepare.State}，索要链接={prepareAskedUrl}，{Short(prepare.Message)}");
 
+        // ── 3e. 兜底入口的字段（甲方案）：字段描述必须能被界面直接渲染 ──
+        var credFields = larkFlow!.CredentialFields;
+        Check(credFields.Count == 2 &&
+              credFields.Any(f => f.Key == "appId" && !f.Secret) &&
+              credFields.Any(f => f.Key == "appSecret" && f.Secret),
+              "飞书兜底入口必须给出 appId（明文）+ appSecret（敏感）两个字段",
+              $"实际：{string.Join("、", credFields.Select(f => $"{f.Key}(secret={f.Secret})"))}");
+
         // ── 4. 真跑一次状态查询（字段真的能被解析出来）──
         var live = await lark.ProbeAsync();
         Check(live.Resolved && live.Auth != DependencyAuth.Unknown,
@@ -528,6 +538,180 @@ print(json.dumps({
               "系统提示必须带硬约束：不许让用户去命令行执行命令", $"实际：{Short(manifest)}");
         Check(manifest.Contains("设置 → AI 模型 → Skill 扩展"),
               "系统提示必须给出应用内授权入口（否则模型只能自己发明）", $"实际：{Short(manifest)}");
+    }
+
+    // ══════════════════ Skill 授权窗口流程（2026-09-21） ══════════════════
+    //
+    // 守的是什么：「先准备应用凭据，再扫码」这个顺序不许被绕过。
+    // 绕过后的形态很隐蔽 —— 界面停在"正在生成二维码…"（看着像在转），而实际上
+    // auth login 连 device_code 都拿不到。当初用户就是这样白等了一轮，然后来问"卡住了？"
+    //
+    // 为什么能在自动化里测：窗口的流程入口是公开的 StartAsync()，配上**全同步的桩协议**
+    // （每个成员都返回已完成的 Task）时它不依赖消息循环 —— 于是不必真弹窗口、不必有人盯着。
+    // 需要真实时序的部分（二维码渲染、倒计时、扫码等待）不在这里测。
+    //
+    // 为什么必须整组丢到 STA 线程：Window 只能在 STA 线程上构造（慢层主线程是 async/MTA）。
+
+    private static void TestSkillAuthWindow()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try { TestSkillAuthWindowCore(); }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure != null) throw new Exception("授权窗口组在 STA 线程里失败：" + failure.Message, failure);
+    }
+
+    private static void TestSkillAuthWindowCore()
+    {
+        static string Short(string? s) => s is null ? "(null)" : (s.Length <= 90 ? s : s[..90] + "…");
+
+        static DependencyStatus StatusOf(DependencyAuth auth, string detail) =>
+            new("stub-auth", "桩依赖（授权窗口用）", true, @"C:\stub\stub-auth.exe", auth, "", detail);
+
+        // ── 1. 前置配置失败 → 必须停在失败，绝不出码（本组最重要的一条）──
+        var flowFail = new StubAuthFlow { PrepareResult = DepPrepareResult.Failed("创建应用没有完成。") };
+        var depFail = new StubFlowDependency(flowFail);
+        var w1 = new SkillAuthWindow(depFail, StatusOf(DependencyAuth.NotConfigured, "尚未配置应用凭据"));
+        w1.StartAsync().GetAwaiter().GetResult();   // 全同步桩 → 不需要消息循环
+        Check(w1.Stage == AuthStage.Failed, "前置配置失败时窗口必须停在失败态", $"实际：{w1.Stage}");
+        Check(!flowFail.StartAuthCalled,
+              "前置配置失败后**不得**继续申请授权码（否则界面停在「正在生成二维码」，用户白等）");
+        Check(!w1.QrPlaceholderMessage.Contains("正在生成二维码"),
+              "失败后二维码占位文案必须同步改掉（R10：原实现只切显隐，红字与「正在生成二维码」并存）",
+              $"实际：{Short(w1.QrPlaceholderMessage)}");
+        Check(w1.CredentialInputCount == 2,
+              "兜底入口必须按协议给的字段渲染输入框（窗口不该认识具体 CLI）",
+              $"实际渲染 {w1.CredentialInputCount} 个");
+
+        // ── 2. 无需准备（已配好的机器）→ 照常进入扫码 ──
+        var flowOk = new StubAuthFlow { PrepareResult = DepPrepareResult.NotNeeded };
+        var depOk = new StubFlowDependency(flowOk);
+        var w2 = new SkillAuthWindow(depOk, StatusOf(DependencyAuth.Missing, "尚未授权"));
+        w2.StartAsync().GetAwaiter().GetResult();
+        Check(flowOk.PrepareCalled, "窗口必须先走一次前置配置（已配好时它应当什么都不做）");
+        Check(flowOk.StartAuthCalled,
+              "应用凭据已就绪时必须照常进入扫码（不能因为加了前置配置就把原来的出码流程废了）");
+        Check(w2.Stage == AuthStage.Failed && !w2.QrPlaceholderMessage.Contains("正在生成二维码"),
+              "桩协议在申请授权码这步返回失败 → 窗口应如实停住且改掉文案",
+              $"实际：{w2.Stage} / {Short(w2.QrPlaceholderMessage)}");
+
+        // ── 3. 第一次用（没配凭据）：停在选择面板，不自动开跑 ──
+        var flowFirst = new StubAuthFlow();
+        var depFirst = new StubFlowDependency(flowFirst);
+        var w3 = new SkillAuthWindow(depFirst, StatusOf(DependencyAuth.NotConfigured, "尚未配置应用凭据"));
+        Check(w3.Stage == AuthStage.FirstRun,
+              "没配应用凭据时窗口应停在选择面板（创建应用 / 用现成凭据），而不是自动开跑",
+              $"实际：{w3.Stage}");
+        Check(!flowFirst.PrepareCalled && !flowFirst.StartAuthCalled,
+              "停在选择面板时不许偷偷开始任何流程（否则用户没得选，还可能被弹一脸浏览器）");
+
+        // ── 4. 布局不许被裁（改过 XAML 就得测这个）──
+        // 判据只能靠**测量**：RenderTargetBitmap 只渲染视觉树，元素溢出窗口的部分在快照里照样画得出来，
+        // 光看图看不出被切（本项目踩过）。这里用自校准判据 —— 第一次用的布局不许比已经跑通的出码布局更高。
+        static double NeededHeight(System.Windows.Window w)
+        {
+            var content = (System.Windows.FrameworkElement)w.Content;
+            content.Measure(new System.Windows.Size(w.Width, double.PositiveInfinity));
+            return content.DesiredSize.Height;
+        }
+
+        var needFirstRun = NeededHeight(w3);
+        var needScanning = NeededHeight(w2);
+        Check(needFirstRun <= needScanning,
+              "第一次用（选择面板展开）的布局不得比出码布局更高，否则底部按钮会被窗口切掉",
+              $"选择面板 {needFirstRun:F0}px / 出码布局 {needScanning:F0}px / 窗口高 {w3.Height:F0}px");
+        Check(needScanning <= w3.Height,
+              "出码布局也不得超出窗口高度（超了就是被硬切，浅背景下会看到平边）",
+              $"实际 {needScanning:F0}px vs 窗口 {w3.Height:F0}px");
+
+        foreach (var w in new[] { w1, w2, w3 }) { try { w.Close(); } catch { /* 从未 Show 过，关不掉可忽略 */ } }
+
+        // ── 5. 失败要写日志（R9）—— 看沙箱里的真实日志文件，不看代码 ──
+        var logText = "";
+        try
+        {
+            var logDir = FocusCapturePaths.Combine("logs");
+            var dir = new DirectoryInfo(logDir);
+            var latest = dir.Exists
+                ? dir.GetFiles("app_*.log").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault()
+                : null;
+            if (latest != null) logText = File.ReadAllText(latest.FullName);
+        }
+        catch { /* 读不到就当没有，下面的断言会如实报出来 */ }
+
+        Check(logText.Contains("授权未完成（阶段："),
+              "授权失败必须写日志、并带上停在哪一步（R9：原来只把话丢给界面，事后翻不到任何线索）",
+              $"实际日志：{Short(logText)}");
+    }
+
+    /// <summary>
+    /// 授权窗口检查点用的桩协议：**全部同步返回**。
+    /// 同步是关键 —— 只要有一个 await 真的跨线程，窗口流程就要靠消息循环才能跑完，
+    /// 那样检查点就得真弹窗口并泵消息；全同步则不必。
+    /// </summary>
+    private sealed class StubAuthFlow : IDepAuthFlow
+    {
+        public DepPrepareResult PrepareResult { get; set; } = DepPrepareResult.NotNeeded;
+
+        public bool PrepareCalled;
+        public bool StartAuthCalled;
+
+        public IReadOnlyList<string> ProbeArgs { get; } = new[] { "status" };
+
+        public IReadOnlyList<DepCredentialField> CredentialFields { get; } = new[]
+        {
+            new DepCredentialField("appId", "桩 App ID", false),
+            new DepCredentialField("appSecret", "桩 App Secret", true),
+        };
+
+        public DependencyStatus ParseStatus(string? exePath, string stdout, string stderr)
+            => new("stub-auth", "桩依赖（授权窗口用）", true, exePath, DependencyAuth.Missing, "", "桩：未授权");
+
+        public Task<DepPrepareResult> PrepareAsync(Func<string, Task>? showVerificationUrl, CancellationToken ct)
+        {
+            PrepareCalled = true;
+            return Task.FromResult(PrepareResult);
+        }
+
+        public Task<DepPrepareResult> PrepareWithCredentialAsync(
+            IReadOnlyDictionary<string, string> values, CancellationToken ct)
+            => Task.FromResult(PrepareResult);
+
+        public Task<(bool Ok, string Message, DeviceCodeSession? Session)> StartAuthAsync(CancellationToken ct)
+        {
+            StartAuthCalled = true;
+            return Task.FromResult<(bool, string, DeviceCodeSession?)>((false, "桩：不真的发起授权", null));
+        }
+
+        public Task<string?> MakeQrPngAsync(string verificationUrl, string workDir, CancellationToken ct)
+            => Task.FromResult<string?>(null);
+
+        public Task<(bool Ok, string Message)> CompleteAuthAsync(string deviceCode, int timeoutMs, CancellationToken ct)
+            => Task.FromResult((false, "桩：不真的等待扫码"));
+
+        public Task<(bool Ok, string Message)> LogoutAsync(CancellationToken ct)
+            => Task.FromResult((false, "桩：不真的退出登录"));
+    }
+
+    /// <summary>挂上桩协议的依赖（窗口只认 SkillDependency，不认具体 CLI）</summary>
+    private sealed class StubFlowDependency : SkillDependency
+    {
+        public StubFlowDependency(StubAuthFlow flow) : base(
+            id: "stub-auth", displayName: "桩依赖（授权窗口用）", exeName: "stub-auth",
+            scriptMarkers: new[] { "__stub_auth_marker__" }, baseDir: null)
+            => FlowProbe = flow;
+
+        public StubAuthFlow FlowProbe { get; }
+        public override IDepAuthFlow? Flow => FlowProbe;
+
+        public override Task<DependencyStatus> ProbeAsync(CancellationToken ct = default)
+            => Task.FromResult(new DependencyStatus(Id, DisplayName, true, @"C:\stub\stub-auth.exe",
+                DependencyAuth.Missing, "", "桩：未授权"));
     }
 
     // ══════════════════ UI 线程封送（2026-09-20） ══════════════════

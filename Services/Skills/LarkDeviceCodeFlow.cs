@@ -144,6 +144,7 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
         var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
         if (!r.Ok)
         {
+            LogDetail("发起授权失败", r);     // R9：完整报错落盘（界面上仍给短句）
             // 未配置凭据时这里拿到的是 not_configured（退出码 3）—— 如实转达，别把它说成"网络问题"
             var detail = LooksNotConfigured(r.Stderr) || LooksNotConfigured(r.Stdout)
                 ? "尚未配置应用凭据，无法发起授权（需要先创建飞书应用）。"
@@ -191,7 +192,7 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
         var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
         if (!r.Ok)
         {
-            AppLog.Warn("Skill", $"{_owner.Id} 二维码生成失败：exit={r.ExitCode} {SkillDependency.Short(r.Combined)}");
+            LogDetail("二维码生成失败", r);   // R9：完整输出落盘，别只留 200 字符
             return null;
         }
 
@@ -211,8 +212,16 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
         var psi = SkillProcess.Build(exe, args, Path.GetDirectoryName(exe) ?? "", false);
         var r = await SkillProcess.RunAsync(psi, null, timeoutMs, ct).ConfigureAwait(false);
 
-        if (r.TimedOut) return (false, "等待扫码超时（授权码已过期），请重新发起。");
-        if (!r.Ok) return (false, $"授权未完成：{SkillDependency.Short(r.Combined)}");
+        if (r.TimedOut)
+        {
+            LogDetail("等待扫码超时", r);
+            return (false, "等待扫码超时（授权码已过期），请重新发起。");
+        }
+        if (!r.Ok)
+        {
+            LogDetail("授权未完成", r);
+            return (false, $"授权未完成：{SkillDependency.Short(r.Combined)}");
+        }
         return (true, "已授权");
     }
 
@@ -223,6 +232,7 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
 
         var psi = SkillProcess.Build(exe, new[] { "auth", "logout", "--json" }, Path.GetDirectoryName(exe) ?? "", false);
         var r = await SkillProcess.RunAsync(psi, null, QuickCommandTimeoutMs, ct).ConfigureAwait(false);
+        if (!r.Ok) LogDetail("退出登录失败", r);
         return r.Ok ? (true, "已退出登录") : (false, $"退出登录失败：{SkillDependency.Short(r.Combined)}");
     }
 
@@ -265,17 +275,17 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
 
         if (r.StartError != null)
         {
-            AppLog.Error("Skill", $"{_owner.Id} 前置配置无法启动：{r.StartError}");
+            LogDetail("前置配置无法启动", r);
             return DepPrepareResult.Failed($"无法开始创建应用：{r.StartError}");
         }
         if (r.TimedOut)
         {
-            AppLog.Warn("Skill", $"{_owner.Id} 前置配置等待超时（浏览器里未完成）");
+            LogDetail("前置配置等待超时（浏览器里未完成）", r);
             return DepPrepareResult.Failed("等待在浏览器里完成应用创建超时，请重新发起。");
         }
         if (r.ExitCode != 0)
         {
-            AppLog.Warn("Skill", $"{_owner.Id} 前置配置退出码 {r.ExitCode}：{SkillDependency.Short(r.Combined)}");
+            LogDetail("前置配置未完成", r);
             return DepPrepareResult.Failed($"创建应用没有完成（退出码 {r.ExitCode}）。");
         }
 
@@ -286,6 +296,101 @@ internal sealed class LarkDeviceCodeFlow : IDepAuthFlow
 
         AppLog.Info("Skill", $"{_owner.Id} 前置配置完成：{after.Detail}");
         return DepPrepareResult.Done("应用凭据已就绪");
+    }
+
+    // ────────────────────────── 兜底入口：用现成凭据 ──────────────────────────
+
+    /// <summary>
+    /// 兜底入口的字段。文案要写清"去哪儿复制"，用户在飞书开放平台里找得到这两样。
+    /// </summary>
+    public IReadOnlyList<DepCredentialField> CredentialFields { get; } = new[]
+    {
+        new DepCredentialField("appId", "应用 App ID（飞书开放平台 → 凭证与基础信息）", false),
+        new DepCredentialField("appSecret", "应用 App Secret（同一页，只显示一次）", true),
+    };
+
+    public async Task<DepPrepareResult> PrepareWithCredentialAsync(
+        IReadOnlyDictionary<string, string> values, CancellationToken ct = default)
+    {
+        var exe = _owner.Locate();
+        if (exe == null) return DepPrepareResult.Failed($"未找到 {_owner.ExeName}，无法配置应用凭据。");
+
+        var appId = values.TryGetValue("appId", out var id) ? (id ?? "").Trim() : "";
+        var secret = values.TryGetValue("appSecret", out var s) ? (s ?? "") : "";
+        if (appId.Length == 0) return DepPrepareResult.Failed("请填写应用 App ID。");
+        if (secret.Length == 0) return DepPrepareResult.Failed("请填写应用 App Secret。");
+
+        // 凭据纪律（硬线）：secret **只经 stdin** 交给 CLI，既不进命令行也不进日志。
+        // 日志里连 app-id 都不写全，只记长度 —— 够定位问题，又不留痕。
+        var args = new[] { "config", "init", "--app-id", appId, "--brand", "feishu", "--app-secret-stdin" };
+        var psi = SkillProcess.Build(exe, args, Path.GetDirectoryName(exe) ?? "", redirectStdin: true);
+
+        AppLog.Info("Skill",
+            $"{_owner.Id} 用现成凭据做前置配置（appId {appId.Length} 字符、secret {secret.Length} 字符，值均不记录）");
+
+        ProcessResult r;
+        try
+        {
+            // 结尾补一个换行：读行式实现靠它收尾；随后 SkillProcess 会关闭 stdin（= EOF）
+            r = await SkillProcess.RunAsync(psi, secret + "\n", QuickCommandTimeoutMs, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Skill", $"{_owner.Id} 用现成凭据配置时异常", ex);
+            return DepPrepareResult.Failed("配置应用凭据时出错，请重试。");
+        }
+
+        if (r.StartError != null)
+        {
+            LogDetail("用现成凭据配置无法启动", r);
+            return DepPrepareResult.Failed($"无法开始配置：{r.StartError}");
+        }
+        if (r.TimedOut)
+        {
+            LogDetail("用现成凭据配置超时", r, secret);
+            return DepPrepareResult.Failed("配置应用凭据超时，请重试。");
+        }
+        if (r.ExitCode != 0)
+        {
+            LogDetail("用现成凭据配置失败", r, secret);
+            return DepPrepareResult.Failed($"应用凭据配置失败（退出码 {r.ExitCode}），请核对 ID 与 Secret。");
+        }
+
+        // 产物判据：命令说成功不算，状态真的不再是"未配置"才算
+        var after = await ProbeStatusAsync(ct).ConfigureAwait(false);
+        if (after.Auth == DependencyAuth.NotConfigured || after.Auth == DependencyAuth.Unknown)
+        {
+            AppLog.Warn("Skill", $"{_owner.Id} 凭据配置命令已退出，但状态仍未就绪：{after.Detail}");
+            return DepPrepareResult.Failed("配置命令已完成，但应用凭据仍未就绪，请核对 ID 与 Secret。");
+        }
+
+        AppLog.Info("Skill", $"{_owner.Id} 前置配置完成（用现成凭据）");
+        return DepPrepareResult.Done("应用凭据已就绪");
+    }
+
+    /// <summary>
+    /// 把**完整输出**落进日志（R9）。
+    ///
+    /// <para>
+    /// 修之前：失败时只把报错截到 200 字符交给界面，日志里什么都没有 ——
+    /// 用户来问"为什么失败"，翻日志翻不到任何线索，只能靠复现。
+    /// </para>
+    /// <para>
+    /// <paramref name="scrub"/> 非空时先把该串从输出里抹掉：CLI 有可能把凭据回显出来，
+    /// **宁可日志里缺一段，也不许落一份凭据**（凭据纪律是硬线，没有例外）。
+    /// </para>
+    /// </summary>
+    private void LogDetail(string what, ProcessResult r, string? scrub = null)
+    {
+        try
+        {
+            var text = r.Combined;
+            if (!string.IsNullOrEmpty(scrub)) text = text.Replace(scrub!, "***REDACTED***");
+            if (text.Length > 4000) text = text[..4000] + "…（已截断）";
+            AppLog.Warn("Skill",
+                $"{_owner.Id} {what}：exit={r.ExitCode} 超时={r.TimedOut} 启动错误={r.StartError}\n{text}");
+        }
+        catch { /* 日志失败绝不影响主流程 */ }
     }
 
     /// <summary>把链接交给界面 —— 不阻塞读流（回调是在读流线程上被调用的）</summary>

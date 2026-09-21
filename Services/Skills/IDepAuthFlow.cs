@@ -15,6 +15,19 @@ public enum DepPrepareState
     Failed,
 }
 
+/// <summary>
+/// 兜底入口（"我有现成凭据"）需要的**一个输入字段**。
+///
+/// <para>
+/// 为什么用描述而不是写死"appId + appSecret"：界面照这份描述渲染输入框，
+/// 于是**窗口不需要认识任何一个具体 CLI**。接第二个 CLI 时，它的字段由它的实现给出。
+/// </para>
+/// </summary>
+/// <param name="Key">字段标识（交给实现去取用）</param>
+/// <param name="Label">给用户看的名字（如实写清楚"去哪儿复制"）</param>
+/// <param name="Secret">是不是敏感值 —— 界面据此用密码框、并在用后立即清空输入控件</param>
+public sealed record DepCredentialField(string Key, string Label, bool Secret);
+
 /// <summary>一次前置配置的结果。措辞由实现给，调用方只决定"能不能继续"。</summary>
 public sealed record DepPrepareResult(DepPrepareState State, string Message)
 {
@@ -91,6 +104,23 @@ public interface IDepAuthFlow
     /// </para>
     /// </summary>
     Task<DepPrepareResult> PrepareAsync(Func<string, Task>? showVerificationUrl, CancellationToken ct = default);
+
+    /// <summary>
+    /// 兜底入口需要的字段（<b>空数组 = 该依赖不支持"粘贴凭据"</b>，界面就不显示这个入口）。
+    /// </summary>
+    IReadOnlyList<DepCredentialField> CredentialFields { get; }
+
+    /// <summary>
+    /// <b>用使用者提供的凭据完成前置配置</b>（兜底路径：不想新建应用、或想复用已有的）。
+    ///
+    /// <para>
+    /// <b>凭据纪律（硬线，实现必须遵守）：</b>敏感值**只经 stdin 交给外部 CLI** ——
+    /// 不进命令行参数、不进日志、不进仓库、不进分发包，应用不留任何副本。
+    /// 任何一条失败宁可整体失败，也不许为了"调试方便"把它写出去。
+    /// </para>
+    /// </summary>
+    Task<DepPrepareResult> PrepareWithCredentialAsync(
+        IReadOnlyDictionary<string, string> values, CancellationToken ct = default);
 }
 
 /// <summary>
