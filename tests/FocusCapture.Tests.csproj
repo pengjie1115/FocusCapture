@@ -51,6 +51,12 @@
          不用 AppLog），所以能在这里直接测。落地逻辑错了的后果是**静默**的 ——
          用户改过的版本被悄悄覆盖、或者该出现的技能压根没出现，两种都很难被发现。 -->
     <Compile Include="..\Services\Skills\BuiltinSkills.cs" Link="Src\BuiltinSkills.cs" />
+    <!-- 运行时按需下载（2026-09-21，步骤 5）：配方与下载器同样刻意零项目依赖
+         （日志走注入回调、不引 AppLog），所以能在这里用本地假下载源测。
+         它的错法全是"静默"的 —— 下了一半算成功、该删的没删、自检没过也提交，
+         正需要"每次改动都跑"的这一层守着。 -->
+    <Compile Include="..\Services\Skills\RuntimeRecipe.cs" Link="Src\RuntimeRecipe.cs" />
+    <Compile Include="..\Services\Skills\RuntimeDownloader.cs" Link="Src\RuntimeDownloader.cs" />
   </ItemGroup>
 
 </Project>

@@ -64,6 +64,27 @@
     <RemoveDir Directories="@(_ForeignRuntimeDir)" />
   </Target>
 
+  <!-- ⚠ Publish 也要清一遍（2026-09-21 补）：上面那个 Target 只挂 AfterTargets="Build"、
+       删的是 $(OutputPath)，而 publish 时那些原生库是**从 NuGet 包缓存直接进 publish 目录**的，
+       压根不经过 bin —— 实测 publish 产物 347.7 MB，其中 272.4 MB 是 runtimes\，
+       而 win-x64 只需要其中 20.9 MB。也就是说"build 是瘦的、publish 是胖的"，
+       发出去等于把 251.5 MB 别平台的东西（linux/osx/android/win-arm64/win-x86）一并塞给用户。
+       保护同上：Condition 排除 RID 专用构建（那条流程本来就只拷当前 RID）。 -->
+  <Target Name="TrimForeignRuntimesFromPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == ''">
+    <ItemGroup>
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\android-arm64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\linux-arm64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\linux-x64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\osx-arm64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\osx-x64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\win-arm64" />
+      <_ForeignRuntimeDirPublish Include="$(PublishDir)runtimes\win-x86" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="TrimForeignRuntimesFromPublish: PublishDir=[$(PublishDir)] 待清理=[@(_ForeignRuntimeDirPublish->'%(Filename)', ', ')]" />
+    <RemoveDir Directories="@(_ForeignRuntimeDirPublish)" />
+  </Target>
+
   <!-- Skill 运行时（2026-09-20）：把便携 Python 随构建/发布产物复制到输出目录。
        为什么要 Condition 保护：开发机没跑过 tools\fetch-python-runtime.ps1 时，runtime\python
        不存在，不能让构建因此失败（运行时缺失是"功能降级"，不是"编译错误"，由应用在运行时提示）。

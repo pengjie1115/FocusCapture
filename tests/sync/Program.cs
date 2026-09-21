@@ -84,6 +84,7 @@ internal static class Program
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
+            Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
@@ -641,6 +642,95 @@ print(json.dumps({
         {
             try { Directory.Delete(tmp, true); } catch { }
         }
+    }
+
+    // ══════════════════ 运行时按需下载的配方（2026-09-21，授权闭环步骤 5） ══════════════════
+    //
+    // 守的是什么：使用者点一下「下载」就能把 lark-cli 与内置 Python 装进数据目录。
+    // 下载器**流程**由快层 [10] 组用本地假源守着（多源兜底 / 进度 / 自检 / 不留半成品）；
+    // 这一组守的是**配方数据**与**打包契约** —— 它们都是"知识"，而知识最容易悄悄过期：
+    //   ① 与 tools\fetch-*.ps1 漂移 → 开发机装 A、使用者下到 B，出问题时根本看不出；
+    //   ② Python 配方漏了「删 *._pth」→ 解释器能跑但同目录 import 失败，某些 Skill 静默失效；
+    //   ③ publish 又带上别平台的原生库 → 实测曾把 251.5 MB 送给使用者（2026-09-21 修）。
+    private static void TestRuntimeRecipes()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+
+        var all = RuntimeRecipes.All();
+        Check(all.Count == 2 && all.Any(r => r.Id == RuntimeRecipes.LarkCliId)
+                             && all.Any(r => r.Id == RuntimeRecipes.PythonId),
+              "配方表必须覆盖 lark-cli 与内置 Python 两条（少一条 = 那个组件没有下载来源）",
+              $"实际：{string.Join("、", all.Select(r => r.Id))}");
+
+        // ── 1. 部件名与依赖层的常量必须一致（漂移 = 下载到 A、使用时找 B）──
+        Check(RuntimeRecipes.LarkCliId == SkillDependencies.LarkCliId,
+              "下载配方的部件名必须与依赖层的常量一致（不一致就会出现「下到了、但用的时候还在找另一处」）",
+              $"配方={RuntimeRecipes.LarkCliId} 依赖层={SkillDependencies.LarkCliId}");
+
+        // ── 2. 下载源只许是官方 / 镜像的 https，不许指向本机或别的应用目录 ──
+        var urls = all.SelectMany(r => r.Urls).ToList();
+        var badUrls = urls.Where(u => !u.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                                   || u.Contains("C:", StringComparison.OrdinalIgnoreCase)
+                                   || u.Contains(".workbuddy", StringComparison.OrdinalIgnoreCase))
+                          .ToList();
+        Check(badUrls.Count == 0,
+              "下载源必须是 https，且不得指向本机路径或别的应用安装目录（那样换台机器就失效）",
+              $"实际可疑：{string.Join("、", badUrls)}");
+
+        // ── 3. 与开发机用的 fetch 脚本不漂移（同源同主机）──
+        // 这是**漂移哨兵**：两份东西各自维护，靠人记得同步是不现实的，让检查点来记。
+        static List<string> HostsIn(string file)
+        {
+            var list = new List<string>();
+            if (!File.Exists(file)) return list;
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(file), @"https?://([A-Za-z0-9\.\-]+)"))
+            {
+                var h = m.Groups[1].Value;
+                if (!list.Contains(h)) list.Add(h);
+            }
+            return list;
+        }
+
+        var recipeHosts = urls.Select(u => new Uri(u).Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var scriptHosts = new List<string>();
+        foreach (var script in new[] { "tools\\fetch-lark-cli.ps1", "tools\\fetch-python-runtime.ps1" })
+        {
+            foreach (var h in HostsIn(Path.Combine(repoRoot, script)))
+                if (!scriptHosts.Contains(h, StringComparer.OrdinalIgnoreCase)) scriptHosts.Add(h);
+        }
+        var missingHosts = scriptHosts.Where(h => !recipeHosts.Contains(h, StringComparer.OrdinalIgnoreCase)).ToList();
+        Check(scriptHosts.Count > 0 && missingHosts.Count == 0,
+              "应用内下载源必须覆盖 tools\\fetch-*.ps1 里用过的每个镜像主机" +
+              "（两处漂移 = 开发机与使用者下到的不是一回事）",
+              $"脚本用过的：{string.Join("、", scriptHosts)}；配方缺：{string.Join("、", missingHosts)}");
+
+        // ── 4. Python 版本与 fetch 脚本里的默认值一致 ──
+        var pyScript = File.ReadAllText(Path.Combine(repoRoot, "tools\\fetch-python-runtime.ps1"));
+        Check(pyScript.Contains($"\"{RuntimeRecipes.PythonVersion}\""),
+              "Python 配方里的版本必须与 fetch 脚本的默认版本一致（升一边忘另一边的典型坑）",
+              $"配方={RuntimeRecipes.PythonVersion}");
+
+        // ── 5. Python 配方：整包解压 + 必须删 *._pth ──
+        var py = RuntimeRecipes.For(RuntimeRecipes.PythonId)!;
+        Check(py.ExtractAll && py.DeleteAfterExtract.Any(p => p.Contains("_pth")),
+              "Python 配方必须是「整包解压 + 删掉 *._pth」—— 漏了删这一步，解释器能跑、" +
+              "但同目录 import 会失败（isolated 模式），某些 Skill 静默失效",
+              $"ExtractAll={py.ExtractAll} 删除项={string.Join("、", py.DeleteAfterExtract)}");
+
+        // ── 6. lark-cli 配方：从包里挑出 lark-cli.exe（包结构不止一层） ──
+        var lark = RuntimeRecipes.For(RuntimeRecipes.LarkCliId)!;
+        Check(!lark.ExtractAll && string.Equals(lark.PickFileName, "lark-cli.exe", StringComparison.OrdinalIgnoreCase),
+              "lark-cli 配方必须声明「从包里挑 lark-cli.exe」（整包解压会把包里别的东西一起铺进去）",
+              $"ExtractAll={lark.ExtractAll} Pick={lark.PickFileName}");
+
+        // ── 7. 打包契约：publish 也必须清掉别平台的原生库 ──
+        var doc = System.Xml.Linq.XDocument.Load(Path.Combine(repoRoot, "FocusCapture.csproj"));
+        var publishTrim = doc.Descendants("Target")
+            .Any(t => string.Equals((string?)t.Attribute("Name"), "TrimForeignRuntimesFromPublish", StringComparison.Ordinal));
+        Check(publishTrim,
+              "csproj 里必须有 publish 侧的「清掉别平台原生库」目标 —— 只挂 Build 时，publish 产物会多出 251.5 MB " +
+              "（实测：347.7 MB vs 96.2 MB），等于把 linux/osx/android 的库一并塞给使用者");
     }
 
     // ══════════════════ Skill 授权窗口流程（2026-09-21） ══════════════════

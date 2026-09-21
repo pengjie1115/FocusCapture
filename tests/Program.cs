@@ -597,6 +597,351 @@ finally
     try { Directory.Delete(bsTmp, true); } catch { }
 }
 
+// ── [10] 运行时按需下载 RuntimeDownloader ──
+// 守的是什么（2026-09-21 新增，授权闭环步骤 5）：使用者点一下就能把 lark-cli（47MB）与
+// 内置 Python（11MB）装到数据目录里。这条路全是"静默"的错法：
+//   · 下到一个错误页却当成安装包 → 装完了、用不了；
+//   · 该删的没删（Python 的 *._pth）→ 解释器能跑，但同目录 import 失败，某些 Skill 静默失效；
+//   · 自检没过也提交 → 目标目录看着"装好了"，实际是废物；
+//   · 断流 / 403 抛出异常 → 那是个 UI 事件路径，抛出去就是吃掉点击的模态框。
+// 检查点铁律不许联网，所以这里自己造一个极简的本地 HTTP 源（TcpListener），
+// 并且**用自己这个 exe 当被测"运行时文件"** —— 于是"解压 → 自检真的跑一次 → 提交"整条路都真跑。
+Console.WriteLine();
+Console.WriteLine("[10] 运行时按需下载 RuntimeDownloader");
+
+var dlTmp = Path.Combine(Path.GetTempPath(), "fc-tests-dl-" + Guid.NewGuid().ToString("N")[..8]);
+var dlOldRoot = FocusCapturePaths.RootOverride;
+FocusCapturePaths.RootOverride = dlTmp;   // 落地目录取自数据根 → 整组关在沙箱里动
+try
+{
+    Directory.CreateDirectory(dlTmp);
+
+    // ── 假下载源（本地 TCP 上的极简 HTTP）──
+    var servedPaths = new List<string>();
+    var payload = Array.Empty<byte>();
+    var truncate = false;
+    var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var dlPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    var serverCts = new System.Threading.CancellationTokenSource();
+
+    var serverLoop = Task.Run(async () =>
+    {
+        while (!serverCts.IsCancellationRequested)
+        {
+            System.Net.Sockets.TcpClient client;
+            try { client = await listener.AcceptTcpClientAsync(serverCts.Token); }
+            catch { break; }
+
+            _ = Task.Run(async () =>
+            {
+                using (client)
+                {
+                    try
+                    {
+                        var stream = client.GetStream();
+                        var head = new StringBuilder();
+                        var buf = new byte[2048];
+                        while (true)
+                        {
+                            var n = await stream.ReadAsync(buf);
+                            if (n <= 0) break;
+                            head.Append(Encoding.ASCII.GetString(buf, 0, n));
+                            if (head.ToString().Contains("\r\n\r\n")) break;
+                        }
+
+                        var parts = head.ToString().Split('\n')[0].Split(' ');
+                        var path = parts.Length > 1 ? parts[1].Trim() : "/";
+                        lock (servedPaths) servedPaths.Add(path);
+
+                        var status = path.Contains("fail") ? 500 : 200;
+                        var body = status == 200 ? payload : Array.Empty<byte>();
+                        var header = $"HTTP/1.1 {status} X\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n";
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes(header));
+                        if (body.Length > 0)
+                        {
+                            // 断流：声明了总长却只发一半（真实网络里很常见）
+                            var send = truncate ? body.AsMemory(0, body.Length / 2) : body.AsMemory();
+                            await stream.WriteAsync(send);
+                        }
+                        await stream.FlushAsync();
+                    }
+                    catch { /* 客户端断开是常态 */ }
+                }
+            });
+        }
+    });
+
+    string Url(string file) => $"http://127.0.0.1:{dlPort}/{file}";
+    string UrlAlt(string file) => $"http://localhost:{dlPort}/{file}";   // 换主机名，用于验"失败信息里带主机"
+    int Hits() { lock (servedPaths) return servedPaths.Count; }
+
+    // 造一个压缩包：把一个**真的能跑**的文件（我们自己这个 exe）塞进两层深目录
+    static byte[] MakeZip(params (string Name, byte[] Data)[] entries)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+        {
+            foreach (var (name, data) in entries)
+            {
+                var e = zip.CreateEntry(name);
+                using var s = e.Open();
+                s.Write(data, 0, data.Length);
+            }
+        }
+        return ms.ToArray();
+    }
+
+    var selfExeBytes = File.ReadAllBytes(Environment.ProcessPath!);
+    // 整包解压型（对应 Python）：含一个 sib.py 与一个必须被删掉的 ._pth
+    var pyLikeZip = MakeZip(
+        ("python.exe", selfExeBytes),
+        ("python313._pth", Encoding.UTF8.GetBytes("python313.zip\n.\n")),
+        ("lib/readme.txt", Encoding.UTF8.GetBytes("x")));
+    // 挑单文件型（对应 lark-cli）：目标文件藏在两层深目录里
+    var cliLikeZip = MakeZip(
+        ("package/bin/lark-cli.exe", selfExeBytes),
+        ("package/README.md", Encoding.UTF8.GetBytes("x")));
+
+    const string testId = "dl-probe-cli";
+    var targetDir = SkillRuntimeLocations.DataDir(testId);
+
+    // 自检桩一（数据型）：只看暂存目录里的文件对不对。
+    // 用它验"自检通过才提交 / 不通过就不提交"这两条契约 —— 把自检的成败拿在手里，才测得出下载器的行为。
+    Task<(bool Ok, string Detail)> VerifyPickedFile(string dir, CancellationToken ct)
+    {
+        var exe = Path.Combine(dir, "lark-cli.exe");
+        if (!File.Exists(exe)) return Task.FromResult((false, "缺少 lark-cli.exe"));
+        return Task.FromResult(new FileInfo(exe).Length == selfExeBytes.Length
+            ? (true, "文件与源一致")
+            : (false, "文件长度对不上"));
+    }
+
+    // 自检桩二（数据型）：整包解压型（对应 Python）的自检 —— 看关键文件在不在。
+    // 特意不看 *._pth：那正是"该被删掉的东西"，拿它当自检条件就自相矛盾了。
+    Task<(bool Ok, string Detail)> VerifyPyLike(string dir, CancellationToken ct)
+    {
+        var ok = File.Exists(Path.Combine(dir, "python.exe"))
+              && File.Exists(Path.Combine(dir, "lib", "readme.txt"));
+        return Task.FromResult(ok ? (true, "文件齐") : (false, "文件不齐"));
+    }
+
+    // 自检桩三（真跑进程型）：证明"自检真的起了一个进程、读了它的输出"这条契约在下载器里是通的。
+    // ⚠ 不能只把这个 exe 拷过去就算了 —— .NET 的 apphost 还需要**同目录的 .dll** 才能跑起来，
+    // 少了 dll 报的是「The application to execute does not exist」（本组第一次跑就是这么红的）。
+    var selfExeName = Path.GetFileName(Environment.ProcessPath!);
+    var selfDllPath = Path.ChangeExtension(Environment.ProcessPath!, ".dll");
+    async Task<(bool Ok, string Detail)> VerifyRunChild(string dir, CancellationToken ct)
+    {
+        var exe = Path.Combine(dir, selfExeName);
+        if (!File.Exists(exe)) return (false, $"缺少 {selfExeName}");
+        var psi = SkillProcess.Build(exe, new[] { "--child-echo" }, dir, false);
+        var r = await SkillProcess.RunAsync(psi, null, 30_000, ct);
+        return r.Ok && r.Stdout.Contains("ECHO_OK") ? (true, "能跑") : (false, $"跑不起来：{Cut(r.Combined)}");
+    }
+
+    RuntimeRecipe CliRecipe(bool extractAll = false, string? pick = "lark-cli.exe", long minBytes = 10,
+                            IReadOnlyList<string>? urls = null, IReadOnlyList<string>? del = null,
+                            Func<string, CancellationToken, Task<(bool, string)>>? verify = null) =>
+        new(testId, "测试部件", urls ?? new[] { Url("ok.zip") }, minBytes, extractAll, pick,
+            del ?? Array.Empty<string>(), verify ?? VerifyPickedFile);
+
+    payload = cliLikeZip;
+
+    // 10.1 从包里挑文件（递归找）+ 真跑自检 + 提交到数据目录
+    var dl1 = new RuntimeDownloader();
+    var dlRes1 = await dl1.InstallAsync(CliRecipe(), null, default);
+    Check(dlRes1.Ok && !dlRes1.AlreadyPresent,
+          "装一个「从包里挑单文件」的部件必须成功（对应 lark-cli：包里的 exe 不在根目录，要递归找）",
+          dlRes1.Detail);
+    Check(string.Equals(dlRes1.TargetDir, targetDir, StringComparison.OrdinalIgnoreCase) &&
+          targetDir.StartsWith(dlTmp, StringComparison.OrdinalIgnoreCase),
+          "落地目录必须是「数据根\\runtime\\<id>」（跟随数据根，不写死 %AppData%）",
+          $"实际：{dlRes1.TargetDir}");
+    Check(File.Exists(Path.Combine(targetDir, "lark-cli.exe")),
+          "挑出来的文件要真的落在目标目录里（只解压到暂存 = 白下 47MB）");
+
+    // 10.2 进度回调：要真的被调、字节数单调不减
+    var progressSeen = new List<RuntimeProgress>();
+    var dl2 = new RuntimeDownloader();
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p2");   // 换个数据根，免得撞上"已装好"
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    var dlRes2 = await dl2.InstallAsync(
+        CliRecipe(urls: new[] { Url("ok.zip") }),
+        new SyncProgress(progressSeen.Add), default);
+    Check(dlRes2.Ok && progressSeen.Count > 0,
+          "下载过程必须报进度（界面要给使用者看「下到哪了」）",
+          $"实际收到 {progressSeen.Count} 条进度");
+    var dlBytes = progressSeen.Where(p => p.Received > 0).Select(p => p.Received).ToList();
+    Check(dlBytes.Count > 0 && dlBytes.SequenceEqual(dlBytes.OrderBy(x => x)),
+          "进度里的字节数必须单调不减（跳来跳去说明回调算错了）",
+          $"实际：{string.Join(",", dlBytes)}");
+    FocusCapturePaths.RootOverride = dlTmp;   // 还原
+
+    // 10.3 多源兜底：第一个源 500 → 必须自动落到第二个源
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p3");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    var hitsBefore = Hits();
+    var dlRes3 = await new RuntimeDownloader().InstallAsync(
+        CliRecipe(urls: new[] { Url("fail.zip"), Url("ok.zip") }), null, default);
+    Check(dlRes3.Ok && Hits() >= hitsBefore + 2,
+          "第一个下载源失败必须自动试下一个（国内镜像挂了还有官方源兜底）",
+          $"{dlRes3.Detail}；请求数 {hitsBefore} → {Hits()}");
+
+    // 10.4 全部源失败：报错要带上"是哪些源失败了"
+    // 换个干净的数据根 —— 否则会撞上前面刚装好的那一份（"已装好就不下载"直接把这一条短路掉）
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p4");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    var dlRes4 = await new RuntimeDownloader().InstallAsync(
+        CliRecipe(urls: new[] { Url("fail.zip"), UrlAlt("fail.zip") }), null, default);
+    Check(!dlRes4.Ok && dlRes4.Detail.Contains("127.0.0.1") && dlRes4.Detail.Contains("localhost"),
+          "所有源都失败时，失败信息里必须能看出试过哪些源（否则使用者只能干瞪眼）",
+          Cut(dlRes4.Detail));
+
+    // 10.5 体积下限：下到一小段错误页不能当成安装包
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p5");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    payload = Encoding.UTF8.GetBytes("<html>404 not found</html>");
+    var dlRes5 = await new RuntimeDownloader().InstallAsync(
+        CliRecipe(minBytes: 100_000), null, default);
+    Check(!dlRes5.Ok,
+          "下载内容远小于合理下限时必须判失败（不然会把一个错误页当成 47MB 的安装包装上去）",
+          Cut(dlRes5.Detail));
+    Check(!Directory.Exists(SkillRuntimeLocations.DataDir(testId)),
+          "失败时不许在目标目录留下半成品（「看着装好了其实跑不起来」是最难查的状态）");
+    payload = cliLikeZip;
+
+    // 10.6 自检没过 → 不许提交
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p6");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    var r6 = await new RuntimeDownloader().InstallAsync(
+        CliRecipe(verify: (_, _) => Task.FromResult((false, "故意让自检失败"))), null, default);
+    Check(!r6.Ok && r6.Detail.Contains("自检"),
+          "自检失败必须如实报出来（「文件在」≠「能跑」）", Cut(r6.Detail));
+    Check(!Directory.Exists(SkillRuntimeLocations.DataDir(testId)),
+          "自检没过时绝不能提交到目标目录（否则使用者会以为已经装好了）");
+
+    // 10.7 断流（声明总长却只发一半）：不许抛异常
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p7");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    truncate = true;
+    var r7 = await new RuntimeDownloader().InstallAsync(CliRecipe(), null, default);
+    truncate = false;
+    Check(!r7.Ok, "断流必须判失败（拿到的字节数对不上就不能当成下载完成）", Cut(r7.Detail));
+
+    // 10.8 整包解压型（对应 Python）+ 解压后必须删掉 *._pth
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p8");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    payload = pyLikeZip;
+    var pyTarget = SkillRuntimeLocations.DataDir("dl-probe-py");
+    var r8 = await new RuntimeDownloader().InstallAsync(
+        new RuntimeRecipe("dl-probe-py", "测试部件", new[] { Url("py.zip") }, 10,
+                          extractAll: true, pickFileName: null,
+                          deleteAfterExtract: new[] { "*._pth" },
+                          verify: VerifyPyLike),
+        null, default);
+    Check(r8.Ok, "整包解压型部件必须能装成功", Cut(r8.Detail));
+    Check(!File.Exists(Path.Combine(pyTarget, "python313._pth")),
+          "解压后必须删掉 *._pth（python.exe 还在，但它会让解释器进 isolated 模式 → 同目录 import 静默失败）");
+    Check(File.Exists(Path.Combine(pyTarget, "python.exe")) &&
+          File.Exists(Path.Combine(pyTarget, "lib", "readme.txt")),
+          "整包解压要保留目录结构（只解一层的话子目录里的东西就丢了）");
+    payload = cliLikeZip;
+
+    // 10.9 包里没有要找的文件 → 明确报"包结构可能变了"，不许装作成功
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p9");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    var r9 = await new RuntimeDownloader().InstallAsync(
+        CliRecipe(pick: "no-such-file.exe", verify: (_, _) => Task.FromResult((true, "不该走到这"))),
+        null, default);
+    Check(!r9.Ok && r9.Detail.Contains("结构"),
+          "压缩包里找不到目标文件时必须说清「包结构可能变了」（否则下 47MB 换来一句看不懂的错）",
+          Cut(r9.Detail));
+
+    // 10.10 已经装好且自检通过 → 一个请求都不该再发
+    FocusCapturePaths.RootOverride = dlTmp;   // 10.1 已经把 testId 装在这里了
+    var hitsIdle = Hits();
+    var r10 = await new RuntimeDownloader().InstallAsync(CliRecipe(), null, default);
+    Check(r10.Ok && r10.AlreadyPresent && Hits() == hitsIdle,
+          "已经装好的部件不许重复下载（数据目录那份归使用者，也不要白花使用者 47MB 流量）",
+          $"AlreadyPresent={r10.AlreadyPresent}，请求数 {hitsIdle} → {Hits()}");
+
+    // 10.11 压缩包里的越界路径 → 拒绝（防 zip slip 写到目录外）
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p11");
+    Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+    payload = MakeZip(("../escaped.txt", Encoding.UTF8.GetBytes("x")));
+    var r11 = await new RuntimeDownloader().InstallAsync(
+        new RuntimeRecipe("dl-probe-slip", "测试部件", new[] { Url("ok.zip") }, 10,
+                          extractAll: true, pickFileName: null,
+                          deleteAfterExtract: Array.Empty<string>(),
+                          verify: (_, _) => Task.FromResult((true, "不该走到这"))),
+        null, default);
+    Check(!r11.Ok && !File.Exists(Path.Combine(dlTmp, "escaped.txt")),
+          "压缩包里带 ../ 的项必须被拒绝（否则等于让远端决定往哪写文件）");
+    payload = cliLikeZip;
+
+    payload = cliLikeZip;
+
+    // 10.12 自检真的起了一个进程（用自己这个 exe 当"运行时文件"）
+    // ⚠ 光拷 exe 是不够的：.NET 的框架依赖型程序还要同目录的 .dll + .runtimeconfig.json（+ .deps.json），
+    // 少了后面两个，进程起来就报 hostfxr 那句「A fatal error occurred…」—— 本组第一次就是这么红的。
+    var selfBase = Path.Combine(
+        Path.GetDirectoryName(Environment.ProcessPath!)!,
+        Path.GetFileNameWithoutExtension(Environment.ProcessPath!));
+    var selfRuntimeConfig = selfBase + ".runtimeconfig.json";
+    var selfDeps = selfBase + ".deps.json";
+
+    Check(File.Exists(selfDllPath) && File.Exists(selfRuntimeConfig),
+          "本组前提：应能找到自身 exe 旁边的 .dll 与 .runtimeconfig.json（框架依赖型程序要它们才能跑）",
+          $"dll={File.Exists(selfDllPath)} runtimeconfig={File.Exists(selfRuntimeConfig)}");
+    if (File.Exists(selfDllPath) && File.Exists(selfRuntimeConfig))
+    {
+        FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p12");
+        Directory.CreateDirectory(FocusCapturePaths.RootOverride);
+
+        var bundle = new List<(string Name, byte[] Data)>
+        {
+            (selfExeName, selfExeBytes),
+            (Path.GetFileName(selfDllPath), File.ReadAllBytes(selfDllPath)),
+            (Path.GetFileName(selfRuntimeConfig), File.ReadAllBytes(selfRuntimeConfig)),
+        };
+        if (File.Exists(selfDeps)) bundle.Add((Path.GetFileName(selfDeps), File.ReadAllBytes(selfDeps)));
+        payload = MakeZip(bundle.ToArray());
+
+        var r12 = await new RuntimeDownloader().InstallAsync(
+            new RuntimeRecipe("dl-probe-run", "测试部件", new[] { Url("ok.zip") }, 10,
+                              extractAll: true, pickFileName: null,
+                              deleteAfterExtract: Array.Empty<string>(),
+                              verify: VerifyRunChild),
+            null, default);
+        Check(r12.Ok && r12.Detail.Contains("能跑"),
+              "自检必须真的能起进程并读它的输出（只查「文件在不在」验不出「能不能跑」）",
+              Cut(r12.Detail));
+        payload = cliLikeZip;
+    }
+
+    serverCts.Cancel();
+    listener.Stop();
+    try { await serverLoop; } catch { }
+}
+finally
+{
+    FocusCapturePaths.RootOverride = dlOldRoot;
+    try { Directory.Delete(dlTmp, true); } catch { }
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;
+
+/// <summary>
+/// 同步进度收集器。
+/// 为什么不用 <c>Progress&lt;T&gt;</c>：它会把回调投递到同步上下文（控制台里就是线程池），
+/// 检查点读到的列表可能还没填完 —— 那种"偶发少几条"的红绿最费时间。这里同步调用，确定性强。
+/// </summary>
+internal sealed class SyncProgress : IProgress<RuntimeProgress>
+{
+    private readonly Action<RuntimeProgress> _sink;
+    public SyncProgress(Action<RuntimeProgress> sink) => _sink = sink;
+    public void Report(RuntimeProgress value) => _sink(value);
+}

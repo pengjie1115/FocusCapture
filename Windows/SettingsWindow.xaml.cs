@@ -360,8 +360,17 @@ public partial class SettingsWindow : Window
 
             SkillRuntimeText.Text = File.Exists(runtime.PythonPath)
                 ? "内置 Python 运行时：已就位。"
-                : "内置 Python 运行时：未就位 —— 含脚本的 Skill 暂时跑不了。这是应用自身的组件缺失（不是你要额外装什么），"
-                  + "请向开发者反馈这一项。";
+                : "内置 Python 运行时：未就位 —— 含脚本的 Skill 暂时跑不了。"
+                  + "点下面的按钮由本应用下载（约 11MB），不用你自己装 Python，也不用敲任何命令。";
+
+            // 缺运行时给下载入口（2026-09-21，按需分发）：包默认不带它，用户点了才下。
+            // 文案保留"应用自身组件缺失"的口径 —— 这是应用该补的东西，不是使用者的操作问题。
+            var pyRecipe = RuntimeRecipes.For(RuntimeRecipes.PythonId);
+            PythonDownloadPanel.Visibility = !runtime.IsPresent && pyRecipe != null
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            if (runtime.IsPresent) PythonDownloadText.Text = "";
+
 
             RebuildTrustedSkillList();
 
@@ -441,15 +450,15 @@ public partial class SettingsWindow : Window
         // 位置三态与候选顺序对齐（自带 → 数据目录 → 系统 PATH，2026-09-21）：
         // 按需下载的那一份必须能一眼看出来是「已下载」——否则使用者会以为它来自系统，
         // 将来排查"到底跑的是哪一份"时无从下手。
-        var location = !status.Resolved
-            ? "未找到"
-            : dep.SourceOf(status.ExePath) switch
-            {
-                DependencySource.Bundled => "应用自带",
-                DependencySource.DataDir => "已下载",
-                DependencySource.SystemPath => "系统 PATH",
-                _ => "位置未知",
-            };
+        // 找不到时**不再缀一个（未找到）**：Detail 里已经说清了，重复一遍只是噪声（快照里看到的）。
+        var location = !status.Resolved ? "" : dep.SourceOf(status.ExePath) switch
+        {
+            DependencySource.Bundled => "应用自带",
+            DependencySource.DataDir => "已下载",
+            DependencySource.SystemPath => "系统 PATH",
+            _ => "位置未知",
+        };
+        var locationSuffix = location.Length > 0 ? $"（{location}）" : "";
 
         var color = status.Auth switch
         {
@@ -462,7 +471,7 @@ public partial class SettingsWindow : Window
 
         panel.Children.Add(new TextBlock
         {
-            Text = $"{dep.DisplayName}：{status.Detail}（{location}）",
+            Text = $"{dep.DisplayName}：{status.Detail}{locationSuffix}",
             Foreground = new SolidColorBrush(color),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
@@ -515,7 +524,109 @@ public partial class SettingsWindow : Window
         row.Children.Add(logoutButton);
 
         panel.Children.Add(row);
+
+        // 组件不在位（应用没自带、也没下载过）→ 给一个下载入口（2026-09-21，按需分发）。
+        // 这一格才是"按需下载"真正被用到的地方：包默认不带 runtime，用户第一次用才下。
+        if (!status.Resolved && RuntimeRecipes.For(dep.Id) != null)
+        {
+            var missingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+
+            var dlButton = new Button { Content = "下载组件", Width = 120, Height = 28 };
+            var dlBar = new ProgressBar
+            {
+                Width = 140, Height = 8, Margin = new Thickness(8, 0, 0, 0),
+                Minimum = 0, Maximum = 100, Value = 0, Visibility = Visibility.Collapsed,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x8F, 0xD1, 0x8F)),
+                BorderThickness = new Thickness(0),
+            };
+            var dlText = new TextBlock
+            {
+                Text = "应用自带没有这一份，也没有下载过。点这里由本应用下载安装。",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                FontSize = 12, Margin = new Thickness(8, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+            };
+
+            dlButton.Click += async (_, _) =>
+                await RunRuntimeInstallAsync(dep.Id, dlButton, dlText, dlBar).ConfigureAwait(true);
+
+            missingRow.Children.Add(dlButton);
+            missingRow.Children.Add(dlBar);
+            missingRow.Children.Add(dlText);
+            panel.Children.Add(missingRow);
+        }
+
         return panel;
+    }
+
+    /// <summary>内置 Python 的下载按钮（与依赖行共用同一个安装方法）</summary>
+    private async void BtnDownloadPython_Click(object sender, RoutedEventArgs e)
+    {
+        await RunRuntimeInstallAsync(
+            RuntimeRecipes.PythonId, BtnDownloadPython, PythonDownloadText, PythonDownloadBar)
+            .ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// 按需下载一个运行时组件 —— 设置页里的两个入口（外部依赖行 / 内置 Python 行）共用它。
+    ///
+    /// <para>
+    /// 进度、按钮禁用、失败如实回报都在这里做一次，**不各写一套**（两份实现必然漂移）。
+    /// </para>
+    /// <para>
+    /// ⚠ 这是在 UI 事件处理器里做外部 IO，**必须自己兜住异常**：冒泡到全局处理器会弹模态框，
+    /// 而模态框会吃掉后续点击 —— 用户看到的是"点了没反应"。
+    /// </para>
+    /// </summary>
+    private async Task RunRuntimeInstallAsync(string id, Button button, TextBlock statusText, ProgressBar? bar)
+    {
+        var recipe = RuntimeRecipes.For(id);
+        if (recipe == null)
+        {
+            statusText.Text = "这个组件没有已知的下载来源，暂时装不了。";
+            return;
+        }
+
+        button.IsEnabled = false;
+        if (bar != null) { bar.Value = 0; bar.Visibility = Visibility.Visible; }
+
+        try
+        {
+            var downloader = new RuntimeDownloader { OnLog = m => AppLog.Info("Skill", m) };
+            // Progress 在 UI 线程上创建 → 回调自动回到 UI 线程（读流线程上碰控件会抛）
+            var progress = new Progress<RuntimeProgress>(p =>
+            {
+                statusText.Text = p.Describe();
+                if (bar != null && p.Percent is int pct) bar.Value = pct;
+            });
+
+            var result = await downloader.InstallAsync(recipe, progress).ConfigureAwait(true);
+            if (!result.Ok)
+            {
+                statusText.Text = "没装成：" + result.Detail;
+                button.IsEnabled = true;
+                if (bar != null) bar.Visibility = Visibility.Collapsed;
+                AppLog.Warn("Skill", $"运行时组件安装失败（{id}）：{result.Detail}");
+                return;
+            }
+
+            statusText.Text = result.AlreadyPresent ? "已就绪。" : "安装完成，可以用了。";
+            if (bar != null) bar.Visibility = Visibility.Collapsed;
+            AppLog.Info("Skill", $"{recipe.DisplayName} 安装完成：{result.TargetDir}");
+
+            // 重扫一遍：依赖状态、Python 状态、列表都要跟着变
+            RefreshSkillSection();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Skill", $"下载运行时组件出错（{id}）", ex);
+            statusText.Text = "下载出错：" + ex.Message;
+            button.IsEnabled = true;
+            if (bar != null) bar.Visibility = Visibility.Collapsed;
+        }
     }
 
     /// <summary>

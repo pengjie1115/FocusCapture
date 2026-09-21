@@ -30,6 +30,12 @@ public enum AuthStage
 
     /// <summary>停住了 —— 失败、取消或用户没确认</summary>
     Failed,
+
+    /// <summary>
+    /// 依赖压根不在本机（应用没自带、也没下载过）—— 授权根本开始不了，得先把它装下来。
+    /// 与 <see cref="Failed"/> 分开：那不是失败，是"还差一步"。
+    /// </summary>
+    NotInstalled,
 }
 
 /// <summary>
@@ -62,6 +68,10 @@ public partial class SkillAuthWindow : Window
     private readonly SkillDependency _dep;
     private readonly List<(DepCredentialField Field, Control Input)> _credentialInputs = new();
 
+    /// <summary>最近一次探测到的状态（2026-09-21 起是字段：下载装好之后要重新探一次）</summary>
+    private DependencyStatus _status;
+
+
     private CancellationTokenSource? _cts;
     private DispatcherTimer? _timer;
     private DateTime _deadline;
@@ -85,13 +95,24 @@ public partial class SkillAuthWindow : Window
     {
         InitializeComponent();
         _dep = dep;
+        _status = status;
 
         HeadText.Text = $"用飞书扫码授权 —— {dep.DisplayName}";
         DepText.Text = $"当前状态：{status.Detail}\n本次将申请：{dep.AuthScopeText}";
 
         BuildCredentialInputs();
 
-        if (status.NeedsPrepare && Flow != null)
+        if (!status.Resolved)
+        {
+            // 组件不在位：授权根本没法开始（拿不到码、画不出二维码）→ 给出应用内的下一步
+            Stage = AuthStage.NotInstalled;
+            MissingPanel.Visibility = Visibility.Visible;
+            QrBorder.Visibility = Visibility.Collapsed;
+            ScanHintText.Visibility = Visibility.Collapsed;
+            UrlBox.Visibility = Visibility.Collapsed;
+            StatusText.Text = "缺少必要的组件，先装好它才能授权。";
+        }
+        else if (status.NeedsPrepare && Flow != null)
         {
             // 第一次用：停在这儿等用户选路，不自动开跑
             Stage = AuthStage.FirstRun;
@@ -109,9 +130,69 @@ public partial class SkillAuthWindow : Window
         Loaded += async (_, _) =>
         {
             // 已经配好凭据的机器：保持原来的零点击体验（申请码 → 出码 → 等扫码）
-            if (Stage != AuthStage.FirstRun) await StartAsync().ConfigureAwait(true);
+            // 另外两种形态（第一次用 / 组件没装）都要等用户先动手，不许自动开跑
+            if (Stage == AuthStage.Pending) await StartAsync().ConfigureAwait(true);
         };
         Closed += (_, _) => Cleanup();
+    }
+
+    /// <summary>
+    /// 下载缺失的依赖组件 —— 与设置页那个入口共用同一个下载器与同一套配方（两处不各写一套）。
+    ///
+    /// <para>
+    /// ⚠ 这是在 UI 事件处理器里做外部 IO（网络 + 落盘），**必须自己 try 住**：
+    /// 异常冒泡到全局处理器会弹一个模态框，而模态框会吃掉后续点击 ——
+    /// 用户看到的现象是"点了没反应"（本项目踩过这个坑）。
+    /// </para>
+    /// </summary>
+    private async void OnDownloadDependency(object sender, RoutedEventArgs e)
+    {
+        var recipe = RuntimeRecipes.For(_dep.Id);
+        if (recipe == null)
+        {
+            MissingText.Text = "这个组件没有已知的下载来源，暂时装不了。";
+            return;
+        }
+
+        DownloadDepButton.IsEnabled = false;
+        try
+        {
+            var downloader = new RuntimeDownloader { OnLog = m => AppLog.Info("Skill", m) };
+            // Progress 在 UI 线程上创建 → 回调自动回到 UI 线程（读流线程上碰控件会抛）
+            var progress = new Progress<RuntimeProgress>(p => MissingText.Text = p.Describe());
+
+            var result = await downloader.InstallAsync(recipe, progress).ConfigureAwait(true);
+            if (!result.Ok)
+            {
+                MissingText.Text = "没装成：" + result.Detail;
+                DownloadDepButton.IsEnabled = true;
+                AppLog.Warn("Skill", $"依赖组件安装失败（{_dep.Id}）：{result.Detail}");
+                return;
+            }
+
+            MissingText.Text = "已装好，正在重新检查…";
+            _status = await _dep.ProbeAsync().ConfigureAwait(true);
+            if (!_status.Resolved)
+            {
+                MissingText.Text = "装好了，但状态仍不对：" + _status.Detail;
+                DownloadDepButton.IsEnabled = true;
+                return;
+            }
+
+            // 回到正常流程：把它藏起来，把扫码区放出来，接着走"先准备再扫码"
+            MissingPanel.Visibility = Visibility.Collapsed;
+            QrBorder.Visibility = Visibility.Visible;
+            ScanHintText.Visibility = Visibility.Visible;
+            UrlBox.Visibility = Visibility.Visible;
+            Stage = AuthStage.Pending;
+            await StartAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Skill", $"下载依赖组件出错（{_dep.Id}）", ex);
+            MissingText.Text = "下载出错：" + ex.Message;
+            DownloadDepButton.IsEnabled = true;
+        }
     }
 
     // ────────────────────────── 主流程 ──────────────────────────

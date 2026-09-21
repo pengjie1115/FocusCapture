@@ -105,6 +105,22 @@
             </Border>
         </StackPanel>
 
+        <!-- ── 依赖不在位：连授权都开始不了，先把它装下来（设计稿 §4.4 触发点 2）──
+             实测这一格很少被走到（组件不在位时设置页的授权按钮本来就是禁用的），
+             但只要有人从别处打开这个窗口，它就该给出**应用内**的下一步，而不是让用户自己去想办法。 -->
+        <StackPanel Grid.Row="2" x:Name="MissingPanel" Margin="0,14,0,0" Visibility="Collapsed">
+            <Border Background="#242424" BorderBrush="#3A3A3A" BorderThickness="1"
+                    CornerRadius="4" Padding="12">
+                <StackPanel>
+                    <TextBlock x:Name="MissingText" TextWrapping="Wrap"
+                               Foreground="#C8C8C8" FontSize="12" LineHeight="19"
+                               Text="这个组件还没装到本机。点下面的按钮由本应用下载安装，不用你去装任何东西。"/>
+                    <Button x:Name="DownloadDepButton" Content="下载并继续" Margin="0,12,0,0"
+                            HorizontalAlignment="Left" Click="OnDownloadDependency" Padding="12,7"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
         <!-- ── 兜底入口：粘贴现成凭据（输入框按协议给的字段动态渲染） ── -->
         <StackPanel Grid.Row="3" x:Name="CredentialPanel" Margin="0,14,0,0" Visibility="Collapsed">
             <Border Background="#242424" BorderBrush="#3A3A3A" BorderThickness="1"

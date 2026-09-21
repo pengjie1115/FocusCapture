@@ -63,15 +63,21 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **78** | 纯逻辑，秒级 | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **400** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml.cs` 时**；交付前 |
+| **快层** | `tests/` | **98** | 纯逻辑，秒级 | **每次代码改动后** |
+| **慢层** | `tests/sync/` | **408** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml.cs` 时**；交付前 |
 
 当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**、**UI 线程封送（自验：发起端确实不在 UI 线程 / 回调被搬到 UI 线程 / 取消如实传回 / 无调度器与已停用一律按未确认，6 条）**、
 **Skill 外部依赖与授权（自带优先定位 / 静态扫描识别与不误判 / 状态解析七种输入 / 真跑状态查询 / 设备码流拿到 device_code 与验证链接 / 二维码真出 PNG 且落在指定目录 / 失败必须返回 null /
 **依赖闸：未授权不得执行脚本、完成后同一次调用继续执行、不传依赖表则不预检 / 授权类失败的措辞与应用内入口 / 面向用户文案不得含开发者路径 / 候选目录顺序（自带 → 数据目录）与子进程 PATH 全前置 / NotConfigured 单列一态 / 验证链接提取 / 前置配置空转 / 无协议依赖的在位判定 / 注册式依赖表 / 兜底入口字段，54 条；⚠ 依赖闸三条自 2026-09-20 起用**桩依赖**（固定返回未授权），不再依赖真实 lark-cli 登录态 —— 当晚用户真机扫码授权后这三条曾全红，登录态是机器环境不是代码行为）**、
 **标记行挂靠与编辑=替换（跨文件 ref 挂靠：标记行与原笔记被拆进不同文件也能合并 / 同文件顺序颠倒且多条编辑行时按时间戳取最新 / 孤儿标记行带 RawLine 且删除必成功进回收站 / 编辑=替换不追加【编辑】行且旧行进回收站发墓碑 / 替换后旧【编辑】痕迹清理且【AI 释义】保留，20 条）**、
 **Skill 授权窗口（先准备再扫码 / 准备失败不出码 / 第一次用停在选择面板 / 失败写日志 R9 / 失败文案同步 R10 / 布局高度自校准两条，12 条，STA 线程）**、
-**内置技能（随包分发的桥接 Skill：源里有 / 能落地到数据目录 / 落地产物能被扫描器认出且带脚本 / 能从脚本认出「要用 lark-cli」这条依赖 / 脚本不许硬编码别的应用安装目录 / csproj 复制规则存在且不带 Condition 且为 PreserveNewest / **落地动作必须排在 `--snapshot`·`--dragprobe` 之后**（源码顺序断言，理由见下），10 条）**（慢层）。
+**内置技能（随包分发的桥接 Skill：源里有 / 能落地到数据目录 / 落地产物能被扫描器认出且带脚本 / 能从脚本认出「要用 lark-cli」这条依赖 / 脚本不许硬编码别的应用安装目录 / csproj 复制规则存在且不带 Condition 且为 PreserveNewest / **落地动作必须排在 `--snapshot`·`--dragprobe` 之后**（源码顺序断言，理由见下），10 条）**、
+**运行时下载（配方数据 + 打包契约：两条配方齐 / 部件名与依赖层常量一致 / 下载源全是 https 且不指向本机或别的应用目录 / **与 `tools\fetch-*.ps1` 的主机名不漂移**（漂移哨兵）/ Python 版本与脚本一致 / Python 配方必须「整包解压 + 删 `*._pth`」/ lark-cli 配方必须「从包里挑 `lark-cli.exe`」/ csproj 必须有 publish 侧清理目标，8 条）**（慢层）。
+另有**快层 [10] 运行时按需下载 RuntimeDownloader**（20 条，用本地假下载源 + 自己这个 exe 当被测文件）：
+多源兜底（首源失败自动试下一个）/ 全失败时失败信息带上是哪些源 / 进度真的被调且字节单调不减 /
+体积下限（下到错误页不能当安装包）/ **自检没过绝不提交**（目标目录不许留半成品）/ 断流不抛 /
+整包解压保留目录结构 + 解压后删 `*._pth` / 包里找不到目标文件要说清「包结构可能变了」/
+**已装好的不重复下载**（一个请求都不再发）/ 压缩包里的 `../` 越界项必须拒绝 / 自检真的能起进程读输出。
 另有**快层 [9] 内置 Skill 落地与恢复 BuiltinSkills**（16 条）：源缺失不抛 / 该落地的都落地（含 scripts 子目录）/
 已有 SKILL.md 时一个字节不动 / 判据是"有没有 SKILL.md"而非"目录在不在" / 落地产物能被扫描器认出 /
 恢复必须先备份且原子（备份不落在 Skills 目录内，清单里不许出现两行同名技能）/ 未落地时直接落地不产生空备份 /
@@ -860,6 +866,9 @@
 > `Services/Skills/SkillManifest.cs`（系统提示硬约束）、`Services/Skills/SkillTools.cs`（load_skill 预告依赖）、
 > `Services/Skills/SkillRuntime.cs` + `Windows/SettingsWindow.xaml(.cs)`（文案纪律 + 依赖面板 + **「恢复内置技能」出口**，2026-09-21 增）、
 > `Services/Skills/BuiltinSkills.cs`（内置 Skill 的落地与恢复：目标不存在才复制 / 恢复前先备份，2026-09-21 新）、
+> `Services/Skills/RuntimeRecipe.cs` + `Services/Skills/RuntimeDownloader.cs`（**运行时按需下载**：
+> 配方 = 源顺序 / 归档怎么装 / 解压后删什么 / 自检；下载器 = 多源兜底 + 进度 + 暂存目录 +
+> **自检通过才提交** + 永不抛，2026-09-21 新）、
 > `builtin-skills\lark-cli\`（**桥接官方 lark-cli 的 Skill**：`SKILL.md` 只讲"怎么调用 + 纪律"、
 > `scripts\lark.py` 是纯透传壳 —— 业务知识一律来自官方内嵌的 28 个技能，我们不维护，2026-09-21 新）、
 > `tools/fetch-lark-cli.ps1` + `.bat`（从 npmmirror 拉官方二进制，约 47MB，落 `runtime\lark-cli\`）。
@@ -894,7 +903,7 @@
 
 > **机器可验的部分**：慢层组 `Skill 依赖`（**54** 条，2026-09-21 两次扩容 30 → 36 → 53 → 54）
 > + 慢层组 `Skill 授权窗口`（**12** 条，2026-09-21 新增，STA 线程）
-> + 慢层组 `内置技能`（**10** 条，2026-09-21 新增）。
+> + 慢层组 `内置技能`（**10** 条，2026-09-21 新增）+ 慢层组 `运行时下载`（**8** 条，2026-09-21 新增）。
 > `Skill 依赖` 覆盖：四条红线 + 二维码产物位置与失败语义
 > + **候选目录顺序（自带 → 数据目录）与子进程 PATH 全前置**（让脚本把 `PATH` 打出来断言，不靠读代码）
 > + **`NotConfigured` 与 `Unknown` 分开**（含"错误 JSON 走 stderr 也要认出来"）
@@ -913,8 +922,8 @@
 > 那两个开发期模式在 `UiSnapshot.Run` / `DragProbe.Run` 内部才把数据根指到临时沙箱，
 > 落盘动作排在它们前面就会拿**真实数据根**去写。2026-09-21 实测踩到：跑一次 `dev.ps1 snap`，
 > 真实数据目录里凭空多出 `Skills\lark-cli\`（快照本该零副作用）。
-> 另有三组地基防线在快层：`[7] 运行时部件候选目录`（7 条）+ `[8] 子进程流式读与超时保留`（6 条）+ `[9] 内置 Skill 落地与恢复`（16 条）——
-> 改了 `SkillProcess` / `SkillRuntimeLocations` / `SkillDependency` 的候选逻辑或 `BuiltinSkills`，跑快层即可，不必等慢层。
+> 另有四组地基防线在快层：`[7] 运行时部件候选目录`（7 条）+ `[8] 子进程流式读与超时保留`（6 条）+ `[9] 内置 Skill 落地与恢复`（16 条）+ `[10] 运行时按需下载`（20 条）——
+> 改了 `SkillProcess` / `SkillRuntimeLocations` / `SkillDependency` 的候选逻辑、`BuiltinSkills`、或下载器与配方，跑快层即可，不必等慢层。
 > **授权完成那一步、以及"AI 真的用飞书办成一件事"只能人工验**（要真扫码），见下表。
 
 > ⚠ **2026-09-21 实测（探针只读跑了一次 `auth status`，真实用户目录）**：未登录时 `identities.user` 只有
@@ -937,7 +946,16 @@
 | ⚠ 在 AI 问答里说「飞书里有哪些技能」之类 | AI 会**先读官方技能再回答**（不是凭记忆编）；这证明 `lark.py` 透传 + 官方 28 个技能这条通路是通的 |
 | ⚠ 让 AI 办一件真事（例：往多维表格里加一条） | **写操作前会先问用户**；用户确认后飞书里真的出现该条；全程**没有**把命令/终端步骤写给用户 |
 | ⚠ 改坏 `Skills\lark-cli\SKILL.md` 后点「恢复内置技能」 | 弹确认框（写清覆盖什么、备份到哪）→ 确认后技能回到出厂版本，**改坏的那份躺在 `<数据根>\Skills_backup\<时间戳>\` 里**，且技能清单里**不会多出第二行** |
+| ⚠ **按需下载**：把 `runtime\` 挪走（或删掉数据目录下的 `runtime\`）后打开设置页 | 外部依赖行显示「未找到」+「下载组件」按钮；点它 → **行内进度**（百分比递增）→ 完成后状态变成「已授权 / 未授权」而不再是「未找到」。Python 那行同理 |
+| ⚠ 下载过程中拔网线（或断流） | 行内显示失败原因，**不留半成品**（目标目录要么没建、要么是完整的）；再点一次能重试 |
+| ⚠ 发布产物体积（`dotnet publish`） | **≈ 96 MB**，且 `runtimes\` 下**只有 win-x64**（2026-09-21 修前是 347.7 MB / 8 个平台；这条只能人工量） |
 | 把 `runtime\python` 整个删掉，再执行含脚本的 Skill | 明确报「未检测到可用的 Python 运行时」并给出获取方式；**不得出现任何「成功」字样** |
+
+> **关于「精简包 / 完整包」开关（2026-09-21 定：本步不做）**：现在连"发版"这个动作本身都还没进流程
+> （没有发布脚本、没有安装包形态），此时定包体策略多半会定错 —— 定的时候看不见真实约束
+> （安装包多大算大 / 使用者能不能联网 / 要不要离线包）。所以 `runtime\` 要不要随包分发**留到真发版时再定**。
+> **但同一次排查顺手修掉了一个真 bug**：publish 曾把 7 个用不上的平台原生库一并产出（347.7 MB 里 251.5 MB 是死重量），
+> 那是"包本来就装错了东西"，与策略无关 —— 已修（`TrimForeignRuntimesFromPublish`），产物 96.2 MB。
 
 ---
 
