@@ -63,14 +63,19 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **62** | 纯逻辑，秒级 | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **390** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*` 时**；交付前 |
+| **快层** | `tests/` | **78** | 纯逻辑，秒级 | **每次代码改动后** |
+| **慢层** | `tests/sync/` | **400** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml.cs` 时**；交付前 |
 
 当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**、**UI 线程封送（自验：发起端确实不在 UI 线程 / 回调被搬到 UI 线程 / 取消如实传回 / 无调度器与已停用一律按未确认，6 条）**、
 **Skill 外部依赖与授权（自带优先定位 / 静态扫描识别与不误判 / 状态解析七种输入 / 真跑状态查询 / 设备码流拿到 device_code 与验证链接 / 二维码真出 PNG 且落在指定目录 / 失败必须返回 null /
 **依赖闸：未授权不得执行脚本、完成后同一次调用继续执行、不传依赖表则不预检 / 授权类失败的措辞与应用内入口 / 面向用户文案不得含开发者路径 / 候选目录顺序（自带 → 数据目录）与子进程 PATH 全前置 / NotConfigured 单列一态 / 验证链接提取 / 前置配置空转 / 无协议依赖的在位判定 / 注册式依赖表 / 兜底入口字段，54 条；⚠ 依赖闸三条自 2026-09-20 起用**桩依赖**（固定返回未授权），不再依赖真实 lark-cli 登录态 —— 当晚用户真机扫码授权后这三条曾全红，登录态是机器环境不是代码行为）**、
 **标记行挂靠与编辑=替换（跨文件 ref 挂靠：标记行与原笔记被拆进不同文件也能合并 / 同文件顺序颠倒且多条编辑行时按时间戳取最新 / 孤儿标记行带 RawLine 且删除必成功进回收站 / 编辑=替换不追加【编辑】行且旧行进回收站发墓碑 / 替换后旧【编辑】痕迹清理且【AI 释义】保留，20 条）**、
-**Skill 授权窗口（先准备再扫码 / 准备失败不出码 / 第一次用停在选择面板 / 失败写日志 R9 / 失败文案同步 R10 / 布局高度自校准两条，12 条，STA 线程）**（慢层）。
+**Skill 授权窗口（先准备再扫码 / 准备失败不出码 / 第一次用停在选择面板 / 失败写日志 R9 / 失败文案同步 R10 / 布局高度自校准两条，12 条，STA 线程）**、
+**内置技能（随包分发的桥接 Skill：源里有 / 能落地到数据目录 / 落地产物能被扫描器认出且带脚本 / 能从脚本认出「要用 lark-cli」这条依赖 / 脚本不许硬编码别的应用安装目录 / csproj 复制规则存在且不带 Condition 且为 PreserveNewest / **落地动作必须排在 `--snapshot`·`--dragprobe` 之后**（源码顺序断言，理由见下），10 条）**（慢层）。
+另有**快层 [9] 内置 Skill 落地与恢复 BuiltinSkills**（16 条）：源缺失不抛 / 该落地的都落地（含 scripts 子目录）/
+已有 SKILL.md 时一个字节不动 / 判据是"有没有 SKILL.md"而非"目录在不在" / 落地产物能被扫描器认出 /
+恢复必须先备份且原子（备份不落在 Skills 目录内，清单里不许出现两行同名技能）/ 未落地时直接落地不产生空备份 /
+技能名越界与"源里没有"必须拒绝 / 列内置技能只列真有 SKILL.md 的。
 
 > **为什么文件仓库的检查点在慢层不在快层**（2026-09-16）：快层工程刻意不引用主项目（只链接少数无依赖源文件，以保持秒级编译）。
 > 文件仓库必然依赖日志/设置/附件服务，链进快层会把这层轻量结构毁掉。代价是它的检查点不是「每次改动都跑」，
@@ -853,7 +858,10 @@
 > 兜底入口按协议字段渲染输入框；失败写日志 R9 + 文案同步 R10。2026-09-21 改）、
 > `Services/Skills/SkillScriptRunner.cs`（第 10 条规则：依赖预检闸 + PATH 注入 + 授权类失败补话术）、
 > `Services/Skills/SkillManifest.cs`（系统提示硬约束）、`Services/Skills/SkillTools.cs`（load_skill 预告依赖）、
-> `Services/Skills/SkillRuntime.cs` + `Windows/SettingsWindow.xaml(.cs)`（文案纪律 + 依赖面板）、
+> `Services/Skills/SkillRuntime.cs` + `Windows/SettingsWindow.xaml(.cs)`（文案纪律 + 依赖面板 + **「恢复内置技能」出口**，2026-09-21 增）、
+> `Services/Skills/BuiltinSkills.cs`（内置 Skill 的落地与恢复：目标不存在才复制 / 恢复前先备份，2026-09-21 新）、
+> `builtin-skills\lark-cli\`（**桥接官方 lark-cli 的 Skill**：`SKILL.md` 只讲"怎么调用 + 纪律"、
+> `scripts\lark.py` 是纯透传壳 —— 业务知识一律来自官方内嵌的 28 个技能，我们不维护，2026-09-21 新）、
 > `tools/fetch-lark-cli.ps1` + `.bat`（从 npmmirror 拉官方二进制，约 47MB，落 `runtime\lark-cli\`）。
 
 > **四条红线（改这块之前必读）**：
@@ -885,7 +893,8 @@
 > **别把"CLI 只收相对路径"记成永恒事实**：我第一版就是这么断言的，被检查点当场逮住并改正。
 
 > **机器可验的部分**：慢层组 `Skill 依赖`（**54** 条，2026-09-21 两次扩容 30 → 36 → 53 → 54）
-> + 慢层组 `Skill 授权窗口`（**12** 条，2026-09-21 新增，STA 线程）。
+> + 慢层组 `Skill 授权窗口`（**12** 条，2026-09-21 新增，STA 线程）
+> + 慢层组 `内置技能`（**10** 条，2026-09-21 新增）。
 > `Skill 依赖` 覆盖：四条红线 + 二维码产物位置与失败语义
 > + **候选目录顺序（自带 → 数据目录）与子进程 PATH 全前置**（让脚本把 `PATH` 打出来断言，不靠读代码）
 > + **`NotConfigured` 与 `Unknown` 分开**（含"错误 JSON 走 stderr 也要认出来"）
@@ -894,9 +903,19 @@
 > + **兜底入口的字段描述**（appId 明文 + appSecret 敏感）。
 > `Skill 授权窗口` 覆盖：**准备失败必须停在失败且不出码** / 已配好时照常进扫码 / 第一次用停在选择面板不自动开跑 /
 > **失败写日志并带上阶段**（R9，看沙箱里真实日志文件）/ **失败后占位文案必须改掉**（R10）/ **布局高度自校准**（选择面板不许比出码布局更高 + 出码布局不许超出窗口高；只靠测量，`RenderTargetBitmap` 查不出裁切 —— 溢出部分在快照里照样画得出来）。
-> 另有两组地基防线在快层：`[7] 运行时部件候选目录`（7 条）+ `[8] 子进程流式读与超时保留`（6 条）——
-> 改了 `SkillProcess` / `SkillRuntimeLocations` / `SkillDependency` 的候选逻辑，跑快层即可，不必等慢层。
-> **授权完成那一步只能人工验**（要真扫码），见下表。
+> `内置技能` 覆盖（用的是**仓库里真实的那份文件**，所以它同时在守"随包分发的到底是什么"）：
+> 内置技能源里有 `lark-cli` / 能落地到数据目录 / 落地产物能被扫描器认出且带上 `lark.py` /
+> **能从脚本文本里认出「要用 lark-cli」这条依赖**（认不出就不会走授权预检，未授权也硬跑 →
+> 拿一串英文报错回来，实测模型会照着自己的猜测编解决办法）/ **桥接脚本不许硬编码别的应用安装目录**（B-18 红线机器化）/
+> csproj 的复制规则存在、**不带 `Condition`**、且是 `CopyToOutputDirectory=PreserveNewest` /
+> **落地动作必须排在 `--snapshot`·`--dragprobe` 之后**。
+> ⚠ 最后那条是**源码顺序断言**（不是产物证明，本项目一般不信读代码）：因为这条约束没有产物级验法 ——
+> 那两个开发期模式在 `UiSnapshot.Run` / `DragProbe.Run` 内部才把数据根指到临时沙箱，
+> 落盘动作排在它们前面就会拿**真实数据根**去写。2026-09-21 实测踩到：跑一次 `dev.ps1 snap`，
+> 真实数据目录里凭空多出 `Skills\lark-cli\`（快照本该零副作用）。
+> 另有三组地基防线在快层：`[7] 运行时部件候选目录`（7 条）+ `[8] 子进程流式读与超时保留`（6 条）+ `[9] 内置 Skill 落地与恢复`（16 条）——
+> 改了 `SkillProcess` / `SkillRuntimeLocations` / `SkillDependency` 的候选逻辑或 `BuiltinSkills`，跑快层即可，不必等慢层。
+> **授权完成那一步、以及"AI 真的用飞书办成一件事"只能人工验**（要真扫码），见下表。
 
 > ⚠ **2026-09-21 实测（探针只读跑了一次 `auth status`，真实用户目录）**：未登录时 `identities.user` 只有
 > `status` / `available` / `message` / `hint` 四个字段，**没有 `userName`**，而 `ParseStatus` 读的正是 `userName`
@@ -914,6 +933,10 @@
 | 设置 → AI 模型 → Skill 扩展 → 外部依赖 | 显示 `飞书（lark-cli）：已授权：<用户名>（应用自带）`，并有「退出登录」可撤销 |
 | 点「退出登录」后再说一次 | 重新弹二维码（撤销后必须重新授权才可用） |
 | 在设置里点某 Skill 的「撤销」再执行它 | 重新弹授权确认 |
+| ⚠ **首次启动后**看设置 → AI 模型 → Skill 扩展 | 技能数比之前多 1，清单里有 `lark-cli`（随包分发的桥接技能已落地到数据目录） |
+| ⚠ 在 AI 问答里说「飞书里有哪些技能」之类 | AI 会**先读官方技能再回答**（不是凭记忆编）；这证明 `lark.py` 透传 + 官方 28 个技能这条通路是通的 |
+| ⚠ 让 AI 办一件真事（例：往多维表格里加一条） | **写操作前会先问用户**；用户确认后飞书里真的出现该条；全程**没有**把命令/终端步骤写给用户 |
+| ⚠ 改坏 `Skills\lark-cli\SKILL.md` 后点「恢复内置技能」 | 弹确认框（写清覆盖什么、备份到哪）→ 确认后技能回到出厂版本，**改坏的那份躺在 `<数据根>\Skills_backup\<时间戳>\` 里**，且技能清单里**不会多出第二行** |
 | 把 `runtime\python` 整个删掉，再执行含脚本的 Skill | 明确报「未检测到可用的 Python 运行时」并给出获取方式；**不得出现任何「成功」字样** |
 
 ---

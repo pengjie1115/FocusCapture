@@ -558,9 +558,13 @@
                                 Width="120" Height="30" Click="BtnSkillOpenFolder_Click"/>
                         <Button x:Name="BtnSkillRescan" Content="重新扫描"
                                 Width="96" Height="30" Margin="8,0,0,0" Click="BtnSkillRescan_Click"/>
+                        <Button x:Name="BtnSkillRestoreBuiltin" Content="恢复内置技能"
+                                Width="120" Height="30" Margin="8,0,0,0" Click="BtnSkillRestoreBuiltin_Click"/>
                     </StackPanel>
                     <TextBlock Text="装 Skill = 把整个文件夹拷进上面那个目录（里面要有 SKILL.md）。本应用直接吃既有格式，不改写 Skill。"
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    <TextBlock Text="随应用分发的内置技能只在你这里没有它的时候才会落进来；一旦落地就归你，之后不会再被应用改动 —— 想拿回出厂版本就点「恢复内置技能」（覆盖前会自动备份）。"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
                     <TextBlock Text="已授权的 Skill（撤销后，下次执行脚本会重新询问）"
                                Foreground="#B0B0B0" FontSize="12" Margin="0,12,0,2"/>
                     <StackPanel x:Name="SkillTrustedPanel"/>

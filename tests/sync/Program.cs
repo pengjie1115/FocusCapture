@@ -83,6 +83,7 @@ internal static class Program
             await RunAsync("Skill 依赖", TestSkillDependency); // 定位自带优先 / 设备码流 / 二维码产物 / 授权闸（2026-09-20）
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
+            Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
             await RunAsync("桶拆分", TestBucketSplitting);
@@ -538,6 +539,108 @@ print(json.dumps({
               "系统提示必须带硬约束：不许让用户去命令行执行命令", $"实际：{Short(manifest)}");
         Check(manifest.Contains("设置 → AI 模型 → Skill 扩展"),
               "系统提示必须给出应用内授权入口（否则模型只能自己发明）", $"实际：{Short(manifest)}");
+    }
+
+    // ══════════════════ 内置技能（2026-09-21，授权闭环步骤 4） ══════════════════
+    //
+    // 守的是什么：随包分发的桥接 Skill 必须真的能出现在用户的技能清单里，而且必须真的
+    // 接上「依赖闸」——后者决定了跑脚本之前会不会先走一次授权。
+    // 这两条错了都是**静默**的：
+    //   ① 技能不出现 → AI 直接说"我做不到"，没有任何报错；
+    //   ② 依赖认不出 → 未授权也硬跑，拿一串英文报错回来（实测模型会照着自己的猜测编解决办法）。
+    // 本组用的是**仓库里真实的那份文件**（不是造的样板），所以它同时验证了"随包分发的到底是什么"。
+    private static void TestBuiltinSkills()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var sourceRoot = BuiltinSkills.SourceRoot(repoRoot);
+
+        // ── 1. 随包分发的来源里必须有它 ──
+        var names = BuiltinSkills.ListBuiltin(sourceRoot);
+        Check(names.Contains("lark-cli"),
+              "内置技能源里必须有飞书桥接 Skill（没有 = 这个能力压根没随包分发）",
+              $"实际：{string.Join("、", names)}");
+
+        var tmp = Path.Combine(Path.GetTempPath(), "fc-sync-builtin-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            var skillsRoot = Path.Combine(tmp, "Skills");
+            var deployed = BuiltinSkills.Deploy(sourceRoot, skillsRoot);
+            Check(deployed.Contains("lark-cli"),
+                  "内置技能必须能落地到数据目录（这是它出现在用户清单里的唯一途径）",
+                  $"实际落地：{string.Join("、", deployed)}");
+
+            // ── 2. 落地产物是个真 Skill（真实文件，不是样板）──
+            var catalog = new SkillCatalog(skillsRoot);
+            var found = catalog.TryGet("lark-cli", out var skill);
+            Check(found && skill.ScriptFiles.Contains("lark.py"),
+                  "落地后的内置技能必须能被扫描器认出来、且带上它的脚本",
+                  found ? $"脚本：{string.Join("、", skill.ScriptFiles)}" : "按名字找不到它");
+            if (!found) return;
+
+            Check(skill.Body.Contains("lark-cli") && skill.Description.Length > 0,
+                  "桥接技能要对模型说明白它是干什么的（描述为空或正文没提到 lark-cli，模型就不会想到用它）",
+                  $"实际描述：{skill.Description}");
+
+            // ── 3. 接线：必须认出「要用 lark-cli」，否则不会走授权预检 ──
+            var deps = SkillDependencies.All(repoRoot);
+            var detected = SkillDependencies.DetectInSkill(deps, skill);
+            Check(detected.Any(d => d.Id == SkillDependencies.LarkCliId),
+                  "必须能从桥接脚本里认出「要用 lark-cli」—— 认不出就不会走依赖预检，" +
+                  "没授权时脚本会硬跑然后吐一堆英文错（实测模型会照着编解决办法）",
+                  $"实际认出：{string.Join("、", detected.Select(d => d.Id))}");
+
+            // ── 4. 桥接脚本不许硬编码「别的应用安装目录」（REGRESSION B-18 红线）──
+            var scriptPath = Path.Combine(skill.RootPath, "scripts", "lark.py");
+            var scriptText = File.ReadAllText(scriptPath);
+            var forbidden = new[] { "cli-connector-packages", ".workbuddy", "Program Files", "\\npm\\" };
+            var hits = forbidden.Where(f => scriptText.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
+            Check(hits.Count == 0,
+                  "桥接脚本只许按 PATH 找 lark-cli，绝不硬编码别的应用安装目录" +
+                  "（那样换台机器就失效，而且失败时看不出原因）",
+                  $"实际命中：{string.Join("、", hits)}");
+
+            // ── 5. 打包契约：csproj 必须有复制规则，且**不许带 Condition** ──
+            var csproj = Path.Combine(repoRoot, "FocusCapture.csproj");
+            var doc = System.Xml.Linq.XDocument.Load(csproj);
+            var groups = doc.Descendants("ItemGroup")
+                .Where(g => g.Elements("None").Any(n =>
+                    ((string?)n.Attribute("Update") ?? "")
+                        .StartsWith("builtin-skills", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            Check(groups.Count > 0,
+                  "csproj 里必须有 builtin-skills 的复制规则（否则打出来的包少一个技能，用户那边永远没有）");
+
+            Check(groups.Count > 0 && groups.All(g => string.IsNullOrEmpty((string?)g.Attribute("Condition"))),
+                  "内置技能的复制规则不许带 Condition —— runtime 是外部拉取的可以缺，" +
+                  "内置技能住在仓库里，缺了就是打包出错，不该静默降级",
+                  $"实际 Condition：{string.Join("、", groups.Select(g => (string?)g.Attribute("Condition") ?? "(无)"))}");
+
+            var copies = groups.SelectMany(g => g.Elements("None"))
+                               .All(n => string.Equals((string?)n.Element("CopyToOutputDirectory"),
+                                                       "PreserveNewest", StringComparison.OrdinalIgnoreCase));
+            Check(groups.Count > 0 && copies,
+                  "复制规则必须是 CopyToOutputDirectory=PreserveNewest（改了它文件就不进输出目录了）");
+
+            // ── 6. 源码顺序：落地动作必须排在开发期模式（--snapshot / --dragprobe）之后 ──
+            // 为什么这里读源码而不是验产物：这条约束**没有产物级的验法**。
+            // 那两个模式在 UiSnapshot.Run / DragProbe.Run 内部才把数据根指到临时沙箱，
+            // 落地动作若排在它们之前，就会拿**真实数据根**去写盘。
+            // 2026-09-21 实测踩到：跑一次 `dev.ps1 snap`，真实数据目录里凭空多出 `Skills\lark-cli\`
+            // —— 快照本该零副作用，这是开发工具污染用户数据。
+            var appSrc = File.ReadAllText(Path.Combine(repoRoot, "App.xaml.cs"));
+            var iSnapshot = appSrc.IndexOf("UiSnapshot.IsRequested", StringComparison.Ordinal);
+            var iDragProbe = appSrc.IndexOf("DragProbe.IsRequested", StringComparison.Ordinal);
+            var iDeploy = appSrc.IndexOf("BuiltinSkills.Deploy", StringComparison.Ordinal);
+            Check(iSnapshot > 0 && iDragProbe > 0 && iDeploy > iSnapshot && iDeploy > iDragProbe,
+                  "内置技能落地必须排在 --snapshot / --dragprobe 之后" +
+                  "（那两个模式会把数据根指到沙箱，排在前面就会把技能写进真实数据目录）",
+                  $"实际位置：snapshot@{iSnapshot} dragprobe@{iDragProbe} deploy@{iDeploy}");
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch { }
+        }
     }
 
     // ══════════════════ Skill 授权窗口流程（2026-09-21） ══════════════════

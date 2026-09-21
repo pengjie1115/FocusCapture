@@ -47,6 +47,10 @@
          所以能在这里直接测「流式读 + 超时保留已读」—— 这两条以前没有防线，
          而它们错了的后果是"输出明明出来了却永远读不到"（阻塞命令直接死锁）。 -->
     <Compile Include="..\Services\Skills\SkillProcess.cs" Link="Src\SkillProcess.cs" />
+    <!-- 内置 Skill 的落地与恢复（2026-09-21，步骤 4）：BuiltinSkills 同样零项目依赖（目录全由参数注入、
+         不用 AppLog），所以能在这里直接测。落地逻辑错了的后果是**静默**的 ——
+         用户改过的版本被悄悄覆盖、或者该出现的技能压根没出现，两种都很难被发现。 -->
+    <Compile Include="..\Services\Skills\BuiltinSkills.cs" Link="Src\BuiltinSkills.cs" />
   </ItemGroup>
 
 </Project>

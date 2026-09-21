@@ -473,6 +473,130 @@ if (!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe))
           $"实际 StartError：{Cut(rBad.StartError)}");
 }
 
+// ── [9] 内置 Skill 落地与恢复 BuiltinSkills ──
+// 守的是什么（2026-09-21 新增，授权闭环步骤 4）：
+//   ① 内置技能是「目标不存在才复制」—— 一旦落地就归用户，应用不再改动它。
+//      这条错了两边都难看：判据写宽了会覆盖用户改过的版本（静默丢东西），
+//      判据写窄了该出现的技能永远不出现（用户只会觉得"这功能没生效"）。
+//   ② 「恢复内置技能」是覆盖用户改动的破坏性动作，覆盖前必须先把现存版本挪走当备份，
+//      而且备份**不能放在 Skills 目录里** —— 那份备份里也有 SKILL.md，
+//      会被扫描器当成第二个同名 Skill，清单里凭空多一行。
+Console.WriteLine();
+Console.WriteLine("[9] 内置 Skill 落地与恢复 BuiltinSkills");
+
+var bsTmp = Path.Combine(Path.GetTempPath(), "fc-tests-builtin-" + Guid.NewGuid().ToString("N")[..8]);
+try
+{
+    var bsSrc = Path.Combine(bsTmp, "builtin-skills");          // 假装的应用目录里那一份
+    var bsDst = Path.Combine(bsTmp, "data", "Skills");          // 假装的数据根下的 Skills
+
+    void MakeBuiltin(string name, string skillMd, string? scriptName = null, string scriptBody = "")
+    {
+        var d = Path.Combine(bsSrc, name);
+        Directory.CreateDirectory(d);
+        File.WriteAllText(Path.Combine(d, "SKILL.md"), skillMd, new UTF8Encoding(false));
+        if (scriptName != null)
+        {
+            Directory.CreateDirectory(Path.Combine(d, "scripts"));
+            File.WriteAllText(Path.Combine(d, "scripts", scriptName), scriptBody, new UTF8Encoding(false));
+        }
+    }
+
+    // 9.1 源目录不存在（精简包/开发机没带内置技能）—— 功能性降级，不是错误
+    Check(BuiltinSkills.Deploy(Path.Combine(bsTmp, "no-such-source"), bsDst).Count == 0,
+          "源目录不存在时不得抛异常、也不得凭空造目录（没带内置技能是降级，不是错误）");
+
+    MakeBuiltin("lark-cli",
+                "---\nname: lark-cli\ndescription: 桥接官方 lark-cli\n---\n正文",
+                "lark.py", "print('透传 lark-cli')");
+    MakeBuiltin("another-skill", "---\nname: another-skill\ndescription: 第二个内置技能\n---\n正文");
+    Directory.CreateDirectory(Path.Combine(bsSrc, "not-a-skill"));   // 源里也可能有杂物
+
+    // 9.2 首次落地：该复制的都复制到位（含 scripts 子目录）
+    var bsDeployed = BuiltinSkills.Deploy(bsSrc, bsDst);
+    Check(bsDeployed.Count == 2 && bsDeployed.Contains("lark-cli") && bsDeployed.Contains("another-skill"),
+          "源里真有 SKILL.md 的技能都要落地（没有 SKILL.md 的杂物目录不算）",
+          $"实际落地：{string.Join("、", bsDeployed)}");
+    Check(File.Exists(Path.Combine(bsDst, "lark-cli", "SKILL.md")) &&
+          File.Exists(Path.Combine(bsDst, "lark-cli", "scripts", "lark.py")),
+          "scripts 子目录必须一起复制（只复制一层的话脚本就丢了，Skill 等于没有手）");
+
+    // 9.3 已落地 → 一个字节都不许动（用户改过的版本优先）
+    var bsUserFile = Path.Combine(bsDst, "lark-cli", "SKILL.md");
+    const string bsUserEdited = "---\nname: lark-cli\ndescription: 我自己改的\n---\n这是我的版本";
+    File.WriteAllText(bsUserFile, bsUserEdited, new UTF8Encoding(false));
+    var bsSecond = BuiltinSkills.Deploy(bsSrc, bsDst);
+    Check(bsSecond.Count == 0 && File.ReadAllText(bsUserFile) == bsUserEdited,
+          "目标里已经有 SKILL.md 时必须原样不动（覆盖用户改过的版本是静默丢东西）",
+          $"实际又落地了 {bsSecond.Count} 个");
+
+    // 9.4 目标目录存在但没有 SKILL.md（用户在那儿放了个空目录/杂物目录）→ 仍要落地
+    var bsOdd = Path.Combine(bsTmp, "data2", "Skills");
+    Directory.CreateDirectory(Path.Combine(bsOdd, "lark-cli"));
+    File.WriteAllText(Path.Combine(bsOdd, "lark-cli", "我的备忘.txt"), "x", new UTF8Encoding(false));
+    var bsOddDeployed = BuiltinSkills.Deploy(bsSrc, bsOdd);
+    Check(bsOddDeployed.Contains("lark-cli") && File.Exists(Path.Combine(bsOdd, "lark-cli", "SKILL.md")),
+          "判据是「有没有 SKILL.md」，不是「目录存不存在」—— 空目录本来就不算 Skill，拿它挡住内置技能是永久静默失效",
+          $"实际落地：{string.Join("、", bsOddDeployed)}");
+
+    // 9.5 落地出来的东西必须真的是 Skill（跨组件联测：别只是"文件拷过去了"）
+    var bsCatalog = new SkillCatalog(bsDst);
+    Check(bsCatalog.TryGet("lark-cli", out var bsInfo) && bsInfo.ScriptFiles.Contains("lark.py"),
+          "落地产物必须能被 Skill 扫描器认出来，且能看到它的脚本（否则 AI 那边等于没这个能力）",
+          $"实际：{Cut(string.Join("、", bsCatalog.GetSkills().Select(s => s.Name)))}");
+
+    // 9.6 恢复：覆盖前先备份，备份里是用户改过的那份，且**不能落在 Skills 目录里**
+    var bsRestore = BuiltinSkills.Restore(bsSrc, bsDst, "lark-cli");
+    Check(bsRestore.Ok, "恢复必须成功", $"实际：{bsRestore.Detail}");
+    Check(File.ReadAllText(bsUserFile).Contains("桥接官方 lark-cli"),
+          "恢复后必须是应用自带的那一份（这才是「恢复」的语义）",
+          $"实际：{Cut(File.ReadAllText(bsUserFile))}");
+    Check(bsRestore.BackupPath.Length > 0 && Directory.Exists(bsRestore.BackupPath) &&
+          File.ReadAllText(Path.Combine(bsRestore.BackupPath, "SKILL.md")) == bsUserEdited,
+          "覆盖前必须把用户那一份整体挪走当备份（不删除、留后悔药）",
+          $"实际备份：{Cut(bsRestore.BackupPath)}");
+
+    // 断言"用户能看见的性质"：清单里不许出现两行同名技能。
+    // 为什么不用"备份路径不以 Skills 开头"这种路径判据 —— 那正是本项目踩过的坑：
+    // `Skills_backup` 在字符串上就是以 `Skills` 开头的，前缀判法会误判（SourceOf 那条注释同理）。
+    var bsAfterRestore = new SkillCatalog(bsDst).GetSkills();
+    Check(bsAfterRestore.Count(s => string.Equals(s.Name, "lark-cli", StringComparison.OrdinalIgnoreCase)) == 1,
+          "恢复之后清单里不得出现两行同名技能（备份要是落在 Skills 目录里就会这样）",
+          $"实际 lark-cli 出现了 {bsAfterRestore.Count(s => string.Equals(s.Name, "lark-cli", StringComparison.OrdinalIgnoreCase))} 次");
+
+    var bsBackupDir = Path.GetDirectoryName(bsRestore.BackupPath.TrimEnd(
+        Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+    var bsBackupParent = Path.GetDirectoryName(bsBackupDir ?? "") ?? "";
+    Check(!string.Equals(bsBackupParent.TrimEnd(Path.DirectorySeparatorChar),
+                         bsDst.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase),
+          "备份目录不能就是 Skills 目录本身（按目录边界比，不按字符串前缀比）",
+          $"实际：{Cut(bsRestore.BackupPath)}");
+
+    // 9.7 恢复一个还没落地的技能：直接落地，不产生备份（没什么可备份的）
+    var bsFreshDst = Path.Combine(bsTmp, "data-fresh", "Skills");
+    var bsFresh = BuiltinSkills.Restore(bsSrc, bsFreshDst, "another-skill");
+    Check(bsFresh.Ok && bsFresh.BackupPath.Length == 0 &&
+          File.Exists(Path.Combine(bsFreshDst, "another-skill", "SKILL.md")),
+          "恢复一个还没落地的内置技能 = 直接落地，不该产生空备份目录",
+          $"实际 Ok={bsFresh.Ok}，备份={Cut(bsFresh.BackupPath)}");
+
+    // 9.8 名字越界与「源里没有」都必须被拒（绝不把外部传来的字符串直接拼进路径）
+    Check(!BuiltinSkills.Restore(bsSrc, bsDst, "../evil").Ok, "技能名带 .. 必须拒绝（路径越界）");
+    Check(!BuiltinSkills.Restore(bsSrc, bsDst, "a/b").Ok, "技能名带分隔符必须拒绝（路径越界）");
+    Check(!BuiltinSkills.Restore(bsSrc, bsDst, "no-such-builtin").Ok,
+          "源里没有这个技能时必须拒绝，不能凭空造一个空目录出来");
+
+    // 9.9 列内置技能：只列真的有 SKILL.md 的
+    var bsNames = BuiltinSkills.ListBuiltin(bsSrc);
+    Check(bsNames.Count == 2 && !bsNames.Contains("not-a-skill"),
+          "列内置技能时，没有 SKILL.md 的杂物目录不算",
+          $"实际：{string.Join("、", bsNames)}");
+}
+finally
+{
+    try { Directory.Delete(bsTmp, true); } catch { }
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

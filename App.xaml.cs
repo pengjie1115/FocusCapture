@@ -1,6 +1,7 @@
 using FocusCapture.Diagnostics;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
+using FocusCapture.Services.Skills;
 
 namespace FocusCapture;
 
@@ -65,6 +66,29 @@ public partial class App : WpfApp
         }
 
         new MainWindow().Show();
+
+        // 内置 Skill 首次落地（2026-09-21，授权闭环步骤 4）。
+        //
+        // ⚠ **位置是硬的：必须排在上面两个开发期模式之后**（`--snapshot` / `--dragprobe`）。
+        // 那两个模式自己会把数据根指到临时沙箱、然后 `return`，所以放在它们后面 = 它们一个字节都不写；
+        // 而它们设沙箱的动作发生在更后面（UiSnapshot.Run 内部），放在前面就会拿**真实数据根**去落地。
+        // 2026-09-21 实测踩到：快照模式跑完，真实数据目录里凭空多出 `Skills\lark-cli\`
+        // —— 快照本该零副作用，这一条是"开发工具污染用户数据"。
+        //
+        // 落地策略：跟着数据根走（用户自定义了数据根，技能也要落到那边）；**只补不覆盖**，
+        // 目标里已经有 SKILL.md 就一个字节都不动，用户改过的版本优先。
+        // try 是硬要求：这段住在启动路径上，它抛异常的表现是"程序打不开"，比"少一个技能"严重一个量级。
+        try
+        {
+            var skillsRoot = FocusCapturePaths.Combine("Skills");
+            var deployed = BuiltinSkills.Deploy(BuiltinSkills.SourceRoot(AppContext.BaseDirectory), skillsRoot);
+            if (deployed.Count > 0)
+                AppLog.Info("Skill", $"内置 Skill 首次落地：{string.Join("、", deployed)}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Skill", "内置 Skill 落地失败（不影响启动）：" + ex.Message);
+        }
 
         // 自定义数据根不可用：主窗口起来后再提示（启动期弹窗会挡住托盘/悬浮球的初始化）
         if (rootWarning != null)

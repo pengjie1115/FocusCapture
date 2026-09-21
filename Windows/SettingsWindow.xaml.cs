@@ -364,6 +364,15 @@ public partial class SettingsWindow : Window
                   + "请向开发者反馈这一项。";
 
             RebuildTrustedSkillList();
+
+            // 「恢复内置技能」的可用性：应用里压根没有内置技能时（精简包 / 开发机没带），
+            // 按钮点了只会弹一句"没有可恢复的"—— 不如直接禁用，并把禁用态涂出来（只看 hover 的样式分不出能不能点）。
+            var hasBuiltin = BuiltinSkills.ListBuiltin(
+                BuiltinSkills.SourceRoot(AppContext.BaseDirectory)).Count > 0;
+            BtnSkillRestoreBuiltin.IsEnabled = hasBuiltin;
+            if (hasBuiltin) BtnSkillRestoreBuiltin.ClearValue(Control.ForegroundProperty);
+            else BtnSkillRestoreBuiltin.Foreground = DisabledTextBrush;
+
             _ = RefreshSkillDepsAsync();      // 外部依赖面板（异步探测，不阻塞设置打开）
         }
         catch (Exception ex)
@@ -586,6 +595,85 @@ public partial class SettingsWindow : Window
     {
         // RefreshSkillSection 内部就是 forceRescan: true —— 用户刚拷完 Skill，用这个按钮立刻认出来
         RefreshSkillSection();
+    }
+
+    /// <summary>
+    /// 恢复内置技能（2026-09-21，授权闭环步骤 4）。
+    ///
+    /// <para>
+    /// 存在理由：内置技能是「目标不存在才复制」，落地之后就归用户 —— 他改了、改坏了，
+    /// 应用不会再去覆盖它。那就必须给一个**显式的后悔药**，否则"改坏 = 永久坏"。
+    /// </para>
+    /// <para>
+    /// 这是破坏性动作（覆盖用户改动），所以：由用户点击发起 + 二次确认里写清会覆盖什么、
+    /// 备份到哪 + 覆盖前先把现存版本整体挪走（不删除）。<c>AGENTS.md</c> 红线 7。
+    /// </para>
+    /// </summary>
+    private void BtnSkillRestoreBuiltin_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var sourceRoot = BuiltinSkills.SourceRoot(AppContext.BaseDirectory);
+            var names = BuiltinSkills.ListBuiltin(sourceRoot);
+            var skillsRoot = FocusCapturePaths.Combine("Skills");
+
+            if (names.Count == 0)
+            {
+                MessageBox.Show(this,
+                    "应用里没有可恢复的内置技能。\n\n" +
+                    "（如果你用的是精简包，内置技能可能没有随包分发。）",
+                    "恢复内置技能", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var backupRoot = Path.GetDirectoryName(
+                skillsRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+            var confirm = new StringBuilder();
+            confirm.AppendLine("将用应用自带的版本覆盖这些技能：");
+            confirm.Append("  ").AppendLine(string.Join("、", names));
+            confirm.AppendLine();
+            confirm.AppendLine("你自己改过的内容会被覆盖。覆盖之前，现在这份会先整体备份到：");
+            confirm.Append("  ").Append(backupRoot).AppendLine("\\Skills_backup\\<时间戳>\\");
+            confirm.AppendLine();
+            confirm.Append("要继续吗？（备份只挪位置、不删除，随时可以自己搬回来）");
+
+            if (MessageBox.Show(this, confirm.ToString(), "恢复内置技能",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+                return;
+
+            var okList = new List<string>();
+            var failList = new List<string>();
+            var lastBackup = "";
+
+            foreach (var name in names)
+            {
+                var r = BuiltinSkills.Restore(sourceRoot, skillsRoot, name);
+                if (r.Ok) { okList.Add(name); if (r.BackupPath.Length > 0) lastBackup = r.BackupPath; }
+                else failList.Add($"{name}（{r.Detail}）");
+            }
+
+            AppLog.Info("Skill", $"恢复内置技能：成功 {okList.Count} 个，失败 {failList.Count} 个");
+
+            var report = new StringBuilder();
+            if (okList.Count > 0) report.Append("已恢复：").Append(string.Join("、", okList)).AppendLine();
+            if (lastBackup.Length > 0) report.Append("覆盖前的版本备份在：\n  ").Append(lastBackup).AppendLine();
+            if (failList.Count > 0) report.Append("没成功：").Append(string.Join("；", failList)).AppendLine();
+
+            MessageBox.Show(this, report.ToString(),
+                failList.Count == 0 ? "恢复完成" : "部分没成功",
+                MessageBoxButton.OK,
+                failList.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+            RefreshSkillSection();
+        }
+        catch (Exception ex)
+        {
+            // UI 事件里的文件操作一律自己兜住：异常冒泡到全局处理器会弹模态框，模态框吃掉后续点击
+            AppLog.Error("Skill", "恢复内置技能失败", ex);
+            MessageBox.Show(this, "恢复内置技能时出错：" + ex.Message,
+                "恢复内置技能", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void BtnSkillRevoke_Click(object sender, RoutedEventArgs e)
