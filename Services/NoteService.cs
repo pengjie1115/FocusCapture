@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using FocusCapture.Models;
 using FocusCapture.Services.Sync;
@@ -18,9 +18,11 @@ public class NoteService
     /// 防后台同步（SyncEngine）与用户操作并发整文件重写互相覆盖。</summary>
     private static readonly object FileWriteLock = new();
 
-    /// <summary>速览行格式：- [yyyy-MM-dd HH:mm] 内容 — 来源: xxx（兼容旧格式 - [HH:mm]）。public 让 NoteImportService 复用同一份正则。</summary>
+    /// <summary>速览行格式：- [yyyy-MM-dd HH:mm] 内容 — 来源: xxx（兼容旧格式 - [HH:mm]）。
+    /// v3.10：行尾可选 `(改: yyyy-MM-dd HH:mm)` 标记最后修改时间（来源组改非贪婪以剥离改标记）。
+    /// public 让 NoteImportService 复用同一份正则。</summary>
     public static readonly Regex NoteLineRegex = new(
-        @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+))?$",
+        @"^- \[(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2})\] (.+?)(?: — 来源: (.+?))?(?: \(改: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\))?$",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -29,7 +31,12 @@ public class NoteService
     /// 统一原则：写入落盘、按日加载、日历计数、面板排序/显示全部走这里，避免各层口径漂移。
     /// </summary>
     public static DateTime TodoDisplayTime(NoteEntry e)
-        => e.Type == NoteType.Todo && e.DueTime.HasValue ? e.DueTime.Value : e.Timestamp;
+    {
+        // v3.10：今天创建且非未到期的条目被实质性修改后，显示修改时间（优先于创建/提醒时间）。
+        // 未到期待办（DueTime 在未来）保持显示 DueTime —— 写入路径不为其记录 ModifiedAt，故走原逻辑。
+        if (e.ModifiedAt.HasValue) return e.ModifiedAt.Value;
+        return e.Type == NoteType.Todo && e.DueTime.HasValue ? e.DueTime.Value : e.Timestamp;
+    }
 
     /// <summary>本机笔记变更事件（保存/编辑/AI 回填/删除成功后触发）——SyncEngine 订阅后启动 30s 合并窗口推送。</summary>
     public event Action? NotesChanged;
@@ -350,10 +357,15 @@ public class NoteService
 
         // 以 entry 原始字段为底套用变更（定位必须用变更前的字段，见上面顺序敏感说明）
         var updated = CloneForUpdate(entry);
+        var contentChanged = newContent != null
+            && !string.Equals(newContent.Trim(), entry.Content, StringComparison.Ordinal);
         if (newContent != null) updated.Content = newContent.Trim();
         if (clearDue) updated.DueTime = null;
         else if (dueTime.HasValue) updated.DueTime = dueTime;
         if (status.HasValue) updated.TodoStatus = status.Value;
+        // v3.10：实质性内容修改（非提醒/状态变更）→ 今天创建且非未到期的条目记录修改时间
+        if (contentChanged && IsEligibleForModifiedTime(entry))
+            updated.ModifiedAt = DateTime.Now;
 
         if (!RewriteEntryLine(entry, updated, out var replacedLine, out var fileName)) return false;
 
@@ -362,6 +374,7 @@ public class NoteService
         entry.Content = updated.Content;
         entry.DueTime = updated.DueTime;
         entry.TodoStatus = updated.TodoStatus;
+        entry.ModifiedAt = updated.ModifiedAt;
 
         // v4（2026-09-12 行身份改造）：原地改行 = 旧版本行在本地消失。若不告知同步层，云端那条旧版本行
         // 永不删除，而任何"本机没有该行"的设备都会在每次拉取时把它当新行落回来（**本机自己也算**，
@@ -398,10 +411,14 @@ public class NoteService
 
         var updated = CloneForUpdate(entry);
         updated.Content = newContent.Trim();
+        // v3.10：笔记内容修改 → 今天创建且非未到期的条目记录修改时间（UpdateNote 仅由内容修改路径调用）
+        if (IsEligibleForModifiedTime(entry))
+            updated.ModifiedAt = DateTime.Now;
 
         if (!RewriteEntryLine(entry, updated, out var replacedLine, out var fileName)) return false;
 
         entry.Content = updated.Content;
+        entry.ModifiedAt = updated.ModifiedAt;
 
         if (replacedLine != null)
             LinesDeleted?.Invoke(fileName!, new[] { replacedLine });
@@ -571,8 +588,20 @@ public class NoteService
         Tag = e.Tag,
         Type = e.Type,
         DueTime = e.DueTime,
-        TodoStatus = e.TodoStatus
+        TodoStatus = e.TodoStatus,
+        ModifiedAt = e.ModifiedAt
     };
+
+    /// <summary>v3.10：判定该条目修改后是否记录修改时间。
+    /// 规则（用户拍板）：仅今天创建的条目适用；未到期待办（DueTime 在未来）保持原规则不记录。
+    /// 用 entry 原始字段判定（创建时间、原始 DueTime）——内容修改不改这两项。</summary>
+    private static bool IsEligibleForModifiedTime(NoteEntry entry)
+    {
+        if (entry.Timestamp.Date != DateTime.Today) return false;
+        if (entry.Type == NoteType.Todo && entry.DueTime.HasValue && entry.DueTime.Value.Date > DateTime.Today)
+            return false;
+        return true;
+    }
 
     /// <summary>精确匹配 entry 对应的存储行（新格式整行 / v3.5 旧待办格式无秒 / v2.0 旧格式 [HH:mm] 兼容）。
     /// v3.7 回退分支：9月2日秒级落盘改动前的待办行 (提醒: yyyy-MM-dd HH:mm) 无秒，
@@ -711,6 +740,10 @@ public class NoteService
 
                 var rawContent = match.Groups[3].Value.Replace("\u23CE", "\n");
                 var source = match.Groups[4].Success ? match.Groups[4].Value : "";
+                // v3.10：行尾改标记 → ModifiedAt（旧行无此标记则保持 null，走原显示规则）
+                DateTime? modifiedAt = null;
+                if (match.Groups[5].Success && DateTime.TryParse(match.Groups[5].Value, out var modTs))
+                    modifiedAt = modTs;
 
                 // 标记行（AI 释义 / 编辑）：第一遍只暂存，第二遍跨文件挂靠
                 var marker = ParseMarkerLine(rawContent, source, out var markerText, out var refTs);
@@ -762,6 +795,7 @@ public class NoteService
                         Tag = tag
                     };
                 }
+                entry.ModifiedAt = modifiedAt;
                 entry.RawLine = line;
                 entries.Add(entry);
             }
@@ -1151,5 +1185,29 @@ public class NoteService
                 (!string.IsNullOrEmpty(x.EditedContent) && x.EditedContent.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
                 x.SourceWindow.Contains(keyword, StringComparison.OrdinalIgnoreCase))
             .ToList();
+    }
+
+    /// <summary>查找内容完全相同的已有条目（添加前重复预检用）。
+    /// 口径与 SaveNote 写入一致：剥离 #标签前缀 + Trim 后比较 Content；type 必须相同。
+    /// 返回首个匹配条目（含其时间戳供弹窗展示），无匹配返回 null。</summary>
+    public NoteEntry? FindDuplicate(string content, NoteType type)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return null;
+        var normalized = NormalizeContentForCompare(content);
+        if (string.IsNullOrEmpty(normalized)) return null;
+        foreach (var e in LoadAllEntries())
+        {
+            if (e.Type == type && string.Equals(e.Content?.Trim(), normalized, StringComparison.Ordinal))
+                return e;
+        }
+        return null;
+    }
+
+    /// <summary>剥离 #标签前缀 + Trim（与 SaveNote 写入口径一致），供重复比较。</summary>
+    private static string NormalizeContentForCompare(string content)
+    {
+        var tagMatch = Regex.Match(content, @"^#(\S+)");
+        var c = tagMatch.Success ? content[tagMatch.Length..] : content;
+        return c.Trim();
     }
 }

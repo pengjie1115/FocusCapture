@@ -497,14 +497,14 @@ public partial class QuickViewWindow : Window
 
     private void ReloadNotes()
     {
-        // 2026-08-15：按当前加载模式分派（Date / Range / Search）
+        // v3.10（多条件筛选）：关键词/类型/来源均为独立内存筛选条件，与时间段并列叠加；
+        // _loadMode 只决定时间段基础集（Date 单日 / Range 区间），不再有独占的 Search 模式
         // v2（2026-08-28）：未到期档跨日期加载全部笔记（未来待办不在任何单日列表里），内存筛选
         var entries = _typeFilter.Contains("Future")
             ? _noteService.LoadAllEntries()
             : _loadMode switch
             {
                 NoteLoadMode.Range => _noteService.LoadNotesRange(_rangeStart, _rangeEnd),
-                NoteLoadMode.Search => _noteService.LoadNotesSearch(_searchKeyword),
                 _ => _noteService.LoadNotes(_selectedDate)
             };
 
@@ -534,6 +534,15 @@ public partial class QuickViewWindow : Window
     /// v2：未到期档（Future）= 明天及以后的未办待办，与类型档互斥优先。</summary>
     private IEnumerable<NoteEntry> ApplyFilters(IEnumerable<NoteEntry> entries)
     {
+        // 关键词筛选（与时间段/类型/来源并列叠加）：命中 Content / EditedContent / SourceWindow 任一
+        if (!string.IsNullOrEmpty(_searchKeyword))
+        {
+            var kw = _searchKeyword;
+            entries = entries.Where(e =>
+                e.Content.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrEmpty(e.EditedContent) && e.EditedContent.Contains(kw, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrEmpty(e.SourceWindow) && e.SourceWindow.Contains(kw, StringComparison.OrdinalIgnoreCase)));
+        }
         if (_typeFilter.Contains("Future"))
         {
             // 未到期：明天及以后的未办待办（今天还没到时间的归「待办」档）
@@ -623,27 +632,31 @@ public partial class QuickViewWindow : Window
 
     private void UpdateEmptyHint()
     {
-        EmptyHint.Text = _typeFilter.Contains("Future")
-            ? "没有未到期的待办"
+        if (_viewModels.Count > 0) { EmptyHint.Visibility = Visibility.Collapsed; return; }
+
+        EmptyHint.Text =
+            _typeFilter.Contains("Future") ? "没有未到期的待办"
+            : !string.IsNullOrEmpty(_searchKeyword) ? $"未找到包含「{_searchKeyword}」的条目"
             : _loadMode switch
             {
-                NoteLoadMode.Search => $"未找到包含「{_searchKeyword}」的笔记",
                 NoteLoadMode.Range => $"区间 {_rangeStart:yyyy-MM-dd} ~ {_rangeEnd:yyyy-MM-dd} 内还没有笔记",
                 _ => _selectedDate.Date == DateTime.Today ? "今天还没有笔记" : "这一天还没有笔记"
             };
-        EmptyHint.Visibility = _viewModels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyHint.Visibility = Visibility.Visible;
     }
 
     private void UpdateModeIndicator()
     {
-        // v3.8：单日/区间状态直接显示在时间按钮上（UpdateTimeButtonLabel），指示行只留查找与未到期筛选
+        // 时间段状态显示在时间按钮上（UpdateTimeButtonLabel），指示行只留查找与未到期筛选
         if (_typeFilter.Contains("Future"))
             ModeIndicator.Text = "筛选：未到期（明天及以后）";
-        else if (_loadMode == NoteLoadMode.Search)
+        else if (!string.IsNullOrEmpty(_searchKeyword))
             ModeIndicator.Text = $"查找：\"{_searchKeyword}\"";
         else
             ModeIndicator.Text = "";
-        BtnReturnToDate.Visibility = _loadMode == NoteLoadMode.Date ? Visibility.Collapsed : Visibility.Visible;
+        // 有查找关键词或处于非单日模式时显示「返回」一键重置
+        BtnReturnToDate.Visibility = (_searchKeyword != "" || _loadMode != NoteLoadMode.Date)
+            ? Visibility.Visible : Visibility.Collapsed;
         UpdateTimeButtonLabel();
     }
 
@@ -720,17 +733,20 @@ public partial class QuickViewWindow : Window
     private void BtnSearch_Click(object sender, RoutedEventArgs e)
     {
         if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureSearch, "搜索")) return;
-        var dlg = new SearchDialog { Owner = this };
-        if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Keyword)) return;
+        // 关键词是独立筛选条件，不切换加载模式（与时间段叠加）：预填当前关键词，留空确认=清除
+        var dlg = new SearchDialog { Owner = this, InitialKeyword = _searchKeyword };
+        if (dlg.ShowDialog() != true) return;
         _searchKeyword = dlg.Keyword.Trim();
-        _loadMode = NoteLoadMode.Search;
         ReloadNotes();
     }
 
     /// <summary>返回按钮：仅 Range/Search 模式显示。点击 → 回到 _selectedDate 单日模式。</summary>
     private void BtnReturnToDate_Click(object sender, RoutedEventArgs e)
     {
+        // 一键重置加载范围层：清除关键词 + 回到今天单日（类型/来源筛选保留，由各自开关控制）
+        _searchKeyword = "";
         _loadMode = NoteLoadMode.Date;
+        _selectedDate = DateTime.Today;
         SaveLastFilterToSettings();
         ReloadNotes();
     }
@@ -768,8 +784,53 @@ public partial class QuickViewWindow : Window
     private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
-        if (WindowState != WindowState.Normal) return;   // 最大化时不拖动（无框窗口 DragMove 行为怪异；拖动还原属后续优化）
+
+        // 双击标题栏空白处（非按钮）→ 切换最大化/还原
+        if (e.ClickCount >= 2)
+        {
+            if (IsSourceFromChromeButton(e.OriginalSource as DependencyObject)) return;
+            BtnMaximize_Click(sender, e);
+            e.Handled = true;
+            return;
+        }
+
+        // 单击：普通态拖动；最大化态 → 还原为普通态并跟随鼠标拖动（系统标准交互）
+        if (WindowState == WindowState.Maximized)
+        {
+            RestoreAndDrag(e);
+            return;
+        }
+
         try { DragMove(); } catch { /* DragMove 在窗口未显示时会抛 InvalidOperationException */ }
+    }
+
+    /// <summary>双击落在标题栏按钮（铬区最小化/最大化/关闭 + 工具栏按钮）上不触发最大化——按钮自身处理 Click。</summary>
+    private static bool IsSourceFromChromeButton(DependencyObject? src)
+    {
+        var d = src;
+        while (d != null)
+        {
+            if (d is Button) return true;
+            d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+        }
+        return false;
+    }
+
+    /// <summary>最大化态下拖动标题栏 → 还原为普通态，窗口出现在鼠标下方并跟随拖动（系统标准行为）。
+    /// 最大化还原后窗口会回到上次普通态位置（可能远离鼠标），故先把窗口平移到鼠标下方再 DragMove。</summary>
+    private void RestoreAndDrag(MouseButtonEventArgs e)
+    {
+        var p = PointToScreen(e.GetPosition(this));
+        WindowState = WindowState.Normal;
+        var w = Math.Clamp(Width, MinWidthLimit, MaxWidthLimit);
+        var left = p.X - w / 2;
+        var top = p.Y - 20;   // 标题栏约 40px，让鼠标落在标题栏上半部
+        var area = SystemParameters.WorkArea;
+        left = Math.Max(area.Left, Math.Min(left, area.Right - w));
+        top = Math.Max(area.Top, Math.Min(top, area.Bottom - Height));
+        Left = left;
+        Top = top;
+        try { DragMove(); } catch { /* 还原瞬间 DragMove 偶发 InvalidOperationException，忽略即不拖 */ }
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Hide();

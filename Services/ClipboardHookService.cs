@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using FocusCapture.Models;
 
 namespace FocusCapture.Services;
 
@@ -137,10 +138,15 @@ public class ClipboardHookService : IDisposable
         if (currentText == _pendingText)
         {
             // 内容稳定保留 → 真正的复制操作
-            _lastSavedText = currentText;
-            _baselineText = currentText;
-            _noteService.SaveNote(currentText);
-            _onCaptured?.Invoke();
+            // 添加前重复预检：命中弹窗让用户定夺是否重复添加（剪贴板自动捕获无宿主，弹窗居中）；
+            // 选否则不落盘、不更新基线（下次相同内容仍会再次提示）
+            if (DuplicatePrompt.Confirm(_noteService, currentText, NoteType.Note, null))
+            {
+                _lastSavedText = currentText;
+                _baselineText = currentText;
+                _noteService.SaveNote(currentText);
+                _onCaptured?.Invoke();
+            }
         }
         // else: 内容已变 → 瞬态写入（疑似"选中即复制"工具），丢弃
 

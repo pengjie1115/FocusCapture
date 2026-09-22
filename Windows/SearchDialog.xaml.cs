@@ -8,22 +8,29 @@ public partial class SearchDialog : Window
     /// <summary>用户输入的关键词（ShowDialog 返回 true 时有效）。</summary>
     public string Keyword { get; private set; } = "";
 
+    /// <summary>打开时预填的关键词（用于在已有查找上修改/清除）。</summary>
+    public string InitialKeyword { get; set; } = "";
+
     public SearchDialog()
     {
         InitializeComponent();
-        Loaded += (_, _) => InputBox.Focus();
+        Loaded += (_, _) =>
+        {
+            InputBox.Text = InitialKeyword;
+            InputBox.SelectAll();
+            InputBox.Focus();
+        };
     }
 
     private void InputBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
-        BtnOk.IsEnabled = !string.IsNullOrWhiteSpace(InputBox.Text);
+        // 空输入时按钮变「清除」：叠加筛选下留空确认=清除当前查找关键词
+        BtnOk.Content = string.IsNullOrWhiteSpace(InputBox.Text) ? "清除" : "查找";
     }
 
     private void BtnOk_Click(object sender, RoutedEventArgs e)
     {
-        var text = InputBox.Text.Trim();
-        if (string.IsNullOrEmpty(text)) return;
-        Keyword = text;
+        Keyword = InputBox.Text.Trim();
         DialogResult = true;
         Close();
     }

@@ -18,6 +18,11 @@ public class NoteEntry
     public DateTime? DueTime { get; set; }        // 提醒时间（仅 Type=Todo 时有值）
     public TodoStatus TodoStatus { get; set; } = TodoStatus.Open;
 
+    /// <summary>最后修改时间（v3.10：今天创建的笔记/待办被实质性修改后记录，落盘到行尾 `(改: 时间)` 标记；
+    /// 显示层优先于创建/提醒时间。仅"今天创建且非未到期"的条目修改时写入；历史/未到期不写。
+    /// 解析时从行尾改标记填充，与 EditedContent 同属"不参与序列化、靠解析填充"的运行时字段。</summary>
+    public DateTime? ModifiedAt { get; set; }
+
     /// <summary>AI 回填追加的释义列表（展示层用，解析【AI 释义】标记行关联到原笔记时填充；不参与存储序列化）</summary>
     public List<string> AiFills { get; set; } = new();
 
@@ -48,6 +53,8 @@ public class NoteEntry
         var line = $"- [{time}] {escaped}";
         if (!string.IsNullOrWhiteSpace(SourceWindow))
             line += $" — 来源: {SourceWindow}";
+        if (ModifiedAt.HasValue)
+            line += $" (改: {ModifiedAt.Value:yyyy-MM-dd HH:mm})";
         return line;
     }
 
@@ -83,6 +90,8 @@ public class NoteEntry
 
         if (!string.IsNullOrWhiteSpace(e.SourceWindow))
             line += $" — 来源: {e.SourceWindow}";
+        if (e.ModifiedAt.HasValue)
+            line += $" (改: {e.ModifiedAt.Value:yyyy-MM-dd HH:mm})";
         return line;
     }
 

@@ -78,6 +78,7 @@ internal static class Program
             Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            Run("修改时间+重复检测", TestModifiedTimeAndDuplicate); // 改标记落盘/解析 / 历史与未到期不写 / FindDuplicate（2026-09-22）
             Run("标记行挂靠", TestMarkerAttach);           // 跨文件 ref 挂靠 / 孤儿卡删除 / 编辑=替换（2026-09-20）
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
             await RunAsync("Skill 依赖", TestSkillDependency); // 定位自带优先 / 设备码流 / 二维码产物 / 授权闸（2026-09-20）
@@ -1771,6 +1772,68 @@ print(json.dumps({
               "既没给 handle 也没给 file_id 时，要给出可执行的指引（让用户去点『选择文件』）", noSource);
 
         FileHandleStore.Clear();
+    }
+
+    /// <summary>v3.10 检查点：修改时间改标记（落盘/解析/规则）+ 添加前重复检测 FindDuplicate。</summary>
+    private static void TestModifiedTimeAndDuplicate()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "fc-mod-sandbox-" + Guid.NewGuid());
+        var notesDir = Path.Combine(root, "notes");
+        Directory.CreateDirectory(notesDir);
+        var settings = new AppSettings { NotesPath = notesDir, ExportFolderPath = Path.Combine(root, "export") };
+        var notes = new NoteService(settings, Path.Combine(root, "deleted.json"));
+
+        // ① 今天创建的笔记，实质性修改后落盘改标记 + 重载解析回填 ModifiedAt
+        var n1 = notes.SaveNote("今天要改的笔记ABC");
+        Check(n1 != null, "准备：写入今天笔记");
+        Check(notes.UpdateNote(n1!, "今天要改的笔记ABC-已改"), "今天笔记实质性修改保存成功");
+        var md1 = ReadAllMd(notesDir);
+        Check(md1.Contains("(改: "), "今天笔记实质性修改后行尾必须落盘改标记", md1);
+        var reloaded1 = notes.LoadAllEntries().FirstOrDefault(e => e.Content == "今天要改的笔记ABC-已改");
+        Check(reloaded1 != null && reloaded1!.ModifiedAt.HasValue,
+              "重载后解析改标记填充 ModifiedAt",
+              reloaded1 == null ? "未解析到" : $"ModifiedAt={reloaded1.ModifiedAt}");
+
+        // ② 历史笔记（昨天创建）修改不落盘改标记（规则仅限今天创建）
+        var yesterday = DateTime.Today.AddDays(-1);
+        var oldFile = Path.Combine(notesDir, $"灵感_{yesterday:yyyy-MM-dd}.md");
+        File.AppendAllText(oldFile, $"- [{yesterday:yyyy-MM-dd HH:mm}] 昨天笔记原始XYZ\n");
+        var oldEntry = notes.LoadAllEntries().FirstOrDefault(e => e.Content == "昨天笔记原始XYZ");
+        Check(oldEntry != null, "准备：写入昨天笔记（手动旧日期行）");
+        Check(notes.UpdateNote(oldEntry!, "昨天笔记-改XYZ"), "昨天笔记修改保存成功");
+        var oldLineAfter = ReadAllMd(notesDir).Split('\n').FirstOrDefault(l => l.Contains("昨天笔记-改XYZ"));
+        Check(oldLineAfter != null && !oldLineAfter.Contains("(改: "),
+              "历史笔记修改不落盘改标记（规则仅限今天创建的条目）", oldLineAfter ?? "未找到");
+
+        // ③ 未到期待办（DueTime 在未来）内容修改也不落盘改标记（保持原规则）
+        var futureDue = DateTime.Now.AddDays(2);
+        var t1 = notes.SaveNote("未到期待办内容DEF", null, NoteType.Todo, futureDue);
+        Check(t1 != null && t1!.Type == NoteType.Todo && t1.DueTime.HasValue, "准备：写入未到期待办");
+        Check(notes.UpdateTodo(t1!, newContent: "未到期待办内容DEF-改"), "未到期待办内容修改保存成功");
+        var t1Line = ReadAllMd(notesDir).Split('\n').FirstOrDefault(l => l.Contains("未到期待办内容DEF-改"));
+        Check(t1Line != null && !t1Line.Contains("(改: "),
+              "未到期待办内容修改也不落盘改标记（保持原规则）", t1Line ?? "未找到");
+
+        // ④ 旧行（无改标记）解析兼容：来源正确剥离、ModifiedAt 为 null
+        File.AppendAllText(Path.Combine(notesDir, "灵感_2026-09-22.md"),
+            "- [2026-09-22 10:00] 旧格式兼容笔记 — 来源: 旧来源窗口\n");
+        var legEntry = notes.LoadAllEntries().FirstOrDefault(e => e.Content == "旧格式兼容笔记");
+        Check(legEntry != null && legEntry!.SourceWindow == "旧来源窗口" && !legEntry.ModifiedAt.HasValue,
+              "旧行（无改标记）解析：来源正确剥离、ModifiedAt 为 null",
+              legEntry == null ? "未解析到" : $"来源={legEntry.SourceWindow} ModifiedAt={legEntry.ModifiedAt}");
+
+        // ⑤ FindDuplicate：命中 / 不命中 / 类型区分 / 标签剥离口径
+        Check(notes.FindDuplicate("今天要改的笔记ABC-已改", NoteType.Note) != null,
+              "FindDuplicate 命中已有相同内容笔记");
+        Check(notes.FindDuplicate("根本不存在的重复内容", NoteType.Note) == null,
+              "FindDuplicate 无重复返回 null");
+        Check(notes.FindDuplicate("今天要改的笔记ABC-已改", NoteType.Todo) == null,
+              "FindDuplicate 类型不同不算重复（笔记 vs 待办）");
+        notes.SaveNote("#测试标签 带标签的重复内容GHI");
+        var dupTag = notes.FindDuplicate("#测试标签 带标签的重复内容GHI", NoteType.Note);
+        Check(dupTag != null && dupTag!.Content == "带标签的重复内容GHI",
+              "FindDuplicate 标签剥离后比较（与 SaveNote 写入口径一致）",
+              dupTag == null ? "未命中" : $"Content={dupTag.Content}");
     }
 
     private static string ReadAllMd(string dir) =>

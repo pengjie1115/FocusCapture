@@ -182,10 +182,20 @@ public partial class InputWindow : Window
     {
         var text = InputBox.Text.Trim();
         if (string.IsNullOrEmpty(text)) { Hide(); return; }
+
+        var type = _currentType == "Todo" ? NoteType.Todo : NoteType.Note;
+
+        // 添加前重复预检：命中弹窗让用户定夺是否重复添加；选否则收起不保存（草稿保留，可改后重试）
+        if (!DuplicatePrompt.Confirm(_noteService, text, type, this))
+        {
+            Hide();
+            return;
+        }
+
         _isSaving = true;
         try
         {
-            if (_currentType == "Todo")
+            if (type == NoteType.Todo)
             {
                 var due = await TodoEditService.ResolveDueAsync(this, text, null);
                 _noteService.SaveNote(text, type: NoteType.Todo, dueTime: due);
@@ -201,6 +211,8 @@ public partial class InputWindow : Window
 
     public void SaveDirect(string content)
     {
+        // 添加前重复预检（输入框入口，宿主为本窗口）
+        if (!DuplicatePrompt.Confirm(_noteService, content, NoteType.Note, this)) return;
         _isSaving = true;
         try { _noteService.SaveNote(content); } finally { _isSaving = false; }
         NoteSaved?.Invoke();
