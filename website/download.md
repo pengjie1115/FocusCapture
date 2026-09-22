@@ -3,7 +3,7 @@
 > Windows 10 / 11（64 位）· 免安装 · 双击即用 · 免费
 
 - 下载地址：本站 `downloads/FocusCapture.exe`（见 [download.html](download.html)）
-- 当前版本：v0.2.0 · 文件大小约 XX MB（发布前替换为真实值）
+- 构建日期：2026-09-22 · 文件大小约 249 MB · 免费
 
 ## 怎么用
 
