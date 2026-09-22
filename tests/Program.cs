@@ -921,6 +921,30 @@ try
         payload = cliLikeZip;
     }
 
+    // 10.13 安装前必须清扫历史暂存残留
+    // （2026-09-22 真机事故：lark-cli 连续失败后 runtime\ 下留了 7 个 staging 目录 ——
+    //   失败路径的删除被安全软件锁挡住，残留既误导用户又没人提示。重试时要先扫一遍。）
+    FocusCapturePaths.RootOverride = Path.Combine(dlTmp, "p13");
+    var rtParent13 = Path.GetDirectoryName(SkillRuntimeLocations.DataDir(testId))!;
+    Directory.CreateDirectory(rtParent13);
+    var staleDir = Path.Combine(rtParent13, testId + ".staging-deadbeef");
+    Directory.CreateDirectory(staleDir);
+    File.WriteAllText(Path.Combine(staleDir, "junk.txt"), "x");
+    var r13 = await new RuntimeDownloader().InstallAsync(CliRecipe(), null, default);
+    Check(r13.Ok && !Directory.Exists(staleDir),
+          "安装前必须清扫同部件的历史暂存残留（失败被锁留下的 staging 目录不能永远躺在 runtime\\ 里）",
+          $"ok={r13.Ok} 残留还在={Directory.Exists(staleDir)}");
+
+    // 10.14 「本地 IO 被拒」类失败必须被识别为疑似安全软件拦截（提示文案的判定器本体）
+    Check(RuntimeDownloader.LooksLikeSecurityBlock(
+              new[] { "registry.npmmirror.com：UnauthorizedAccess_IODenied_Path, C:\\x" }),
+          "IODenied 类错误必须被识别为「疑似安全软件拦截」（2026-09-22 用户就是被它误导成网络问题）",
+          "分类器没认出 UnauthorizedAccess_IODenied");
+    Check(!RuntimeDownloader.LooksLikeSecurityBlock(
+              new[] { "127.0.0.1：Response status code does not indicate success: 500." }),
+          "普通网络失败不得误报成安全软件拦截（提示乱贴等于没贴）",
+          "分类器把 500 也当成了安全拦截");
+
     serverCts.Cancel();
     listener.Stop();
     try { await serverLoop; } catch { }
@@ -985,6 +1009,22 @@ var snapCs = File.Exists(snapCsPath) ? File.ReadAllText(snapCsPath) : "";
 Check(snapCs.Contains("new DueTimeDialog("),
       "界面快照必须注册「提醒时间弹窗」场景（按钮被裁这类问题只有出图才看得见，此前正是漏了这个场景）",
       "UiSnapshot.cs 里找不到 DueTimeDialog 场景");
+
+// ── [12] 运行时下载器失败报告的源码契约（2026-09-22）──
+// 守的是「失败报告接线」本身 —— 分类器和提示文案写了没人调用等于没写（判据读源码文本）。
+Console.WriteLine("[12] 运行时下载器失败报告的源码契约");
+
+var rdCsPath = Path.Combine(uiRepoRoot, "Services", "Skills", "RuntimeDownloader.cs");
+var rdCs = File.Exists(rdCsPath) ? File.ReadAllText(rdCsPath) : "";
+Check(rdCs.Contains("LooksLikeSecurityBlock(errors)"),
+      "失败汇总必须接上安全拦截判定（LooksLikeSecurityBlock 只定义不调用 = 提示永远不会出现）",
+      "RuntimeDownloader.cs 的 InstallAsync 里找不到 LooksLikeSecurityBlock(errors) 调用");
+Check(rdCs.Contains("安全软件") && rdCs.Contains("白名单"),
+      "安全拦截提示文案必须常驻源码（提示正文被清空等于没有提示）",
+      "RuntimeDownloader.cs 里找不到 SecurityBlockHint 的正文关键词");
+Check(rdCs.Contains("SecurityBlockHint;"),
+      "Fail 路径必须真的追加 SecurityBlockHint（return 处漏接 = 白写）",
+      "找不到 failMessage += SecurityBlockHint 的接线");
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");

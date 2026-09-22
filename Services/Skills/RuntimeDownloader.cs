@@ -118,6 +118,38 @@ public sealed class RuntimeDownloader
         }
 
         var errors = new List<string>();
+
+        // ── 重试前先清扫上一次的暂存残留 ──
+        // 2026-09-22 真机事故：lark-cli 在用户机上连续 8 次失败，runtime\ 下留下 7 个
+        // lark-cli.staging-* 目录 —— 失败路径的 finally 删除也被同一个锁挡住（被安全软件
+        // 扫描中的目录删不掉），残留目录既误导用户又没人提示。这里每次安装前先扫一遍，
+        // 清得掉就清（记日志），清不掉也记日志，至少不再无声。
+        var parentDir = Path.GetDirectoryName(targetDir.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (!string.IsNullOrEmpty(parentDir) && Directory.Exists(parentDir))
+        {
+            try
+            {
+                foreach (var stale in Directory.EnumerateDirectories(parentDir, recipe.Id + StagingSuffix + "*"))
+                {
+                    try
+                    {
+                        Directory.Delete(stale, true);
+                        Log($"安装 {recipe.Id}：已清扫历史暂存目录 {Path.GetFileName(stale)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"警告：安装 {recipe.Id}：历史暂存目录 {Path.GetFileName(stale)} 清不掉" +
+                            $"（多半被安全软件锁定），可手动删除：{ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"警告：安装 {recipe.Id}：扫描历史暂存目录失败：{ex.Message}");
+            }
+        }
+
         foreach (var url in recipe.Urls)
         {
             ct.ThrowIfCancellationRequested();
@@ -126,8 +158,10 @@ public sealed class RuntimeDownloader
             errors.Add($"{HostOf(url)}：{attempts.Detail}");
         }
 
-        return RuntimeInstallResult.Fail(targetDir,
-            $"所有下载源都没成功。\n{string.Join("\n", errors)}");
+        var failMessage = $"所有下载源都没成功。\n{string.Join("\n", errors)}";
+        if (LooksLikeSecurityBlock(errors))
+            failMessage += SecurityBlockHint;
+        return RuntimeInstallResult.Fail(targetDir, failMessage);
     }
 
     /// <summary>试一个下载源：下 → 解压到暂存 → 删该删的 → 自检 → 提交</summary>
@@ -190,11 +224,38 @@ public sealed class RuntimeDownloader
         }
         finally
         {
-            // 临时件一律不留：半成品比没有更坏（使用者会以为已经装好了）
-            try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
+            // 临时件一律不留：半成品比没有更坏（使用者会以为已经装好了）。
+            // 清不掉必须留日志 —— 2026-09-22 真机实测：暂存目录被安全软件锁住时删除
+            // 会失败，静默吞掉的话用户就对着 7 个 staging 目录一头雾水。
+            try { if (File.Exists(zipPath)) File.Delete(zipPath); }
+            catch (Exception ex) { Log($"警告：安装 {recipe.Id}：临时下载文件删不掉：{ex.Message}"); }
+            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+            catch (Exception ex)
+            {
+                Log($"警告：安装 {recipe.Id}：暂存目录 {staging} 删不掉（多半被安全软件锁定），" +
+                    $"已留作残留，可手动删除：{ex.Message}");
+            }
         }
     }
+
+    /// <summary>
+    /// 失败原因是不是「本地磁盘写入/执行被拒」这一类（2026-09-22 真机事故的形状：
+    /// 两个下载源报同一个 UnauthorizedAccess_IODenied —— 网络问题不会两源同错）。
+    /// internal 供快层检查点直接验证（本文件被快层按源码链接编译）。
+    /// 只做宽泛匹配给提示用，不参与成败判定。
+    /// </summary>
+    internal static bool LooksLikeSecurityBlock(IReadOnlyCollection<string> details) => details.Any(d =>
+        d.Contains("UnauthorizedAccess", StringComparison.OrdinalIgnoreCase) ||
+        d.Contains("IODenied", StringComparison.OrdinalIgnoreCase) ||
+        d.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
+        d.Contains("拒绝访问", StringComparison.Ordinal));
+
+    /// <summary>命中 <see cref="LooksLikeSecurityBlock"/> 时附在失败详情末尾的人话提示</summary>
+    private const string SecurityBlockHint =
+        "\n\n提示：这不是网络问题 —— 安装包已经下载下来了，是在写入磁盘或运行自检时被系统拒绝。" +
+        "最常见的原因是安全软件（Windows Defender / 360 / 火绒等）的实时防护拦下了未知的 exe。" +
+        "请把本应用的 runtime 目录（%AppData%\\FocusCapture\\runtime）加入信任区或白名单后重试；" +
+        "若 runtime 目录下有残留的 staging 文件夹，确认放行后可手动删除。";
 
     // ────────────────────────── 下载 ──────────────────────────
 
