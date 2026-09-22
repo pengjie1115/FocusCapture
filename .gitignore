@@ -47,3 +47,6 @@ docs/fc-sync-test-archive/
 
 # WorkBuddy local data
 .workbuddy/
+
+# WorkBuddy 发布应用内部标记
+*.genie
