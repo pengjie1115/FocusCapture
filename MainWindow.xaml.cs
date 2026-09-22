@@ -31,7 +31,7 @@ public partial class MainWindow : Window
     private DailySummaryWindow? _dailySummary;                    // v3.5 Phase3：每日汇总弹窗
     private TodoSummaryWindow? _todoSummaryWindow;                // v3.8：待办汇总面板（热键可唤出/收起，故需持实例）
     private IntPtr _hwnd; // 保存窗口句柄供剪贴板监听和热键切换使用
-    private bool _settingsOpen;
+    private SettingsWindow? _settingsWindow;   // v3.10：设置窗口单例 —— 设置改非模态后没人拦重入了，必须自己管实例（见 OpenSettings）
 
     public MainWindow()
     {
@@ -214,8 +214,10 @@ public partial class MainWindow : Window
         {
             if (_todoSummaryWindow == null)
             {
-                _todoSummaryWindow = new TodoSummaryWindow(_noteService, _settings);
+                _todoSummaryWindow = new TodoSummaryWindow(_noteService, _settings, _aiProvider);
                 _todoSummaryWindow.Closed += (_, _) => _todoSummaryWindow = null;
+                // v3.10：「跳转到灵感速览」——面板只发请求，开窗+定位收在这里（与热键/托盘同一批方法）
+                _todoSummaryWindow.JumpToQuickViewRequested += entry => Dispatcher.Invoke(() => JumpToQuickView(entry));
             }
             _todoSummaryWindow.RefreshAll(_noteService.LoadAllEntries());
             _todoSummaryWindow.Show();
@@ -571,8 +573,8 @@ public partial class MainWindow : Window
 
     private void OpenSettings()
     {
-        if (_settingsOpen) return;
-        _settingsOpen = true;
+        // 已存在 → 直接前置（非模态后必须自己挡重入：连按热键会开出好几个设置窗口，用户改哪个都不知道）
+        if (_settingsWindow != null) { EnsureWindowVisible(_settingsWindow); return; }
         try
         {
             var sw = new SettingsWindow(_settings, _hotkeyService, () =>
@@ -581,6 +583,7 @@ public partial class MainWindow : Window
                 // v3.5：AI 配置可能变更 → 重建共享 provider 并同步给面板（编辑待办时间识别 LLM 兜底用当前配置）
                 _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
                 _quickViewWindow?.UpdateAiProvider(_aiProvider);
+                _todoSummaryWindow?.UpdateAiProvider(_aiProvider);   // v3.10：待办汇总的时间识别也吃同一个 provider
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
@@ -599,9 +602,69 @@ public partial class MainWindow : Window
                 _dropStrip?.SetOpacity(_settings.DropActionOpacity);
                 _dropCard?.SetOpacity(_settings.DropActionOpacity);
             }, _noteService, () => _syncEngine, RebuildSyncEngine, () => _chatSyncEngine);
-            sw.Owner = this; sw.ShowDialog();
+            sw.Owner = this;
+            sw.Closed += (_, _) => _settingsWindow = null;
+            _settingsWindow = sw;
+
+            var beforeState = $"{sw.WindowState}/{sw.IsVisible}";
+            EnsureWindowVisible(sw);
+            // 取证（2026-09-22）：用户实测过「按热键后设置只在任务栏出现、还得手点任务栏图标」，
+            // 根因尚未 100% 坐实（候选：宿主主窗口被最小化 → owned 窗口跟随；或抢前台失败）。
+            // 把唤起前后的两窗状态落进日志，下次复现直接看日志定因，不用再猜。
+            AppLog.Info("Settings", $"唤出设置｜宿主(state={WindowState},visible={IsVisible})" +
+                $"｜设置窗(前={beforeState} 后={sw.WindowState}/{sw.IsVisible})");
         }
-        finally { _settingsOpen = false; }
+        catch (Exception ex)
+        {
+            _settingsWindow = null;   // 异常实例不复用，下次唤出重建
+            LogStartupError("OpenSettings", ex);
+        }
+    }
+
+    /// <summary>
+    /// 统一的「把窗口唤到用户面前」流程（2026-09-22）：最小化归位 → Show → Activate → Focus，
+    /// 必要时借 Topmost 闪一次强制置顶。
+    ///
+    /// 起因：6 条唤出路径里**只有设置窗口**没有归位/前置这一环，用户实测出现过「按了热键
+    /// 只在任务栏出现、要手动点任务栏图标」。修复取的是**覆盖两种候选根因**的防御性做法
+    /// （① 宿主主窗口被最小化时 owned 窗口跟着隐藏/最小化；② 前台窗口锁定导致没抢到前台）。
+    ///
+    /// ⚠ 灵感速览 / 待办汇总在最小化态按热键会走 Hide 分支（IsVisible 仍为 true）—— 那是**已知并
+    /// 有意保留**的现状（用户 2026-09-22 拍板不动），别顺手"统一"过来。
+    /// 新加的面板一律走这个方法。
+    /// </summary>
+    private static void EnsureWindowVisible(Window w)
+    {
+        var wasOffScreen = w.WindowState == WindowState.Minimized || !w.IsVisible;
+        if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
+        if (!w.IsVisible) w.Show();
+        w.Activate();
+        w.Focus();
+
+        // 抢前台兜底：只在「本来就没在屏幕上」时才用 Topmost 闪一下 —— 这种情况单靠 Activate()
+        // 经常不生效；闪完立刻恢复原值，不会篡改用户自己的置顶设置。
+        if (wasOffScreen)
+        {
+            var wasTopmost = w.Topmost;
+            w.Topmost = true;
+            w.Topmost = wasTopmost;
+        }
+    }
+
+    /// <summary>待办汇总面板的「跳转到灵感速览」：确保面板可见 → 按该条目定位。
+    /// 开窗统一走 ShowQuickView 这条既有入口，不另开一条（免得两套开窗行为各自漂移）。</summary>
+    private void JumpToQuickView(Models.NoteEntry entry)
+    {
+        if (_quickViewWindow == null) return;
+        try
+        {
+            if (!_quickViewWindow.IsVisible) _quickViewWindow.Show();
+            EnsureWindowVisible(_quickViewWindow);
+            // 等布局跑完再定位：刚 Show 出来的窗口此刻还没完成布局，直接 ScrollIntoView 滚不动。
+            var win = _quickViewWindow;
+            win.Dispatcher.BeginInvoke(new Action(() => win.ShowAtEntry(entry)), DispatcherPriority.Loaded);
+        }
+        catch (Exception ex) { LogStartupError("JumpToQuickView", ex); }
     }
 
     // ── v3.9：灵感速览标题栏扩展功能的统一出口 ──

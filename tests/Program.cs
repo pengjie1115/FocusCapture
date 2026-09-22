@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 using System;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -929,6 +930,61 @@ finally
     FocusCapturePaths.RootOverride = dlOldRoot;
     try { Directory.Delete(dlTmp, true); } catch { }
 }
+
+// ── [11] 待办与提醒面板的源码契约（2026-09-22）──
+// 守的全是「改错了不报错、只静默退化」的东西，判据直接读源码文本（这几处坏了只有真机才看得出来）：
+//   ① 提醒时间弹窗写死 Height → 底部按钮被窗口下沿裁掉一截（2026-09-22 用户截图确认）。
+//      实测：内容需要 182px，写死的 170 差 12px —— 正好是按钮缺掉的那一截。
+//   ② 设置面板用 ShowDialog 打开 → WPF 模态「禁用应用内所有其他窗口」（官方文档原文）。
+//      先开灵感速览/AI 问答再开设置，那两个面板就点不动了。
+//   ③ 右键菜单自带 Style → 顶掉 App.xaml 的隐式深色模板，默认模板左侧那道浅色图标槽就是「白条」。
+Console.WriteLine("[11] 待办与提醒面板的源码契约");
+
+var uiRepoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+
+var dueTimeXamlPath = Path.Combine(uiRepoRoot, "Windows", "DueTimeDialog.xaml");
+var dueTimeXaml = File.Exists(dueTimeXamlPath) ? File.ReadAllText(dueTimeXamlPath) : "";
+Check(dueTimeXaml.Length > 0 && !dueTimeXaml.Contains("Height=\""),
+      "提醒时间弹窗不得写死高度（Height 含系统标题栏，客户区不够会把底部按钮裁掉一截）",
+      "DueTimeDialog.xaml 里又出现了固定 Height —— 该用 SizeToContent=\"Height\" 让窗口跟着内容走");
+Check(dueTimeXaml.Contains("SizeToContent=\"Height\""),
+      "提醒时间弹窗必须声明 SizeToContent=\"Height\"（高度随内容自适应）",
+      "在 DueTimeDialog.xaml 里找不到 SizeToContent=\"Height\"");
+
+var mainCsPath = Path.Combine(uiRepoRoot, "MainWindow.xaml.cs");
+var mainCs = File.Exists(mainCsPath) ? File.ReadAllText(mainCsPath) : "";
+var openIdx = mainCs.IndexOf("private void OpenSettings()", StringComparison.Ordinal);
+var openBody = openIdx >= 0 ? mainCs.Substring(openIdx, Math.Min(2600, mainCs.Length - openIdx)) : "";
+Check(openIdx >= 0 && !openBody.Contains(".ShowDialog()"),
+      "设置面板不得用 ShowDialog 打开（模态会禁用应用内所有其他窗口，先开的面板会点不动）",
+      openIdx < 0
+          ? "MainWindow.xaml.cs 里找不到 OpenSettings 方法"
+          : "OpenSettings 里又出现了 ShowDialog —— 改用 Show() + EnsureWindowVisible（返回值本来也没人用）");
+Check(mainCs.Contains("EnsureWindowVisible("),
+      "窗口唤出必须走统一的 EnsureWindowVisible（最小化归位 + 前置），否则会「只在任务栏出现」",
+      "找不到 EnsureWindowVisible —— 唤出流程被绕过了");
+
+var todoCsPath = Path.Combine(uiRepoRoot, "Windows", "TodoSummaryWindow.xaml.cs");
+var todoCs = File.Exists(todoCsPath) ? File.ReadAllText(todoCsPath) : "";
+Check(todoCs.Contains("new ContextMenu()") && !todoCs.Contains("new ContextMenu {"),
+      "待办汇总右键菜单必须走隐式样式（new ContextMenu()），不得自带 Style/模板（会顶掉 App.xaml 的深色模板 = 白条）",
+      "菜单创建写法变了：应保持 new ContextMenu() 且不带对象初始化器");
+Check(todoCs.Contains("Header = \"编辑\"") && todoCs.Contains("Header = \"复制\"")
+      && todoCs.Contains("跳转到灵感速览") && todoCs.Contains("设置提醒…") && todoCs.Contains("取消提醒"),
+      "待办汇总右键菜单五项必须齐全：编辑 / 复制 / 跳转到灵感速览 / 设置提醒… / 取消提醒",
+      "少了某一项（用户 2026-09-22 明确要求的五项）");
+Check(todoCs.Contains("ClickCount"),
+      "待办汇总必须支持双击进编辑（Border 是 Decorator，没有 MouseDoubleClick，只能看 ClickCount）",
+      "找不到 ClickCount —— 双击编辑入口可能被删了");
+Check(todoCs.Contains("TodoEditService.ResolveDueAsync"),
+      "待办汇总改完时间必须走 TodoEditService.ResolveDueAsync（与灵感速览同一条识别路径，用户拍板照搬）",
+      "找不到 ResolveDueAsync 调用 —— 时间识别被写成另一套了");
+
+var snapCsPath = Path.Combine(uiRepoRoot, "Diagnostics", "UiSnapshot.cs");
+var snapCs = File.Exists(snapCsPath) ? File.ReadAllText(snapCsPath) : "";
+Check(snapCs.Contains("new DueTimeDialog("),
+      "界面快照必须注册「提醒时间弹窗」场景（按钮被裁这类问题只有出图才看得见，此前正是漏了这个场景）",
+      "UiSnapshot.cs 里找不到 DueTimeDialog 场景");
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");

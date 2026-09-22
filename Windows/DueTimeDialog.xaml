@@ -1,8 +1,13 @@
+<!-- 高度必须自适应（SizeToContent="Height"），**别改回固定 Height**：
+     Height 是含非客户区的窗口总高 —— 固定 170 时减掉系统标题栏与边框（≈31px @100%）后
+     客户区只剩 ≈139px，而这点内容要 ≈149px，底部「确定/取消」会被窗口下沿裁掉一截
+     （2026-09-22 用户截图实测）。同族的 TimeConfirmDialog 早就用自适应。
+     SearchDialog / SuccessDialog 虽然是固定高，但它们是 WindowStyle="None"（没有标题栏），客户区=全高才躲过。 -->
 <Window x:Class="FocusCapture.Windows.DueTimeDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="设置提醒"
-        Width="320" Height="170"
+        Width="320" SizeToContent="Height"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         Background="#1E1E1E"

@@ -258,6 +258,69 @@ public partial class QuickViewWindow : Window
         ReloadNotes();
     }
 
+    /// <summary>
+    /// v3.10（2026-09-22）：外部跳转入口 —— 待办汇总面板的「跳转到灵感速览」走这里，
+    /// 打开面板后定位到指定条目（开窗本身由 MainWindow 负责，面板只发请求）。
+    ///
+    /// 三件事必须做全，缺一条都表现为「跳过去找不到那条」：
+    /// ① 退出查找/区间模式 —— 这两种模式下列表压根不是按日期加载的；
+    /// ② 类型筛选重置为「全部」并清空来源筛选 —— 目标若是待办而当前筛的是「笔记」档，列表里没有它；
+    /// ③ 滚动到该条目并短暂高亮（几秒后自动褪去，不留状态）。
+    /// </summary>
+    public void ShowAtEntry(NoteEntry target)
+    {
+        _loadMode = NoteLoadMode.Date;
+        _selectedDate = NoteService.TodoDisplayTime(target).Date;
+        _searchKeyword = "";
+
+        _typeFilter.Clear();
+        _typeFilter.Add("All");
+        FilterAll.IsChecked = true;
+        FilterNote.IsChecked = false;
+        FilterTodo.IsChecked = false;
+        FilterDone.IsChecked = false;
+        FilterFuture.IsChecked = false;
+        _sourceFilter.Clear();
+
+        SaveLastFilterToSettings();
+        ReloadNotes();
+
+        // ReloadNotes 会重新解析文件（Entry 全是新对象），所以引用匹配必然落空，
+        // 真正起作用的是「时间戳 + 展示内容」这条身份匹配 —— 与 NoteService 定位条目的口径一致。
+        var vm = _viewModels.FirstOrDefault(v => ReferenceEquals(v.Entry, target))
+                 ?? _viewModels.FirstOrDefault(v => v.Entry.Timestamp == target.Timestamp
+                     && (v.Entry.EditedContent ?? v.Entry.Content) == (target.EditedContent ?? target.Content));
+        if (vm == null) return;
+
+        // 等布局跑完再滚：外部跳转时窗口可能刚从隐藏转显示，此刻容器还没生成，滚也滚不动。
+        Dispatcher.BeginInvoke(new Action(() => ScrollToAndHighlight(vm)), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// 把某条目滚进视野并短暂高亮。
+    /// ⚠ NotesList 是 ItemsControl，**没有** ScrollIntoView（那是 ListBox 才有的方法，编译直接报 CS1061）——
+    /// 只能拿条目容器调 BringIntoView()，由父级 ScrollViewer（NotesScroll）响应。
+    /// 高亮改的是背景色不是边框：模板里那个 Border 的 BorderThickness 是 0，临时加边框会让内容缩进一圈，看着像「跳歪了」。
+    /// </summary>
+    private void ScrollToAndHighlight(NoteEntryViewModel vm)
+    {
+        try
+        {
+            if (NotesList.ItemContainerGenerator.ContainerFromItem(vm) is not FrameworkElement container) return;
+            container.BringIntoView();
+
+            var border = FindVisualChild<Border>(container);
+            if (border == null) return;
+
+            var original = border.Background;
+            border.Background = new SolidColorBrush(Color.FromRgb(0x2F, 0x4A, 0x33));
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
+            timer.Tick += (_, _) => { timer.Stop(); border.Background = original; };
+            timer.Start();
+        }
+        catch { /* 定位高亮只是锦上添花，失败不影响跳转本身 */ }
+    }
+
     /// <summary>AI 助手名称变更时同步标题栏按钮文案（设置窗口保存后调用）。按钮可能已被用户移出工具栏，按 id 查找、无则跳过。</summary>
     public void UpdateAiName(string name)
     {

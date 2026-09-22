@@ -236,6 +236,38 @@ internal static class UiSnapshot
                 ball.SetBadge(1, hasRead: false);   // 必须在 Show 之后调：SetBadge 内部检查 IsLoaded
                 LogBadgeBounds(ball, log);
             }, scale: 6);   // 6 倍放大：角标只有 18 像素，不放大看不出数字有没有偏
+
+            // ── 待办与提醒（2026-09-22）──
+            // 起因：用户实测「创建/修改待办后确认提醒时间的弹窗，下面两个按钮被遮住一部分」。
+            // 根因是 DueTimeDialog 写死了 Height=170，而 Height 是**含系统标题栏**的窗口总高 ——
+            // 客户区不够，按钮就被窗口下沿裁掉一截。这类"被窗口边界裁掉一部分"的问题静态代码看不出来、
+            // 也必须出图才发现，所以这张图就是它的回归守护（改造前 25 个场景里恰好没有这个弹窗）。
+            Capture("26-设置提醒时间弹窗", () => new DueTimeDialog(
+                DateTime.Today.AddDays(3).AddHours(9),
+                $"识别到日期 {DateTime.Today.AddDays(3):yyyy-MM-dd}，几点提醒？"), outDir, log);
+
+            // 待办汇总的编辑态与建议条：两个状态都只在用户交互之后才出现，默认快照（场景 05）覆盖不到。
+            // 编辑态那张要核验三件事：编辑框的滚动条是不是深色细条（不能是老式白条）、
+            // 「保存/取消」有没有被挤出可视区、编辑框与只读文本的宽度是否对齐。
+            Capture("27-待办汇总（编辑态）", () =>
+            {
+                var w = new TodoSummaryWindow(notes, settings);
+                w.RefreshAll(SampleTodos());
+                return w;
+            }, outDir, log, afterShow: win =>
+            {
+                if (win is TodoSummaryWindow w) w.SeedEditStateForSnapshot(1);
+            });
+
+            Capture("28-待办汇总（保存后建议条）", () =>
+            {
+                var w = new TodoSummaryWindow(notes, settings);
+                w.RefreshAll(SampleTodos());
+                return w;
+            }, outDir, log, afterShow: win =>
+            {
+                if (win is TodoSummaryWindow w) w.SeedSuggestBarForSnapshot(1);
+            });
         }
         catch (Exception ex)
         {
@@ -252,6 +284,38 @@ internal static class UiSnapshot
         // 快照模式下不创建主窗口，显式退出
         Application.Current?.Shutdown();
     }
+
+    /// <summary>
+    /// 快照用的样例待办（**纯内存构造，一个字节都不落盘**）：三条刚好覆盖汇总面板的三个分组
+    /// —— 已提醒暂缓(Read) / 待处理(Open 无提醒或今天还没到点) / 已过期(Open 且已过点)。
+    /// 第二条故意写成超长文本，用来核验编辑框里长文本的换行与内部滚动条。
+    /// </summary>
+    private static List<NoteEntry> SampleTodos() => new()
+    {
+        new NoteEntry
+        {
+            Timestamp = DateTime.Today.AddHours(8).AddMinutes(30),
+            Type = NoteType.Todo, TodoStatus = TodoStatus.Read,
+            DueTime = DateTime.Today.AddHours(9),
+            Content = "把季度复盘大纲写完"
+        },
+        new NoteEntry
+        {
+            Timestamp = DateTime.Today.AddHours(10),
+            Type = NoteType.Todo, TodoStatus = TodoStatus.Open,
+            Content = "待办汇总面板：双击进编辑、右键出菜单、保存后弹建议条 —— 这一条特意写长，"
+                    + "用来核验编辑框里的换行与内部滚动条是不是深色细条。"
+                    + "继续加长到超过编辑框的固定高度（80px ≈ 四行），"
+                    + "这样滚动条才会真的出现 —— 内容刚好装下时它不显示，那张图就验不到东西。"
+        },
+        new NoteEntry
+        {
+            Timestamp = DateTime.Today.AddHours(11),
+            Type = NoteType.Todo, TodoStatus = TodoStatus.Open,
+            DueTime = DateTime.Today.AddHours(14),
+            Content = "缴电费"
+        }
+    };
 
     /// <summary>渲染单个窗口为 PNG。任一环节失败只记日志，不影响其余窗口。</summary>
     /// <param name="afterShow">
