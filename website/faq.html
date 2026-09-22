@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>常见问题 · FocusCapture 专注力捕捉</title>
+<meta name="description" content="FocusCapture 常见问题：是否免费、是否需要安装、数据存哪、语音识别是否离线、AI 问答如何配置、与剪贴板历史的区别、如何同步与卸载。">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html">Focus<span>Capture</span></a>
+  <div class="links">
+    <a href="index.html">首页</a>
+    <a href="features.html">功能</a>
+    <a href="download.html">下载</a>
+    <a href="faq.html" aria-current="page">常见问题</a>
+    <a href="changelog.html">更新日志</a>
+  </div>
+</nav>
+
+<main>
+  <h1>常见问题</h1>
+  <p class="tagline">关于 FocusCapture 最常被问到的问题。</p>
+
+  <!-- 维护规则（见 AGENTS.md）：新增问答时，html 的 details 与 md 的列表项同步增删 -->
+
+  <details>
+    <summary>FocusCapture 是免费的吗？</summary>
+    <p>当前版本完全免费下载、免费使用全部功能。</p>
+  </details>
+
+  <details>
+    <summary>需要安装吗？</summary>
+    <p>不需要。下载得到单个 exe 文件，双击即可运行，无需安装器、无需 .NET 运行时、无需注册账号。</p>
+  </details>
+
+  <details>
+    <summary>我的数据会被上传吗？</summary>
+    <p>不会。笔记、配置、语音模型全部存储在你自己的电脑上（文档\FocusCapture\ 等本机目录），不上传任何服务器。唯一的例外是你主动开启的可选功能：WebDAV 云同步（端到端加密后存你自己的网盘）与 AI 问答（按模型服务的隐私政策处理）。</p>
+  </details>
+
+  <details>
+    <summary>语音识别是离线的吗？</summary>
+    <p>是。语音输入使用纯本地识别引擎（sherpa-onnx + FireRedASR2，中英双语），识别过程不联网、音频不上传。首次使用时会自动从国内镜像下载约 740 MB 的模型文件到本机，之后完全离线运行。</p>
+  </details>
+
+  <details>
+    <summary>AI 问答需要配置什么？</summary>
+    <p>需要在设置中填入模型服务地址（OpenAI 兼容接口）、API Key 与模型名。API Key 只存储在你本机的配置文件中，不会上传。不配置 AI 问答不影响其他功能使用。</p>
+  </details>
+
+  <details>
+    <summary>和 Windows 自带的剪贴板历史有什么区别？</summary>
+    <p>剪贴板历史只是内容缓存：重启即清、不能整理、没有来源信息。FocusCapture 是笔记库：记录来源窗口与时间、支持标签与筛选、可转待办、可一键导出成 Markdown / Word 等格式长期沉淀。</p>
+  </details>
+
+  <details>
+    <summary>支持云同步吗？会泄漏隐私吗？</summary>
+    <p>支持可选的 WebDAV 云同步（对接你自己的网盘），传输内容经 AES-256-GCM 端到端加密，授权码即解密钥匙。默认状态下云同步关闭，数据只在本地。</p>
+  </details>
+
+  <details>
+    <summary>误删的笔记能找回吗？</summary>
+    <p>能。删除的笔记先进入回收站，可随时恢复。</p>
+  </details>
+
+  <details>
+    <summary>如何卸载？会留残留吗？</summary>
+    <p>删除 exe 与本机数据目录即可完全清除：文档\FocusCapture\（笔记）、%AppData%\FocusCapture\（配置）、%LocalAppData%\FocusCapture\（语音模型）。无注册表残留。</p>
+  </details>
+
+  <details>
+    <summary>遇到问题怎么反馈？</summary>
+    <p>通过仓库的 Issues 提交问题，描述现象与系统版本即可。</p>
+  </details>
+</main>
+
+<footer>
+  <p>FocusCapture · 数据只存本机 · 当前版本免费</p>
+  <p><a href="faq.md">本页 Markdown 版</a></p>
+</footer>
+
+<button id="copy-for-ai" data-md="faq.md" title="复制本页 Markdown 原文，粘贴给 AI 助手">Copy for AI</button>
+<script>
+document.getElementById("copy-for-ai").addEventListener("click", function () {
+  var btn = this;
+  fetch(btn.dataset.md).then(function (r) { return r.text(); }).then(function (t) {
+    return navigator.clipboard.writeText(t);
+  }).then(function () {
+    btn.textContent = "已复制";
+    setTimeout(function () { btn.textContent = "Copy for AI"; }, 1500);
+  }).catch(function () {
+    window.open(btn.dataset.md, "_blank");
+  });
+});
+</script>
+</body>
+</html>

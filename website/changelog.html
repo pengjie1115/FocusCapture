@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>更新日志 · FocusCapture 专注力捕捉</title>
+<meta name="description" content="FocusCapture 版本更新记录：新功能、改进与修复。">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<nav>
+  <a class="brand" href="index.html">Focus<span>Capture</span></a>
+  <div class="links">
+    <a href="index.html">首页</a>
+    <a href="features.html">功能</a>
+    <a href="download.html">下载</a>
+    <a href="faq.html">常见问题</a>
+    <a href="changelog.html" aria-current="page">更新日志</a>
+  </div>
+</nav>
+
+<main>
+  <h1>更新日志</h1>
+  <p class="tagline">FocusCapture 持续更新中。本页与软件发布同步维护。</p>
+
+  <!-- 维护规则（见 AGENTS.md）：新版本发布时在下方新增一个 h2 段落，并在 changelog.md 同步一份 -->
+
+  <h2>v0.2.0</h2>
+  <ul>
+    <li>灵感速览升级：时间筛选、标题栏按钮自定义、窗口最小化/最大化/自由缩放、日历标注（笔记数与待办）</li>
+    <li>AI 问答支持图文混排：粘贴截图、拖入文档、附件只存本机</li>
+    <li>待办汇总面板与全局热键（Ctrl+Alt+A / Ctrl+Alt+T）</li>
+    <li>每日总结面板</li>
+    <li>WebDAV 加密云同步（可选，AES-256-GCM）</li>
+    <li>回收站、笔记导入预览</li>
+  </ul>
+  <p class="dim small">更早版本从略。完整变更历史见仓库。</p>
+</main>
+
+<footer>
+  <p>FocusCapture · 数据只存本机 · 当前版本免费</p>
+  <p><a href="changelog.md">本页 Markdown 版</a></p>
+</footer>
+
+<button id="copy-for-ai" data-md="changelog.md" title="复制本页 Markdown 原文，粘贴给 AI 助手">Copy for AI</button>
+<script>
+document.getElementById("copy-for-ai").addEventListener("click", function () {
+  var btn = this;
+  fetch(btn.dataset.md).then(function (r) { return r.text(); }).then(function (t) {
+    return navigator.clipboard.writeText(t);
+  }).then(function () {
+    btn.textContent = "已复制";
+    setTimeout(function () { btn.textContent = "Copy for AI"; }, 1500);
+  }).catch(function () {
+    window.open(btn.dataset.md, "_blank");
+  });
+});
+</script>
+</body>
+</html>
