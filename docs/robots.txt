@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://pengjie1115.github.io/FocusCapture/sitemap.xml
