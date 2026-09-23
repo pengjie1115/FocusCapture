@@ -150,18 +150,12 @@ public class ChatSyncEngine
         finally { _gate.Release(); }
     }
 
-    /// <summary>阶段二删除 UI 调用：本地文件移入会话回收站 + 加入删除清单 + 触发上传。清单随下轮对账传播他端。</summary>
+    /// <summary>阶段二删除 UI 调用：本地文件移入会话回收站 + 加入删除清单 + 触发上传。清单随下轮对账传播他端。
+    /// 2026-09-23 修复「删除复活」：登记先行（清单是对账权威，移动失败也不能漏）；移动 overwrite（回收站同名不再让二次删除静默失败）。</summary>
     public void MarkDeleted(string sessionId)
     {
         try
         {
-            var file = FindLocalFile(sessionId);
-            if (file != null)
-            {
-                var trashDir = Path.Combine(ChatHistoryDir, TrashDirName);
-                Directory.CreateDirectory(trashDir);
-                File.Move(file, Path.Combine(trashDir, Path.GetFileName(file)));
-            }
             if (!_state.Deletions.Any(d => d.Id == sessionId))
             {
                 _state.Deletions.Add(new ChatDeletionRecord
@@ -172,13 +166,26 @@ public class ChatSyncEngine
                 });
                 SaveState();
             }
+            var file = FindLocalFile(sessionId);
+            if (file != null)
+            {
+                var trashDir = Path.Combine(ChatHistoryDir, TrashDirName);
+                Directory.CreateDirectory(trashDir);
+                // overwrite：回收站已有同名文件（旧版 bug 复活后二次删除）→ 用本次删除态覆盖，不再抛 IOException 中断
+                File.Move(file, Path.Combine(trashDir, Path.GetFileName(file)), overwrite: true);
+            }
+            AppLog.Info("ChatSync", $"会话已移入回收站: {TruncateId(sessionId)}");
             NotifyLocalChange();
         }
         catch (Exception ex)
         {
+            AppLog.Warn("ChatSync", $"会话移入回收站失败: {TruncateId(sessionId)} | {ex.Message}");
             Debug.WriteLine($"[FocusCapture] 会话移入回收站失败: {ex.Message}");
         }
     }
+
+    /// <summary>日志/状态文案里的会话 Id 截断（全 Id 太长）</summary>
+    private static string TruncateId(string id) => id.Length <= 8 ? id : id[..8] + "…";
 
     // ── 会话文件对账（2026-09-09 增量化：LastModified 未变的文件跳过下载；拉取/推送失败部分落地） ──
 
@@ -219,11 +226,18 @@ public class ChatSyncEngine
         var listings = (await _storage.ListFilesAsync(CancellationToken.None).ConfigureAwait(false))
             .Where(f => f.Name.StartsWith(ChatFilePrefix, StringComparison.Ordinal) && f.Name.EndsWith(".json", StringComparison.Ordinal))
             .ToList();
+        // 删除清单权威（2026-09-23 修复「删除复活」）：清单内会话的云端文件不下载、不落地，只留名字供清理
+        var deletedIds = _state.Deletions.Select(d => d.Id).ToHashSet(StringComparer.Ordinal);
         var cloud = new Dictionary<string, (string File, ChatSyncEnvelope? Envelope)>(StringComparer.Ordinal);
         string? partialError = null;
         foreach (var cf in listings)
         {
             var fileId = cf.Name[ChatFilePrefix.Length..^".json".Length];
+            if (deletedIds.Contains(fileId))
+            {
+                cloud[fileId] = (cf.Name, null);   // 已删：占位供清理阶段处理，不耗 GET 请求
+                continue;
+            }
             var unchanged = !string.IsNullOrEmpty(cf.LastModified)
                 && _state.KnownStamps.TryGetValue(cf.Name, out var known)
                 && known == cf.LastModified
@@ -256,9 +270,31 @@ public class ChatSyncEngine
             catch (JsonException) { /* 包络损坏：跳过，等修复或被本地新版覆盖 */ }
         }
 
-        // 3) 对账（Envelope=null = 云端未变化 ⇒ hasCloudNew 必为 false，仅判本地未推送修改）
+        // 3) 对账（Envelope=null = 云端未变化或已删占位 ⇒ hasCloudNew 必为 false，仅判本地未推送修改）
         foreach (var (id, envPair) in cloud)
         {
+            // 删除清单权威（2026-09-23 修复「删除复活」）：清单内会话绝不从云端落地。
+            // 本地也没有（刚删/他端已删）→ 顺带清掉云端残留；本地还在（用户从回收站恢复 / 旧版 bug 残留）→
+            // 不动本地文件（避免误杀「恢复」），云端残留也暂留，待用户在界面上对该会话做出处理后自然收敛。
+            if (deletedIds.Contains(id))
+            {
+                if (!local.ContainsKey(id))
+                {
+                    try
+                    {
+                        await Task.Delay(RequestGapMs, CancellationToken.None).ConfigureAwait(false);
+                        await _storage.DeleteFileAsync(envPair.File, CancellationToken.None).ConfigureAwait(false);
+                        _state.KnownStamps.Remove(envPair.File);
+                        _state.Confirmed.Remove(id);
+                        AppLog.Info("ChatSync", $"已删会话的云端残留已清理: {TruncateId(id)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        partialError ??= "云端已删会话清理失败（" + ex.Message + "），下轮继续";
+                    }
+                }
+                continue;
+            }
             var env = envPair.Envelope;
             if (!local.TryGetValue(id, out var localPair))
             {
@@ -510,7 +546,8 @@ public class ChatSyncEngine
                 if (session != null && session.SavedAt >= d.DeletedAt) continue;   // 本机 wins
                 var trashDir = Path.Combine(ChatHistoryDir, TrashDirName);
                 Directory.CreateDirectory(trashDir);
-                File.Move(file, Path.Combine(trashDir, Path.GetFileName(file)));
+                // overwrite：回收站已有同名（他端删除落地撞上旧副本）→ 用较新状态覆盖，不因 IOException 卡住清理
+                File.Move(file, Path.Combine(trashDir, Path.GetFileName(file)), overwrite: true);
                 _state.Confirmed.Remove(d.Id);
             }
             catch (Exception ex)
