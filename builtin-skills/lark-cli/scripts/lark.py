@@ -104,7 +104,7 @@ def main():
     if exe is None:
         emit(sys.stderr,
              "找不到 {0}：应用自带的那一份不在、按需目录里也没有、系统 PATH 里也没有。\n"
-             "请在应用里确认外部依赖是否已准备好（设置 → AI 模型 → Skill 扩展）。\n".format(LARK_EXE_NAME))
+             "请在应用里确认外部依赖是否已准备好（设置 → AI 功能 → Skill 扩展）。\n".format(LARK_EXE_NAME))
         return EXIT_NOT_FOUND
 
     # 宿主喂了内容才读 stdin（它会把 stdin 写成管道并立即关闭）；否则一律 DEVNULL，

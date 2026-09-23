@@ -132,7 +132,7 @@ public sealed class SkillScriptRunner
         if (!TrustedSkills.Contains(skill.Name))
         {
             if (TrustPrompt == null)
-                return $"错误：Skill「{skill.Name}」尚未被授权执行脚本，且当前无法弹出确认。请在「设置 → AI 模型 → Skill 扩展」中查看。";
+                return $"错误：Skill「{skill.Name}」尚未被授权执行脚本，且当前无法弹出确认。请在「设置 → AI 功能 → Skill 扩展」中查看。";
 
             var allowed = await TrustPrompt(skill).ConfigureAwait(false);
             if (!allowed)
@@ -230,7 +230,7 @@ public sealed class SkillScriptRunner
 
             if (AuthPrompt == null)
                 return $"错误：Skill「{skill.Name}」依赖的{status.DisplayName}尚未完成授权（{status.Detail}），" +
-                       "且当前无法弹出授权界面。请让用户到「设置 → AI 模型 → Skill 扩展」里点「授权」完成后再重试。" +
+                       "且当前无法弹出授权界面。请让用户到「设置 → AI 功能 → Skill 扩展」里点「授权」完成后再重试。" +
                        "不要建议用户去命令行执行任何命令。";
 
             var done = false;
@@ -245,7 +245,7 @@ public sealed class SkillScriptRunner
 
             if (!done)
                 return $"用户没有完成{status.DisplayName}的授权，所以脚本**没有执行**。" +
-                       "请如实告知用户需要先在应用里完成授权（设置 → AI 模型 → Skill 扩展），" +
+                       "请如实告知用户需要先在应用里完成授权（设置 → AI 功能 → Skill 扩展），" +
                        "不要假设已成功，也不要建议用户去命令行操作。";
         }
 
@@ -299,7 +299,7 @@ public sealed class SkillScriptRunner
         if (!hit) return "";
 
         return "（宿主补充：这次失败看起来是依赖未授权或授权已失效，**不是脚本写错了**。" +
-               "请在应用内完成授权：设置 → AI 模型 → Skill 扩展 → 授权，完成后重试。" +
+               "请在应用内完成授权：设置 → AI 功能 → Skill 扩展 → 授权，完成后重试。" +
                "不要让用户去命令行执行命令。）";
     }
 

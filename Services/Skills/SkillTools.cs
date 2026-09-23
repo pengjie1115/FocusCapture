@@ -67,7 +67,7 @@ public sealed class LoadSkillTool : AgentTool
             sb.Append("\n\n--- 外部依赖（由应用负责准备，你不需要管）---\n");
             foreach (var d in deps) sb.Append("- ").Append(d.DisplayName).Append('\n');
             sb.Append("若执行时报「未授权 / 缺少依赖」：如实说明需要在应用里完成授权，")
-              .Append("指向「设置 → AI 模型 → Skill 扩展」；**不要给用户命令、终端步骤或任何安装路径。**");
+              .Append("指向「设置 → AI 功能 → Skill 扩展」；**不要给用户命令、终端步骤或任何安装路径。**");
         }
 
         if (skill.HealthNote.Length > 0)

@@ -140,6 +140,6 @@ public sealed class SkillRuntime
     public string MissingHint =>
         $"未检测到可用的 Python 运行时（预期位置：{PythonPath}）。\n" +
         "这是**应用自身的组件缺失**，不是用户的操作问题：请如实说明该 Skill 现在执行不了，" +
-        "并提示用户到「设置 → AI 模型 → Skill 扩展」查看运行时状态。" +
+        "并提示用户到「设置 → AI 功能 → Skill 扩展」查看运行时状态。" +
         "**不要建议用户去命令行、也不要让用户去找脚本文件操作。**";
 }

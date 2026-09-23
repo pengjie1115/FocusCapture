@@ -589,7 +589,8 @@ public class OpenAICompatibleProvider : IChatProvider
     /// <summary>面向用户的附件相关报错补充说明（把供应商的英文错误翻译成人话）</summary>
     private static string ImageHint(IReadOnlyList<ChatMessage> messages) =>
         ContainsImage(messages)
-            ? "\n\n提示：本次请求包含图片。如果当前模型不支持图片输入，请在「设置 → AI 模型」中换用支持视觉的模型（或关闭图片支持开关后重发纯文字）。"
+            ? "\n\n提示：本次请求包含图片。如果当前模型不支持图片输入，请在「设置 → AI 模型」中换用支持视觉的模型，"
+              + "或在「设置 → AI 功能」中关闭图片支持开关后重发纯文字。"
             : "";
 
     /// <summary>截断响应体，避免异常消息过长</summary>

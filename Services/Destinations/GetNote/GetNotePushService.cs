@@ -34,7 +34,7 @@ public class GetNotePushService
             return new PushOutcome(false, false, 0, 0, 0, "当前没有可上传的笔记。");
 
         if (string.IsNullOrWhiteSpace(_settings.GetNoteApiKey) || string.IsNullOrWhiteSpace(_settings.GetNoteClientId))
-            return new PushOutcome(false, false, 0, 0, 0, "未配置得到大脑凭证（API Key / Client ID），请到设置 → AI 模型 → 得到大脑 配置。");
+            return new PushOutcome(false, false, 0, 0, 0, "未配置得到大脑凭证（API Key / Client ID），请到设置 → AI 功能 → 得到大脑 配置。");
 
         // ── 去重：每条笔记一生只推一次 ──
         var pending = new List<NoteEntry>();

@@ -441,7 +441,7 @@ print(json.dumps({
               "未完成授权时**不得执行脚本**（否则等于把'没登录'的失败留给用户看）", $"实际：{Short(rDenied)}");
         Check(rDenied.Contains("没有执行") && !rDenied.Contains("已完成"),
               "拒绝授权必须如实说'没执行'，且不得出现「已完成」字样（防假成功）", $"实际：{Short(rDenied)}");
-        Check(rDenied.Contains("设置 → AI 模型 → Skill 扩展"),
+        Check(rDenied.Contains("设置 → AI 功能 → Skill 扩展"),
               "拒绝后必须给出应用内入口（否则模型会自己发明流程）", $"实际：{Short(rDenied)}");
 
         runner.AuthPrompt = (_, _) => Task.FromResult(true);
@@ -460,7 +460,7 @@ print(json.dumps({
         var rUnauth = await runner.RunAsync("gated-skill", "unauth.py", null, null, default);
         Check(rUnauth.Contains("need_user_authorization"),
               "脚本的原始输出必须原样带给模型（宿主不替它下结论）", $"实际：{Short(rUnauth)}");
-        Check(rUnauth.Contains("设置 → AI 模型 → Skill 扩展"),
+        Check(rUnauth.Contains("设置 → AI 功能 → Skill 扩展"),
               "脚本自己报'未授权'时，宿主必须补上应用内入口", $"实际：{Short(rUnauth)}");
         Check(!rUnauth.Contains("已完成") && !rUnauth.Contains("已执行"),
               "失败文本不得含「已完成/已执行」（防假成功 —— 最重要的一条）");
@@ -541,7 +541,7 @@ print(json.dumps({
         var manifest = SkillManifest.Build(catalog.GetSkills(false), true);
         Check(manifest.Contains("不许让用户去命令行"),
               "系统提示必须带硬约束：不许让用户去命令行执行命令", $"实际：{Short(manifest)}");
-        Check(manifest.Contains("设置 → AI 模型 → Skill 扩展"),
+        Check(manifest.Contains("设置 → AI 功能 → Skill 扩展"),
               "系统提示必须给出应用内授权入口（否则模型只能自己发明）", $"实际：{Short(manifest)}");
     }
 

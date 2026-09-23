@@ -1296,7 +1296,7 @@ public partial class AIDialogWindow : Window
     {
         System.Windows.MessageBox.Show(this,
             "当前已关闭「允许发送图片」，图片不会被添加或发送。\n\n" +
-            "如果所用模型支持图片输入，请在「设置 → AI 模型」中打开该开关。",
+            "如果所用模型支持图片输入，请在「设置 → AI 功能」中打开该开关。",
             "图片发送已关闭", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
