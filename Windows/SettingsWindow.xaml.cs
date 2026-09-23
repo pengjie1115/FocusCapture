@@ -180,6 +180,54 @@ public partial class SettingsWindow : Window
         _navSuppress = true;
         NavList.SelectedIndex = index;
         _navSuppress = false;
+
+        // 打开「AI 模型」板块时自动探一次供应商状态（2026-09-23）。
+        // 用**面板引用**判断而不是索引数字：索引写死的话，往导航里插一个板块就会
+        // 静默探到隔壁板块去（不报错，只是行为不对）—— 快照工具刚因为硬编码索引踩过一次。
+        if (ReferenceEquals(panels[index], PanelAiModel)) _ = ProbeAiProvidersAsync();
+    }
+
+    /// <summary>探测进行中（防重入：用户在导航里来回点时不要叠出多批请求）。</summary>
+    private bool _aiProbing;
+
+    /// <summary>
+    /// 并发探测全部已配置供应商并把结论写回状态点。
+    ///
+    /// <para><b>触发时机＝打开板块时</b>，刻意不做启动探测、也不做后台定时（用户拍板，设计稿 §5.1）：
+    /// 用户需要状态点准确的时刻就是他打开面板看的那一刻。</para>
+    ///
+    /// <para>不弹任何模态框、失败不改配置；探测最长 5 秒，所以先给卡片降透明度做「检测中」的中间态，
+    /// 否则点下去像卡住。</para>
+    /// </summary>
+    private async Task ProbeAiProvidersAsync()
+    {
+        if (_aiProbing || _settings.AiModelProviders.Count == 0) return;
+        _aiProbing = true;
+        try
+        {
+            foreach (var card in AiProviderList.Children.OfType<FrameworkElement>())
+                card.Opacity = 0.6;
+
+            // 取快照再探：探测期间用户可能已经删掉或新加了供应商（5 秒足够干这些事）
+            var providers = _settings.AiModelProviders.ToList();
+            var results = await AiProviderHealthService.ProbeAllAsync(providers);
+
+            foreach (var p in providers)
+                if (results.TryGetValue(p.Id, out var verdict))
+                    AiProviderHealthService.Apply(p, verdict);
+
+            _settings.Save();          // 落盘才有时戳可留到下次打开
+            RebuildAiProviderList();
+        }
+        catch
+        {
+            // 兜底：探测本身不抛，这里防的是「写盘 / 重建界面」这类本地意外。
+            // 绝不能让它冒到 ShowSection 上，否则打开设置面板会跟着出问题。
+        }
+        finally
+        {
+            _aiProbing = false;
+        }
     }
 
     private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)

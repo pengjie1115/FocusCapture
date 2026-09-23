@@ -1385,6 +1385,19 @@ print(json.dumps({
               "max_tokens 只能由 ApplyMaxTokens 一处写入（恰好 1 处）",
               $"源码里出现了 {writes} 处 [\"max_tokens\"] = 赋值，应恰好 1 处（ApplyMaxTokens 内部）——"
               + "分散写入就等于又分叉出三条请求逻辑，改一处必漏一处");
+
+        // ── 状态探测（联网层）：只测「发请求之前」就该短路的两条契约 ──
+        // 真发请求的路径不在这里测：要联网、耗时长、还受本机网络怪象影响（loopback 未监听端口要 2.2 秒），
+        // 属于"自动化证明不了"的类别，交人工验收。这里守的是不需要网络就该成立的两条。
+        var noProviders = AiProviderHealthService.ProbeAllAsync(Array.Empty<AiProviderEntry>())
+            .GetAwaiter().GetResult();
+        Check(noProviders.Count == 0, "没有供应商时探测直接返回空，一个请求都不发");
+
+        var noUrlResult = AiProviderHealthService.ProbeAsync(new AiProviderEntry { Id = "x", BaseUrl = "" })
+            .GetAwaiter().GetResult();
+        Check(noUrlResult.Status == AiHealthStatus.Network,
+              "Base URL 为空的供应商：发请求之前就短路给出结论",
+              "不短路的话会去请求一个空地址，既慢又给不出有用的提示");
     }
 
     // ══════════════════ 分组计时（2026-09-17） ══════════════════

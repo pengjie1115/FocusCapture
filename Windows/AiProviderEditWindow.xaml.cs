@@ -321,6 +321,56 @@ public partial class AiProviderEditWindow : Window
         VerticalAlignment = VerticalAlignment.Center,
     };
 
+    // ══════════════ 获取可用模型 ══════════════
+
+    /// <summary>
+    /// 向供应商拉取模型列表 → 多选窗 → 合并进草稿。
+    /// 只加不覆盖：已经在目录里的模型跳过（同名 ID 视为同一个），所以重复点是安全的。
+    /// </summary>
+    private async void BtnFetchModels_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_draft.BaseUrl))
+        {
+            ShowTestResult("请先填 Base URL", false);
+            return;
+        }
+
+        BtnFetchModels.IsEnabled = false;
+        ShowTestResult("正在获取模型列表…", null);
+        try
+        {
+            var fetched = await AiProviderFetcher.FetchAsync(_draft.BaseUrl, _draft.ApiKey);
+            if (!fetched.Ok)
+            {
+                ShowTestResult(fetched.Message, false);
+                return;
+            }
+
+            var picker = new AiModelPickerWindow(fetched.Models) { Owner = this };
+            if (picker.ShowDialog() != true || picker.Selected is not { Count: > 0 } picked) return;
+
+            var added = 0;
+            foreach (var m in picked)
+            {
+                if (_draft.Models.Any(x => string.Equals(x.Id, m.Id, StringComparison.Ordinal))) continue;
+                _draft.Models.Add(new AiModelEntry
+                {
+                    Id = m.Id,
+                    DisplayName = m.DisplayName,
+                    ContextWindow = m.ContextWindow,   // 拿不到就是 0 = 不限制（不猜，见 AiModelEntry 注释）
+                });
+                added++;
+            }
+            RebuildModelList();
+            ShowTestResult(added == 0 ? "选中的模型都已经在目录里了" : $"已添加 {added} 个模型",
+                added > 0 ? true : null);
+        }
+        finally
+        {
+            BtnFetchModels.IsEnabled = true;
+        }
+    }
+
     // ══════════════ 测试连接 ══════════════
 
     private async void BtnEditTest_Click(object sender, RoutedEventArgs e)

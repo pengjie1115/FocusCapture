@@ -7,6 +7,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using FocusCapture.Models;
 using FocusCapture.Services;
+using FocusCapture.Services.AI;
 using FocusCapture.Windows;
 
 namespace FocusCapture.Diagnostics;
@@ -114,6 +115,20 @@ internal static class UiSnapshot
                 w.ExpandFirstModelForSnapshot();
                 return w;
             }, outDir, log);
+
+            // 「获取可用模型」的多选窗（2026-09-23）：行由 code-behind 建（显示名 + 灰色模型 ID 两行），
+            // 搜索与全选只切 Visibility、不重建。这两件事的布局问题静态代码都看不出来：
+            // 超长模型 ID 会不会撑破行、计数与列表会不会对不上、按钮会不会被挤出窗口。
+            Capture("03a3-获取可用模型（多选窗）", () =>
+                new AiModelPickerWindow(new[]
+                {
+                    new ParsedModel("deepseek-chat", "DeepSeek Chat", 65536),
+                    new ParsedModel("deepseek-reasoner", "DeepSeek Reasoner", 131072),
+                    new ParsedModel("deepseek-ai/DeepSeek-V4-Flash", "硅基流动 ds v4 flash", 1048576),
+                    new ParsedModel("Qwen/Qwen3-235B-A22B-Instruct-2507-长名字专门用来测截断", "通义千问 Qwen3 235B", 0),
+                    new ParsedModel("glm-4-flash", "GLM-4-Flash", 0),
+                    new ParsedModel("hunyuan-t1", "腾讯混元 T1", 0),
+                }), outDir, log);
 
             // AI 功能板块（2026-09-23 从原「AI 模型」板块拆出）：Skill 分区住在这里。
             // 为什么必须单独出一张：这块有三类"静态代码看不出来"的东西 ——

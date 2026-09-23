@@ -1068,6 +1068,102 @@ Check(TokenCountParser.MaxContextWindow == 10_000_000
       && TokenCountParser.MaxOutputTokens == 1_000_000,
       "上限常量与拍板值一致：窗口 1~10,000,000 / 输出 1~1,000,000");
 
+// ── [14] /models 响应解析与探测结果分类（2026-09-23）──
+// 守的是「换一家供应商就悄悄少几个模型」「欠费被说成稍后重试」这两类静默错误。
+Console.WriteLine("[14] 供应商 /models 解析与探测分类");
+
+var lmStandard = AiModelListParser.Parse("""
+{"object":"list","data":[{"id":"m1","object":"model"},{"id":"m2","object":"model"}]}
+""");
+Check(lmStandard.Count == 2 && lmStandard[0].Id == "m1",
+      "标准 OpenAI 结构（顶层 data）：解析出 2 条");
+
+var lmModelsKey = AiModelListParser.Parse("""
+{"models":[{"id":"a"},{"id":"b"}]}
+""");
+Check(lmModelsKey.Count == 2,
+      "顶层容器是 models 也能认（少数节点不用 data）");
+
+var lmZhiPu = AiModelListParser.Parse("""
+{"data":[{"id":"glm-4-flash","object":"model"}]}
+""");
+Check(lmZhiPu.Count == 1 && lmZhiPu[0].Id == "glm-4-flash" && lmZhiPu[0].ContextWindow == 0,
+      "智谱那种只给 id+object 的元素：解析得出来，窗口留 0（拿不到就不猜）");
+
+var lmTokenHub = AiModelListParser.Parse("""
+{"data":[{"id":"hunyuan-t1","object":"model","name":"腾讯混元 T1","status":"online"}]}
+""");
+Check(lmTokenHub.Count == 1 && lmTokenHub[0].DisplayName == "腾讯混元 T1",
+      "腾讯 TokenHub 带 name：显示名取 name（用户不用自己填）");
+
+var lmKimi = AiModelListParser.Parse("""
+{"data":[{"id":"kimi-k2","object":"model","context_length":262144,"supports_reasoning":true}]}
+""");
+Check(lmKimi.Count == 1 && lmKimi[0].ContextWindow == 262144,
+      "Kimi 的 context_length：带出上下文窗口（7 家里唯一给这个字段的）");
+
+var lmAltWindow = AiModelListParser.Parse("""
+{"data":[{"id":"x","context_window":"131072"}]}
+""");
+Check(lmAltWindow.Count == 1 && lmAltWindow[0].ContextWindow == 131072,
+      "窗口字段名变体 context_window、且值是字符串：也要能认");
+
+var lmNameFallback = AiModelListParser.Parse("""
+{"data":[{"name":"只有 name 没有 id"}]}
+""");
+Check(lmNameFallback.Count == 1 && lmNameFallback[0].Id == "只有 name 没有 id",
+      "缺 id 但有 name：按 id→name→model 的退让链取标识，不要丢掉这条");
+
+var lmDedup = AiModelListParser.Parse("""
+{"data":[{"id":"dup"},{"id":"dup"}]}
+""");
+Check(lmDedup.Count == 1, "同一 id 出现两次要去重（列表里给用户看两遍同一个模型很怪）");
+
+var lmJunk = AiModelListParser.Parse("""
+{"data":["不是对象",42,{"id":"ok"}]}
+""");
+Check(lmJunk.Count == 1 && lmJunk[0].Id == "ok",
+      "数组里混了非对象元素：跳过它们，不要把整批都丢掉");
+
+var lmBad = AiModelListParser.Parse("{这不是 JSON");
+Check(lmBad.Count == 0, "非法 JSON → 空列表，不抛（上层给「没解析出模型」的人话提示）");
+Check(AiModelListParser.Parse(null).Count == 0 && AiModelListParser.Parse("   ").Count == 0,
+      "null / 空白 → 空列表，不抛");
+
+Check(AiHealthClassifier.Classify(200, "").Status == AiHealthStatus.Ok,
+      "200 → 通过");
+Check(AiHealthClassifier.Classify(401, "").Status == AiHealthStatus.Key,
+      "401 → Key 未通过验证");
+Check(AiHealthClassifier.Classify(403, "").Status == AiHealthStatus.Key,
+      "403 → 也归 Key（少数节点用 403 表达无权限）");
+Check(AiHealthClassifier.Classify(402, "").Status == AiHealthStatus.Account,
+      "402 → 余额不足（DeepSeek 用它表达欠费）");
+
+var hz1 = AiHealthClassifier.Classify(429, """{"error":{"code":1113,"message":"欠费"}}""");
+Check(hz1.Status == AiHealthStatus.Account,
+      "429 + 智谱业务码 1113（欠费）→ 必须是「账户余额/套餐」，不是「稍后重试」",
+      "误判成 Server 的话，用户会对着欠费一直重试，而我们还在说「稍后重试」—— 那是误导");
+
+var hz2 = AiHealthClassifier.Classify(429, """{"error":{"code":1302,"message":"速率限制"}}""");
+Check(hz2.Status == AiHealthStatus.Server,
+      "429 + 限流码 1302 → 仍是「稍后重试」（不能把所有 429 都当账户问题）");
+
+Check(AiHealthClassifier.Classify(429, "").Status == AiHealthStatus.Server,
+      "429 且读不到业务码 → 保守判「稍后重试」");
+Check(AiHealthClassifier.Classify(500, "").Status == AiHealthStatus.Server,
+      "5xx → 供应商侧问题");
+
+var hzPlain = AiHealthClassifier.Classify(401, "Authentication Fails (governor)");
+Check(hzPlain.Status == AiHealthStatus.Key && hzPlain.Message.Contains("Authentication Fails"),
+      "错误体是纯文本（DeepSeek 那种）时：按状态码分类，且原文必须照实带给用户",
+      "吞掉原文 = 用户只看到「失败」两个字，无从下手");
+
+var hzNet = AiHealthClassifier.Unreachable("No such host is known");
+Check(hzNet.Status == AiHealthStatus.Network
+      && hzNet.Message.Contains("网络") && hzNet.Message.Contains("填错"),
+      "连不上 → Network，且文案要同时提示「本机网络」与「地址填错」两种可能",
+      "只说网络问题会把「地址写错」这种用户自己能修的情况掩盖掉");
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

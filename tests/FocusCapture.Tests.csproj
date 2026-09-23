@@ -61,6 +61,11 @@
          不碰配置 / 日志 / WPF），所以能在这层秒级测。它错了的后果全是静默的 ——
          用户照文档抄的 384K 被当非法值丢掉、K 与 M 差 1024 倍算错一个数量级，界面都不报错。 -->
     <Compile Include="..\Services\AI\TokenCountParser.cs" Link="Src\TokenCountParser.cs" />
+    <!-- AI 联网层的两个纯函数（2026-09-23）：同样刻意零项目依赖，所以能在秒级这层被测。
+         它们错了的后果全是静默的 —— 模型列表少几个（界面不会报错，用户以为供应商只有这么多）、
+         把「账户欠费」误报成「稍后重试」（用户能重试到天亮）。 -->
+    <Compile Include="..\Services\AI\AiModelListParser.cs" Link="Src\AiModelListParser.cs" />
+    <Compile Include="..\Services\AI\AiHealthClassifier.cs" Link="Src\AiHealthClassifier.cs" />
   </ItemGroup>
 
 </Project>

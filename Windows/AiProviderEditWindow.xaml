@@ -35,6 +35,15 @@
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#505050"/>
                 </Trigger>
+                <!-- 禁用态必须自己上色：这套模板只有 hover 态，不给禁用态上色的话
+                     「不能点」和「能点」长得一模一样（本项目在别的窗口上吃过这个亏）。
+                     本窗口的「测试连接」「获取可用模型」在请求期间都会置灰。 -->
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#2A2A2A"/>
+                    <Setter Property="Foreground" Value="#6E6E6E"/>
+                    <Setter Property="BorderBrush" Value="#3A3A3A"/>
+                    <Setter Property="Cursor" Value="Arrow"/>
+                </Trigger>
             </Style.Triggers>
         </Style>
 
@@ -118,11 +127,15 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <DockPanel Grid.Row="0">
-                <TextBlock x:Name="EditModelCountText" Text="模型目录"
-                           Foreground="#E0E0E0" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <DockPanel Grid.Row="0" LastChildFill="False">
                 <Button x:Name="BtnAddModel" DockPanel.Dock="Right" Content="添加模型"
                         Width="96" Click="BtnAddModel_Click"/>
+                <Button x:Name="BtnFetchModels" DockPanel.Dock="Right" Content="获取可用模型"
+                        Width="120" Margin="0,0,6,0"
+                        ToolTip="按当前 Base URL 与密钥向供应商拉取模型列表，勾选后添加"
+                        Click="BtnFetchModels_Click"/>
+                <TextBlock x:Name="EditModelCountText" DockPanel.Dock="Left" Text="模型目录"
+                           Foreground="#E0E0E0" FontWeight="SemiBold" VerticalAlignment="Center"/>
             </DockPanel>
             <TextBlock Grid.Row="1" Style="{StaticResource HintText}" Margin="0,4,0,6"
                        Text="左侧填模型 ID（发给供应商的原始标识），右侧是给你自己看的显示名。点右侧箭头展开可单独设置该模型的上下文窗口与最大输出 Token。"/>
