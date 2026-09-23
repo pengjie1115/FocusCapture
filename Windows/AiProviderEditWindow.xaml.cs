@@ -390,8 +390,13 @@ public partial class AiProviderEditWindow : Window
             ShowTestResult("API 地址不能为空 —— 没有地址这条供应商什么也做不了", false);
             return;
         }
-        if (string.IsNullOrWhiteSpace(_draft.Name))
-            _draft.Name = AiProviders.MatchByUrl(_draft.BaseUrl)?.Name ?? AiProviders.Custom;
+        // 名字还是兜底值、而地址已经能匹配到预置 → 顺手改成预置名。
+        // 不做这一步就会出现自相矛盾：卡片标题写「自定义」、摘要里却写「Agnes（中国站）」。
+        // 老配置迁移过来的正是这种（迁移当时预置表里那条地址是错的，名字落成了「自定义」）。
+        var matchedPreset = AiProviders.MatchByUrl(_draft.BaseUrl);
+        if (string.IsNullOrWhiteSpace(_draft.Name)
+            || (_draft.Name == AiProviders.Custom && matchedPreset != null))
+            _draft.Name = matchedPreset?.Name ?? AiProviders.Custom;
 
         // 模型 ID 为空的条目是用户点了「添加模型」但还没填的占位行，不算数据
         var placeholders = _draft.Models.RemoveAll(m => string.IsNullOrWhiteSpace(m.Id));

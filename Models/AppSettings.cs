@@ -66,7 +66,7 @@ public class AppSettings
     // 首次加载时由 MigrateLegacyAiConfig() 合成 AiModelProviders 里的第一条供应商；
     // 之后新代码不再读它们（唯一的兜底读取在 Services/AI/AiModelResolver）。
     // 刻意不删：回退旧版本时仍能读到配置，不至于让用户「降级即失联」。
-    public string AiBaseUrl { get; set; } = "https://apihub.agnes-ai.cn/v1";
+    public string AiBaseUrl { get; set; } = "https://api.agnes-ai.cn/v1";   // 2026-09-23 修正：此前误写为 apihub.agnes-ai.cn（多一个 hub）
     public string AiApiKey { get; set; } = "";
     public string AiModel { get; set; } = "";   // 不再预置：模型更新快，交给用户自填
     public int AiMaxTokens { get; set; } = 4096;  // 回答长度上限（token）= 请求体 max_tokens
@@ -241,7 +241,7 @@ public class AppSettings
             var apiKey = AiApiKey ?? "";
             var model = (AiModel ?? "").Trim();
 
-            // 判据刻意**不看 BaseUrl**：它有非空默认值（apihub.agnes-ai.cn），
+            // 判据刻意**不看 BaseUrl**：它有非空默认值（api.agnes-ai.cn），
             // 拿它当「配过」的证据，会让全新用户凭空多出一条没有 Key、没有模型的 Agnes 供应商卡片。
             // Key 或模型名只要有一个填过，才算真配过。
             if (apiKey.Length == 0 && model.Length == 0) return;

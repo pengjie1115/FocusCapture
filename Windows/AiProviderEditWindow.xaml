@@ -77,7 +77,7 @@
         <!-- ── 供应商基本信息 ── -->
         <StackPanel Grid.Row="0">
             <DockPanel Margin="0,2">
-                <TextBlock Text="显示名称" Style="{StaticResource FieldLabel}"/>
+                <TextBlock Text="模型供应商" Style="{StaticResource FieldLabel}"/>
                 <TextBox x:Name="EditNameInput" Style="{StaticResource DarkTextBox}"
                          TextChanged="EditName_TextChanged"/>
             </DockPanel>

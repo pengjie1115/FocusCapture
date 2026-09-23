@@ -1417,7 +1417,7 @@ public partial class SettingsWindow : Window
         _settings.AiModelProviders.Clear();
         _settings.AiModelProviders.Add(new AiProviderEntry
         {
-            Id = "snap1", Name = "Agnes 中国站", BaseUrl = "https://apihub.agnes-ai.cn/v1",
+            Id = "snap1", Name = "Agnes 中国站", BaseUrl = "https://api.agnes-ai.cn/v1",
             ApiKey = "sk-snapshot-not-a-real-key",
             LastTestedAt = "2026-09-23T20:40:00", LastTestStatus = "Ok",
             Models = { new AiModelEntry { Id = "agnes-3.0-flash", DisplayName = "Agnes 3.0 Flash" } },

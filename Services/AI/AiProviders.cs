@@ -15,7 +15,7 @@ public static class AiProviders
     /// <summary>预设供应商，顺序即下拉显示顺序。</summary>
     public static readonly IReadOnlyList<AiProviderPreset> Presets = new[]
     {
-        new AiProviderPreset("Agnes（中国站）", "https://apihub.agnes-ai.cn/v1",                       "https://agnes-ai.cn/"),
+        new AiProviderPreset("Agnes（中国站）", "https://api.agnes-ai.cn/v1",                          "https://agnes-ai.cn/"),
         new AiProviderPreset("DeepSeek",        "https://api.deepseek.com/v1",                         "https://platform.deepseek.com/"),
         new AiProviderPreset("智谱 GLM",        "https://open.bigmodel.cn/api/paas/v4",               "https://open.bigmodel.cn/"),
         new AiProviderPreset("Kimi",            "https://api.moonshot.cn/v1",                         "https://platform.moonshot.cn/"),
