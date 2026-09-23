@@ -21,6 +21,7 @@ using FocusCapture.Services.Files;
 using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
+using FocusCapture.Windows.Controls;
 
 /// <summary>
 /// FocusCapture 同步验收测试（单机双设备模拟，验收 B/C/D/E/F）。
@@ -1493,6 +1494,46 @@ print(json.dumps({
             Check(ChatGroupService.BuildInstructionContext("") == ""
                   && ChatGroupService.BuildInstructionContext(ChatGroupStore.FavoriteId) == "",
                   "没有指令时不构造注入文本（不往上下文里塞一个空标题）");
+
+            // ══ 侧边栏分区（ChatSidebar.BuildSections，纯逻辑；批 2，2026-09-23）══
+            SessionSummary MakeSummary(string id, bool pinned, string groupId) => new(
+                "path-" + id, id, DateTime.Now, "Ask", "标题" + id, pinned, groupId, "预览" + id, 3);
+
+            var sectionFavorite = ChatGroupStore.NewFavorite();
+            var sectionGroup = new ChatGroup { Id = "sec-g1", Name = "项目开发", CreatedAt = DateTime.Now };
+
+            var sectionSessions = new List<SessionSummary>
+            {
+                MakeSummary("plain", false, ""),                 // 未分组未置顶 → 最近
+                MakeSummary("pinnedOnly", true, ""),             // 置顶未分组 → 只在置顶区
+                MakeSummary("groupedInGroup", false, "sec-g1"),  // 已分组未置顶 → 只在分组视图里
+                MakeSummary("groupedPinned", true, "sec-g1"),    // 已分组且置顶 → 置顶区（分组里也有一份）
+            };
+
+            var sections = ChatSidebar.BuildSections(
+                sectionSessions, new List<ChatGroup> { sectionFavorite, sectionGroup });
+            var sectionIds = sections.OfType<HistoryItemViewModel>().Select(v => v.Id).ToList();
+            var groupHeaders = sections.OfType<SidebarGroupHeader>().ToList();
+            var sectionNames = sections.OfType<SidebarSectionHeader>().Select(h => h.Name).ToList();
+
+            Check(groupHeaders.Count == 2 && groupHeaders[0].IsFavorite,
+                  "侧边栏第一行永远是收藏（系统保留分区），用户分组排在它后面",
+                  "收藏排到后面的话，用户建一个恰好叫「收藏」的分组就会把它顶掉位置");
+            Check(groupHeaders.Count == 2 && groupHeaders[1].GroupId == "sec-g1",
+                  "用户分组按清单顺序排布");
+
+            Check(sectionIds.Contains("pinnedOnly") && sectionIds.Contains("groupedPinned"),
+                  "置顶会话必须出现在「置顶」区（不管它有没有分组）");
+            Check(!sectionIds.Contains("groupedInGroup"),
+                  "已分组、未置顶的会话**不得**出现在侧边栏列表里（只在分组视图里可见）",
+                  "这正是「最近」列表的意义：不把分组里的会话再平铺一遍");
+            Check(sectionIds.Contains("plain") && sectionNames.Contains("最近"),
+                  "未分组未置顶的会话出现在「最近」区");
+            Check(sectionIds.Count(id => id == "groupedPinned") == 1,
+                  "同一条置顶会话在侧边栏里只出现一次（不因它属于分组就再列一遍）");
+            Check(sectionIds.Count == 3,
+                  "完整性：该出现的会话一条都不能少、也不能多",
+                  "分区规则漏一条的后果是「某条会话在侧边栏凭空消失」，且不报任何错");
         }
         finally
         {

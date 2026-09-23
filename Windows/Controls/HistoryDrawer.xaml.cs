@@ -82,6 +82,7 @@ public enum ChatItemAction
     Group,       // 分组到…（context = 目标分组 Id；null = 未分组）
     Export,      // 导出（context = ExportFormat 名称）
     Delete,      // 删除（移入会话回收站）
+    Favorite,    // 收藏 / 取消收藏（GroupId ↔ FavoriteId 互斥切换，2026-09-23 新增）
 }
 
 /// <summary>批量操作（多选操作条）</summary>
