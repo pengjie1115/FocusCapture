@@ -262,6 +262,9 @@ public partial class AIDialogWindow : Window
         // 预览浮层预热：Popup 首次显示要创建宿主窗口（低配机上可感知），
         // 放到窗口加载完成后的空闲时机先开合一次，把这份开销挪到用户看不见的地方
         Loaded += (_, _) => Dispatcher.BeginInvoke(new Action(_preview.Prewarm), DispatcherPriority.Background);
+        // 侧边栏默认展开（2026-09-23）：设置里可改，默认收起。
+        // 放在 Loaded 而不是构造函数 —— 展开要走宽度动画，窗口还没渲染时触发会停在 Width=0 的中间态。
+        Loaded += (_, _) => { if (_settings.ChatSidebarDefaultExpanded) OpenDrawer(true); };
         // 侧边栏（2026-09-23 取代历史抽屉）。与旧抽屉同一条纪律：控件只抛事件，业务一律宿主执行。
         // 注意批量操作（多选）随旧抽屉一起退场了 —— 新侧边栏的会话菜单是单条操作。
         Sidebar.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
@@ -515,12 +518,66 @@ public partial class AIDialogWindow : Window
         UpdatePlaceholder();
     }
 
-    /// <summary>占位提示只在"既没文字也没附件"时显示</summary>
+    /// <summary>占位提示只在"既没文字也没附件"时显示。
+    /// 顺带同步「输入区居中 / 沉底」与欢迎语 —— 发消息、切会话、切分组都会经过这里，
+    /// 挂在它上面就不必去十几个调用点各插一次。</summary>
     private void UpdatePlaceholder()
     {
         var text = new TextRange(InputBox.Document.ContentStart, InputBox.Document.ContentEnd).Text;
         var empty = string.IsNullOrWhiteSpace(text) && AttachmentCountInInput() == 0;
         InputPlaceholder.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        RefreshComposerLayout();
+    }
+
+    /// <summary>按当前会话状态决定输入区在中间还是底部</summary>
+    private void RefreshComposerLayout()
+        => ApplyComposerLayout(atBottom: _active is { Bubbles.Count: > 0 });
+
+    /// <summary>
+    /// 输入区布局（2026-09-23，用户要求）：
+    /// - **起手态**（空会话且不在分组视图里）：输入框垂直居中，上方显示欢迎语
+    /// - **对话态**：沉到底部，但**留 16px 空隙**（原话"不要完全触底"）
+    ///
+    /// 位置切换本身没法做动画（改的是 Grid.Row / VerticalAlignment），所以靠 Transparency 感的
+    /// 短淡入让跳变不刺眼 —— 不做位移补间是因为那要引入 Canvas 定位，把整个布局关系搞脆。
+    /// </summary>
+    private void ApplyComposerLayout(bool atBottom)
+    {
+        var showingWelcome = !atBottom && _activeGroupId.Length == 0;
+
+        WelcomePanel.Visibility = showingWelcome ? Visibility.Visible : Visibility.Collapsed;
+        if (showingWelcome) UpdateWelcomeContent();
+
+        if (atBottom)
+        {
+            Grid.SetRow(InputArea, 1);
+            InputArea.VerticalAlignment = VerticalAlignment.Bottom;
+            InputArea.Margin = new Thickness(0, 0, 0, 16);
+            // 沉底时左下角要不要切平，取决于侧边栏开合（沿用原有规则，别改出分叉）
+            InputArea.CornerRadius = _drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6);
+        }
+        else
+        {
+            Grid.SetRow(InputArea, 0);
+            InputArea.VerticalAlignment = VerticalAlignment.Center;
+            InputArea.Margin = new Thickness(28, 0, 28, 0);
+            InputArea.CornerRadius = new CornerRadius(6);   // 居中态四角都是圆的
+        }
+
+        // 短淡入：位置跳变时给一帧过渡（快照/无动画环境下 BeginAnimation 不影响终值）
+        var fade = new DoubleAnimation(0.55, 1.0, TimeSpan.FromMilliseconds(140));
+        InputArea.BeginAnimation(OpacityProperty, fade);
+    }
+
+    /// <summary>欢迎语内容：图标（用户上传的，没设就不显示图标）+「{昵称}，今天干点啥？」</summary>
+    private void UpdateWelcomeContent()
+    {
+        var icon = ChatAssetsService.LoadWelcomeIcon();
+        WelcomeIcon.Source = icon;
+        WelcomeIcon.Visibility = icon != null ? Visibility.Visible : Visibility.Collapsed;
+
+        var nickname = (_settings.ChatUserNickname ?? "").Trim();
+        WelcomeText.Text = nickname.Length > 0 ? $"{nickname}，今天干点啥？" : "今天干点啥？";
     }
 
     /// <summary>把键盘焦点落到输入框。窗口是非模态弹出的，WPF 不会自动聚焦任何控件，必须显式调</summary>
@@ -891,7 +948,33 @@ public partial class AIDialogWindow : Window
 
     // ── 附件添加入口：加号 / 粘贴 / 拖拽 三处共用 ──
 
+    /// <summary>
+    /// 输入区左侧那个唯一的加号（2026-09-23）：点开弹两项 —— 用户要求"打开时只出现一个加号"，
+    /// 原来并排的第二个按钮（引用文件）收进这里。
+    ///
+    /// 两项语义仍然严格区分，不要合并实现：
+    /// · 添加附件 = 把文件内容发给模型看（占上下文）
+    /// · 引用文件 = 只给 AI 一个可操作的牌号，文件本身不发模型（红线：本机路径永不进模型）
+    /// </summary>
     private void BtnAttach_Click(object sender, RoutedEventArgs e)
+    {
+        // 刻意用 new ContextMenu() 而不是对象初始化器：自带 Style 会顶掉 App.xaml 的深色模板、弹出层变白条
+        var menu = new ContextMenu();
+
+        var attach = new MenuItem { Header = "添加附件（发给 AI 看）" };
+        attach.Click += (_, _) => PickAttachments();
+        menu.Items.Add(attach);
+
+        var reference = new MenuItem { Header = "引用文件（让 AI 操作）" };
+        reference.Click += (_, _) => PickFileForHandle();
+        menu.Items.Add(reference);
+
+        menu.PlacementTarget = BtnAttach;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void PickAttachments()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
@@ -910,7 +993,7 @@ public partial class AIDialogWindow : Window
     /// 与旁边的「+」是两种语义：「+」是把文件当附件发给模型看，这里是让模型能对它动手（存网盘等）。
     /// 由于牌号只在本机生成、模型无法编造，AI 的可达范围就被严格限定在用户亲手点过的文件上。
     /// </summary>
-    private void BtnPickFile_Click(object sender, RoutedEventArgs e)
+    private void PickFileForHandle()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
@@ -1824,14 +1907,16 @@ public partial class AIDialogWindow : Window
         if (_closed) return;   // 窗口已关闭不刷按钮（关窗后后台 runtime 完成的回调不应再动 UI）
         if (busy)
         {
-            BtnSend.Content = "■ 停止";
+            SendIcon.Visibility = Visibility.Collapsed;
+            StopIcon.Visibility = Visibility.Visible;
             BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
             BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
             BtnSend.ToolTip = "停止生成";
         }
         else
         {
-            BtnSend.Content = "发送";
+            SendIcon.Visibility = Visibility.Visible;
+            StopIcon.Visibility = Visibility.Collapsed;
             BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             BtnSend.ToolTip = null;

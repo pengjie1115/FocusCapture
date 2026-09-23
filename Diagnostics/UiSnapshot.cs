@@ -183,6 +183,14 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // 起手页（2026-09-23）：空会话 → 欢迎语 + 输入框垂直居中。这是批 3 最直观的变化，
+            // 也是「欢迎语会不会与输入框叠在一起」这种错唯一能看出来的地方。
+            Capture("10d-AI 对话-起手页", () =>
+            {
+                settings.ChatUserNickname = "彭杰";
+                return new AIDialogWindow(notes, settings);
+            }, outDir, log);
+
             // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
             // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
             // 这类错误静态代码看不出来，只能靠渲染结果判定。

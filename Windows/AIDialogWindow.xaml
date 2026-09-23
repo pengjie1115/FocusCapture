@@ -182,6 +182,20 @@
                         </ScrollViewer>
                     </Grid>
 
+                    <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（图标 + 文字），
+                         此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。 -->
+                    <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
+                        <!-- 底部 180 的留白是刻意的：输入区居中时中心也在 Row 0 的中心，
+                             欢迎语靠这个偏移让出它头顶的位置，两者不会叠在一起。 -->
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,180">
+                            <Image x:Name="WelcomeIcon" Width="56" Height="56" Stretch="Uniform"
+                                   HorizontalAlignment="Center" Visibility="Collapsed"/>
+                            <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="#D8D8D8"
+                                       HorizontalAlignment="Center" TextWrapping="Wrap"
+                                       TextAlignment="Center" MaxWidth="420" Margin="0,14,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
                                   VerticalScrollBarVisibility="Auto"
                                   Padding="14,10">
@@ -488,13 +502,16 @@
                     <!-- 加号：打开文件选择框。Padding=0 必须显式设置——全局 Button 样式是 8,4，会挤偏图标。
                          图标用矢量 Path 而非 "+" 字符：字体里的加号字形在行框内本身不居中，
                          无论怎么调字号/内边距都消不掉那点偏差，矢量图形才能真居中。 -->
+                    <!-- 输入区左侧唯一的加号（2026-09-23）：点开弹两项 —— 添加附件 / 引用文件。
+                         原先这里是并排两个按钮，用户要求"打开时只出现一个加号"。
+                         两项语义仍严格区分：附件是发给模型看的；引用文件只给 AI 一个牌号，路径不进模型。 -->
                     <Button x:Name="BtnAttach"
                             Width="30" Height="36"
                             Padding="0"
                             Background="#1E1E1E"
                             Foreground="#AAAAAA"
                             BorderBrush="#555555"
-                            ToolTip="添加图片或文档（也可直接 Ctrl+V 粘贴、或把文件拖进来）"
+                            ToolTip="添加附件（发给 AI 看）或引用文件（让 AI 操作）。也可直接 Ctrl+V 粘贴、或把文件拖进来"
                             Click="BtnAttach_Click">
                         <Path Data="M0,6 H12 M6,0 V12"
                               Stroke="#BBBBBB"
@@ -503,33 +520,6 @@
                               StrokeEndLineCap="Round"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center"/>
-                    </Button>
-
-                    <!-- 选择文件（2026-09-16）：只签发一个牌号让 AI 能引用，文件本身不发给模型、不复制。
-                         与「+」的区别：+ 是把文件当附件发给 AI 看，这里是让 AI 能对它动手（存到网盘）。 -->
-                    <Button x:Name="BtnPickFile"
-                            Width="30" Height="36"
-                            Padding="0"
-                            Margin="6,0,0,0"
-                            Background="#1E1E1E"
-                            Foreground="#AAAAAA"
-                            BorderBrush="#555555"
-                            ToolTip="选择本机文件交给 AI 操作（如「把这个文件存到网盘」）。AI 只能操作你选过的文件"
-                            Click="BtnPickFile_Click">
-                        <Grid>
-                            <Path Data="M3.5,1.5 H8.5 L12,5 V14 H3.5 Z"
-                                  Stroke="#BBBBBB"
-                                  StrokeThickness="1.3"
-                                  StrokeLineJoin="Round"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"/>
-                            <Path Data="M8.5,1.5 V5 H12"
-                                  Stroke="#BBBBBB"
-                                  StrokeThickness="1.3"
-                                  StrokeLineJoin="Round"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"/>
-                        </Grid>
                     </Button>
                     </StackPanel>
 
@@ -571,16 +561,27 @@
                         </Grid>
                     </Border>
 
+                    <!-- 发送按钮（2026-09-23）：文字「发送」改图标箭头（用户要求）。
+                         生成中换成方块（停止）—— 行为一个字没变，只换外形。 -->
                     <Button x:Name="BtnSend"
                             Grid.Column="2"
-                            Content="发送"
-                            Width="72" Height="36"
+                            Width="36" Height="36"
+                            Padding="0"
                             Margin="8,0,0,0"
                             VerticalAlignment="Bottom"
                             Background="#3A3A3A"
-                            Foreground="#4CAF50"
                             BorderBrush="#4CAF50"
-                            Click="BtnSend_Click"/>
+                            BorderThickness="1"
+                            Cursor="Hand"
+                            ToolTip="发送（Enter）"
+                            Click="BtnSend_Click">
+                        <Grid>
+                            <Path x:Name="SendIcon" Data="M2,7 L13,7 M8.5,2.5 L13,7 L8.5,11.5"
+                                  Stroke="#4CAF50" StrokeThickness="1.8"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            <Path x:Name="StopIcon" Data="M4,4 H12 V12 H4 Z" Fill="#4CAF50" Visibility="Collapsed"/>
+                        </Grid>
+                    </Button>
                 </Grid>
                 </Grid>
             </Border>
