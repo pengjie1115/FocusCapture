@@ -9,8 +9,10 @@ namespace FocusCapture.Windows;
 /// </summary>
 public static class PromptDialog
 {
-    /// <summary>弹出输入框。确认返回输入文本（可空串），取消返回 null。</summary>
-    public static string? Show(Window owner, string title, string label, string initial = "")
+    /// <summary>弹出输入框。确认返回输入文本（可空串），取消返回 null。
+    /// <paramref name="multiline"/> = true 时给多行文本框 —— 分组指令要写一整段话，
+    /// 塞进单行框里写两百字是折磨（2026-09-23 分组指令用）。</summary>
+    public static string? Show(Window owner, string title, string label, string initial = "", bool multiline = false)
     {
         var text = new System.Windows.Controls.TextBox
         {
@@ -21,6 +23,14 @@ public static class PromptDialog
             Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
         };
+
+        if (multiline)
+        {
+            text.AcceptsReturn = true;
+            text.TextWrapping = TextWrapping.Wrap;
+            text.Height = 140;
+            text.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto;
+        }
 
         var ok = new System.Windows.Controls.Button
         {
@@ -68,7 +78,7 @@ public static class PromptDialog
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             SizeToContent = SizeToContent.WidthAndHeight,
             MinWidth = 320,
-            MaxWidth = 480,
+            MaxWidth = multiline ? 560 : 480,
             ResizeMode = ResizeMode.NoResize,
             Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
             FontFamily = new System.Windows.Media.FontFamily("Microsoft YaHei UI"),

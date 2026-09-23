@@ -78,6 +78,9 @@ public partial class ChatSidebar : UserControl
     /// <summary>会话三点菜单（context：Group = 目标分组 Id、Export = 格式名，其余 null）</summary>
     public event Action<HistoryItemViewModel, ChatItemAction, string?>? SessionAction;
 
+    /// <summary>点「回收站」</summary>
+    public event Action? RecycleBinRequested;
+
     public ChatSidebar()
     {
         InitializeComponent();
@@ -165,6 +168,8 @@ public partial class ChatSidebar : UserControl
     private void BtnNewChat_Click(object sender, RoutedEventArgs e) => NewChatRequested?.Invoke();
 
     private void BtnNewGroup_Click(object sender, RoutedEventArgs e) => NewGroupRequested?.Invoke();
+
+    private void BtnRecycleBin_Click(object sender, RoutedEventArgs e) => RecycleBinRequested?.Invoke();
 
     private void SessionRow_Click(object sender, MouseButtonEventArgs e)
     {

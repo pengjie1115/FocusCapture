@@ -166,6 +166,23 @@ internal static class UiSnapshot
             Capture("09-语音输入", () => new VoiceInputWindow(settings), outDir, log);
             Capture("10-AI 对话", () => new AIDialogWindow(notes, settings), outDir, log);
 
+            // 侧边栏与分组视图（2026-09-23 重构）：默认收起的侧边栏在场景 10 里根本不在图上，
+            // 这两张就是它们唯一的回归守护 —— 分区顺序对不对、置顶是不是两处都在、
+            // 分组视图的工具行有没有被挤出去，都只有出图才看得见。
+            Capture("10b-AI 对话-侧边栏", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedSidebarForSnapshot();
+                return w;
+            }, outDir, log);
+
+            Capture("10c-AI 对话-分组视图", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedGroupViewForSnapshot();
+                return w;
+            }, outDir, log);
+
             // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
             // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
             // 这类错误静态代码看不出来，只能靠渲染结果判定。

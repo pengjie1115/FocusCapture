@@ -91,17 +91,17 @@
                 </Grid>
             </Border>
 
-            <!-- 消息列表 + 历史抽屉（抽屉列 Auto 跟随 HistoryPanel.Width，宽度动画/拖拽都作用于 HistoryPanel.Width——
+            <!-- 消息列表 + 侧边栏（列 Auto 跟随 Sidebar.Width，宽度动画/拖拽都作用于 Sidebar.Width——
                  WPF GridLength 无 DoubleAnimation，铁律：不动画/拖拽 ColumnDefinition）。
                  拖拽用 Thumb（GridSplitter 基类，样式照搬 SettingsWindow 的 splitter）：其自动 resize 只能改列宽，
-                 与"只改 HistoryPanel.Width"铁律冲突，故 DragDelta 手动改控件宽度。 -->
+                 与"只改 Sidebar.Width"铁律冲突，故 DragDelta 手动改控件宽度。 -->
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <controls:HistoryDrawer x:Name="HistoryPanel" Grid.Column="0" Width="0"/>
+                <controls:ChatSidebar x:Name="Sidebar" Grid.Column="0" Width="0"/>
                 <Thumb x:Name="DrawerSplitter" Grid.Column="1" Width="5" Margin="0,0"
                        Cursor="SizeWE" DragDelta="DrawerSplitter_DragDelta" DragCompleted="DrawerSplitter_DragCompleted">
                     <Thumb.Template>
@@ -121,6 +121,67 @@
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
+                    <!-- 分组视图（2026-09-23）：点侧边栏的分组进来。与消息区同占 Row 0，用 Visibility 互斥 ——
+                         不新增行，输入区原地不动（在分组里输入 = 在该分组下新建会话）。 -->
+                    <Grid x:Name="GroupViewPanel" Grid.Row="0" Visibility="Collapsed" Background="#1E1E1E">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 工具行：分组名 + 添加指令 / 编辑分组名 / 删除分组 / 返回对话 -->
+                        <WrapPanel Grid.Row="0" Margin="14,12,14,4">
+                            <TextBlock x:Name="GroupViewTitle" FontSize="15" Foreground="#E8E8E8"
+                                       VerticalAlignment="Center" Margin="0,0,14,4"/>
+                            <Button x:Name="BtnGroupInstruction" Content="添加指令" Click="BtnGroupInstruction_Click"
+                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
+                                    Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                            <Button x:Name="BtnGroupRename" Content="编辑分组名" Click="BtnGroupRename_Click"
+                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
+                                    Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                            <Button x:Name="BtnGroupDelete" Content="删除分组" Click="BtnGroupDelete_Click"
+                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
+                                    Background="#2A2A2A" Foreground="#D08080" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                            <Button x:Name="BtnGroupViewClose" Content="返回对话" Click="BtnGroupViewClose_Click"
+                                    Padding="8,3" Margin="0,0,0,4" FontSize="12" Cursor="Hand"
+                                    Background="Transparent" Foreground="#7A9E7A" BorderThickness="0"/>
+                        </WrapPanel>
+
+                        <!-- 该分组当前的指令（只读展示；改要点上面的「添加指令」）-->
+                        <TextBlock x:Name="GroupInstructionText" Grid.Row="1" Margin="14,0,14,8"
+                                   Foreground="#8A8A8A" FontSize="11" TextWrapping="Wrap" Visibility="Collapsed"/>
+
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Padding="8,0,8,8">
+                            <StackPanel>
+                                <ItemsControl x:Name="GroupSessionList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Transparent" CornerRadius="4" Padding="8,6" Margin="0,1"
+                                                    Cursor="Hand" MouseLeftButtonUp="GroupSessionRow_Click" Tag="{Binding}"
+                                                    ToolTip="{Binding Preview}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding Title}" Foreground="#C8C8C8"
+                                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding TimeText}" Foreground="#6E6E6E"
+                                                               FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="GroupSessionEmptyHint"
+                                           Text="这个分组还没有会话 —— 在下面输入框里说第一句，就会开始一个属于它的话题。"
+                                           Foreground="#7A7A7A" FontSize="12" Margin="8,6,8,0"
+                                           TextWrapping="Wrap" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
                                   VerticalScrollBarVisibility="Auto"
                                   Padding="14,10">

@@ -128,6 +128,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Grid Grid.Column="0" Width="26" Height="26">
                     <!-- 默认：昵称首字色块；设了头像则显示图片盖住它 -->
@@ -139,6 +140,14 @@
                 <TextBlock x:Name="UserNickname" Grid.Column="1" Margin="8,0,0,0"
                            Foreground="#B8B8B8" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
+                <!-- 回收站入口（2026-09-23）：旧抽屉头部那个「回收站」按钮随抽屉一起退场了，
+                     功能不能丢 —— 挪到用户区右侧。放这里而不是顶部：它不是高频动作。 -->
+                <Button x:Name="BtnRecycleBin" Grid.Column="2" Content="回收站"
+                        Padding="6,2" FontSize="11"
+                        Background="Transparent" Foreground="#7A9E7A"
+                        BorderThickness="0" Cursor="Hand"
+                        Click="BtnRecycleBin_Click"
+                        ToolTip="已删除的会话（还能从这里恢复）"/>
             </Grid>
         </Border>
     </Grid>
