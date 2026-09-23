@@ -64,10 +64,13 @@ internal static class UiSnapshot
 
             Capture("01-灵感速览面板", () => new QuickViewWindow(notes, settings), outDir, log);
 
+            // ⚠ 板块索引 2026-09-23 变过一次：新「AI 功能」板块插在索引 2，此后所有板块索引 +1。
+            //    改本文件里的 SelectedIndex 前，务必对照 SettingsWindow.xaml.cs 的 _sectionNames 顺序 ——
+            //    按记忆写会选到隔壁板块，而且不报错（图看着"有内容"，只是内容不对）。
             Capture("02-设置-灵感速览板块", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 4;   // 4 = 「灵感速览」板块（0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览）
+                w.NavList.SelectedIndex = 5;   // 5 = 「灵感速览」
                 return w;
             }, outDir, log);
 
@@ -78,29 +81,60 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
-            // AI 模型板块（2026-09-20 新增）：Skill 分区住在这里。
+            // AI 模型板块（2026-09-23 起只管「供应商 × 模型」）。
+            // 为什么必须单独出一张：卡片列表是 code-behind 动态生成的控件 ——
+            //   ① 动态生成的按钮可能不继承窗口的隐式 Button 样式（深色主题下会变浅色默认样式）
+            //   ② 卡片摘要里是长地址，深色底上要能看清、要会省略不撑破布局
+            //   ③ 状态点配色有五种（通过/账户/Key/供应商/网络），配色错=误导用户，只能靠出图核
+            Capture("03a-设置-AI 模型板块（供应商列表）", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 1;      // 1 = 「AI 模型」
+                w.SeedAiProvidersForSnapshot();   // 沙箱里没有任何供应商，不塞数据这张图只有一行空态提示
+                return w;
+            }, outDir, log);
+
+            // 供应商编辑页（2026-09-23 新增窗口）。
+            // 为什么必须单独出一张：模型行是 code-behind 拼出来的（两个输入框 + 展开 + 删除），
+            // 「展开区会不会把底部按钮挤出窗口」「长模型 ID 会不会撑破布局」静态代码都看不出来。
+            Capture("03a2-供应商编辑页", () =>
+            {
+                var draft = new AiProviderEntry
+                {
+                    Id = "snap-edit", Name = "DeepSeek", BaseUrl = "https://api.deepseek.com/v1",
+                    ApiKey = "sk-snapshot-not-a-real-key",
+                    Models =
+                    {
+                        new AiModelEntry { Id = "deepseek-chat", DisplayName = "DeepSeek Chat", MaxOutputTokens = 8192 },
+                        new AiModelEntry { Id = "deepseek-reasoner", DisplayName = "DeepSeek Reasoner", ContextWindow = 131072, MaxOutputTokens = 65536 },
+                    },
+                };
+                return new AiProviderEditWindow(draft);
+            }, outDir, log);
+
+            // AI 功能板块（2026-09-23 从原「AI 模型」板块拆出）：Skill 分区住在这里。
             // 为什么必须单独出一张：这块有三类"静态代码看不出来"的东西 ——
             //   ① 已授权 Skill 列表是 code-behind 动态生成的控件（模板样式可能不继承）
             //   ② Skill 目录是长路径，深色底上要能看清、要会换行不撑破布局
             //   ③ 分区在板块底部，不滚到底根本看不见 —— 上一版就漏了这张图
-            Capture("03b-设置-AI 模型板块（含 Skill 分区）", () =>
+            Capture("03b-设置-AI 功能板块（含 Skill 分区）", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 1;      // 1 = 「AI 模型」
+                w.NavList.SelectedIndex = 2;      // 2 = 「AI 功能」
                 w.UpdateLayout();                 // 先布局，否则 ScrollToEnd 无效
                 w.ContentScroller.ScrollToEnd();  // Skill 分区在板块底部
                 return w;
             }, outDir, log);
 
-            // AI 模型板块的**最底部**：外部依赖区块（2026-09-20 新增）。
+            // AI 功能板块的**最底部**：外部依赖区块（2026-09-20 新增）。
             // 为什么单独一张：依赖行是「异步探测 → 动态生成控件」两个坑叠在一起 ——
             //   ① 动态生成的按钮可能不继承窗口的隐式 Button 样式（深色主题下会变成浅色默认样式）
             //   ② 异步插入晚于"滚到底"，上一版快照里只剩一个区块标题、状态行与按钮完全看不见
             // 所以这里用同步入口先把行建出来再滚到底。这一张就是"必须出图才发现"的典型。
-            Capture("03c-设置-AI 模型板块（底部·外部依赖）", () =>
+            Capture("03c-设置-AI 功能板块（底部·外部依赖）", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 1;
+                w.NavList.SelectedIndex = 2;      // 2 = 「AI 功能」
                 w.PrepareSkillDepsForSnapshot();
                 return w;
             }, outDir, log);
@@ -135,7 +169,7 @@ internal static class UiSnapshot
             Capture("13-设置-全启用空态", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 4;
+                w.NavList.SelectedIndex = 5;   // 5 = 「灵感速览」（索引 2026-09-23 因新增板块 +1）
                 return w;
             }, outDir, log);
 
@@ -149,12 +183,11 @@ internal static class UiSnapshot
             }, outDir, log);
 
             // 文件与网盘板块（2026-09-16）：设置页新增的一整块，含三个按钮行与多段说明文字。
-            // 8 = 「文件与网盘」（0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览 / 5 输入框 /
-            //                  6 云同步 / 7 待办与提醒 / 8 文件与网盘 / 9 通用）
+            // 9 = 「文件与网盘」（索引 2026-09-23 因新增「AI 功能」板块整体 +1）
             Capture("15-设置-文件与网盘板块", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 8;
+                w.NavList.SelectedIndex = 9;
                 return w;
             }, outDir, log);
 
@@ -173,7 +206,7 @@ internal static class UiSnapshot
             Capture("17-设置-文件与网盘板块（下半部分）", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 8;
+                w.NavList.SelectedIndex = 9;   // 9 = 「文件与网盘」（索引 2026-09-23 因新增板块 +1）
                 w.ScrollToEndForSnapshot();
                 return w;
             }, outDir, log);
@@ -214,14 +247,14 @@ internal static class UiSnapshot
                 () => new DropActionCard("3 个文件", "5.2 MB · 来自文件管理器",
                     showGetNote: false, getNoteAvailable: true, opacity: 1.0), outDir, log);
 
-            // 设置「显示」板块（3 = 显示：0 热键 / 1 AI 模型 / 2 外观 / 3 显示 / 4 灵感速览）。
+            // 设置「显示」板块（4 = 显示；索引 2026-09-23 因新增「AI 功能」板块 +1）。
             // ⚠ 设计稿原写「外观」板块（PanelAppearance），与实际不符 —— 三个透明度滑块其实都在
             //   「显示」（PanelDisplay）里，拖放这三项也落在同一板块（理由见 SettingsWindow.xaml 的注释）。
             //   新增设置项属 REGRESSION 维护触发条件，这里出图核验控件没被挤出可视区、默认值正确。
             Capture("24-设置-显示板块（含拖放设置）", () =>
             {
                 var w = new SettingsWindow(settings, noteService: notes);
-                w.NavList.SelectedIndex = 3;
+                w.NavList.SelectedIndex = 4;
                 return w;
             }, outDir, log);
 

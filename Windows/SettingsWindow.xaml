@@ -269,6 +269,7 @@
                          SelectionChanged="NavList_SelectionChanged">
                     <ListBoxItem Content="热键"/>
                     <ListBoxItem Content="AI 模型"/>
+                    <ListBoxItem Content="AI 功能"/>
                     <ListBoxItem Content="外观"/>
                     <ListBoxItem Content="显示"/>
                     <ListBoxItem Content="灵感速览"/>
@@ -410,53 +411,40 @@
                     </Border>
                 </StackPanel>
 
-                <!-- ── 板块 1：AI 模型 ── -->
+                <!-- ── 板块 1：AI 模型（供应商 × 模型，2026-09-23 多供应商改造） ──
+                     改造前这里是四个扁平字段（供应商下拉 / BaseUrl / Key / 模型名），
+                     现已换成「供应商卡片列表 + 独立编辑页」；其余 AI 设置移到下面的「AI 功能」板块。 -->
+                <StackPanel x:Name="PanelAiModel" Margin="24,18" Visibility="Collapsed">
+                    <TextBlock Text="模型供应商" Foreground="#E0E0E0" FontSize="13" FontWeight="SemiBold" Margin="0,2,0,2"/>
+                    <TextBlock Text="每家供应商独立保存自己的 API 地址与密钥，各自带一组模型。点卡片右侧「编辑」配置它。"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                    <StackPanel x:Name="AiProviderList"/>
+
+                    <TextBlock x:Name="AiProviderEmptyText"
+                               Text="还没有配置任何供应商。在下面选一个预置提供方，或添加自定义提供方。"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                        <ComboBox x:Name="AiNewPresetCombo" Width="200" Height="30"
+                                  Style="{StaticResource DarkComboBox}"
+                                  ToolTip="预置提供方（API 地址已知，加完只需填 Key）"/>
+                        <Button x:Name="BtnAddPresetProvider" Content="添加提供方"
+                                Width="110" Height="30" Margin="8,0,0,0"
+                                Click="BtnAddPresetProvider_Click"/>
+                        <Button x:Name="BtnAddCustomProvider" Content="添加自定义提供方"
+                                Width="140" Height="30" Margin="8,0,0,0"
+                                Click="BtnAddCustomProvider_Click"/>
+                    </StackPanel>
+
+                    <TextBlock x:Name="AiActiveModelText" Text=""
+                               Foreground="#CCCCCC" FontSize="12" TextWrapping="Wrap" Margin="0,18,0,0"/>
+                    <TextBlock Text="上面是 AI 问答当前使用的模型。切换模型的入口后续加在 AI 问答那边 —— 本期只落了数据字段与解析通路，切换时只需改一个值。"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                </StackPanel>
+
+                <!-- ── 板块 2：AI 功能（原「AI 模型」板块里除供应商/模型之外的设置，2026-09-23 拆出） ── -->
                 <StackPanel x:Name="PanelAi" Margin="24,18" Visibility="Collapsed">
-                    <DockPanel Margin="0,4">
-                        <TextBlock Text="模型供应商" Width="130" VerticalAlignment="Center"/>
-                        <ComboBox x:Name="AiProviderCombo" Style="{StaticResource DarkComboBox}"
-                                  SelectionChanged="AiProvider_SelectionChanged"/>
-                    </DockPanel>
-
-                    <DockPanel Margin="0,8">
-                        <TextBlock Text="API Base URL" Width="130" VerticalAlignment="Center"/>
-                        <TextBox x:Name="AiBaseUrlInput" Style="{StaticResource DarkTextBox}"
-                                 TextChanged="AiBaseUrl_TextChanged"/>
-                    </DockPanel>
-
-                    <DockPanel Margin="0,8">
-                        <TextBlock Text="API Key（用户自备）" Width="130" VerticalAlignment="Center"/>
-                        <Button x:Name="AiKeyApplyLink" DockPanel.Dock="Right" Content="申请 Key"
-                                Click="AiKeyApplyLink_Click" ToolTip="用系统浏览器打开该供应商的 API Key 申请页"
-                                Margin="6,0,0,0"/>
-                        <Button x:Name="AiKeyToggle" DockPanel.Dock="Right" Content="👁"
-                                Click="AiKeyToggle_Click" ToolTip="显示 / 隐藏密钥"
-                                Width="34" Padding="2,2" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="6,0,6,0"/>
-                        <Grid>
-                            <!-- 星号态：PasswordBox；明文态：切到下方 TextBox 显示明文，两者各自落盘、切换时单向同步 -->
-                            <PasswordBox x:Name="AiApiKeyInput" PasswordChanged="AiApiKey_PasswordChanged"
-                                         VerticalContentAlignment="Center" Padding="6,4"/>
-                            <TextBox x:Name="AiApiKeyPlain" Style="{StaticResource DarkTextBox}"
-                                     TextChanged="AiApiKeyPlain_TextChanged"
-                                     Visibility="Collapsed"
-                                     VerticalContentAlignment="Center"/>
-                        </Grid>
-                    </DockPanel>
-
-                    <DockPanel Margin="0,8">
-                        <TextBlock Text="模型名称" Width="130" VerticalAlignment="Center"/>
-                        <TextBox x:Name="AiModelInput" Style="{StaticResource DarkTextBox}"
-                                 TextChanged="AiModel_TextChanged"/>
-                    </DockPanel>
-
-                    <DockPanel Margin="0,8">
-                        <TextBlock Text="长度上限" Width="130" VerticalAlignment="Center"/>
-                        <TextBox x:Name="AiMaxTokensInput" Style="{StaticResource DarkTextBox}"
-                                 TextChanged="AiMaxTokens_TextChanged"/>
-                    </DockPanel>
-                    <TextBlock Text="回答长度上限（token 数，默认 4096；此前不传由供应商默认值决定，常致长回答被截断。不同模型输出上限不同，过大可能被供应商拒绝）"
-                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
-
                     <!-- ── 附件（图片/文档）相关（2026-09-14） ── -->
                     <DockPanel Margin="0,12">
                         <TextBlock Text="图片清晰度" Width="130" VerticalAlignment="Center"/>
@@ -501,18 +489,7 @@
                     <TextBlock Text="工具结果喂回模型前的单条截断阈值（字符数，默认 8000；过低长笔记信息不全）"
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
 
-                    <DockPanel Margin="0,12,0,0">
-                        <Button x:Name="BtnTestAi" Content="测试连接"
-                                Width="96" Height="30" HorizontalAlignment="Left"
-                                Click="BtnTestAi_Click"/>
-                        <TextBlock x:Name="AiTestResult"
-                                   Text=""
-                                   Foreground="#CCCCCC"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Margin="12,0,0,0"
-                                   VerticalAlignment="Center"/>
-                    </DockPanel>
+                    <!-- 「测试连接」已随编辑器迁到供应商编辑页（按供应商各自测，2026-09-23） -->
 
                     <!-- ── 得到大脑（开放平台）凭证：按钮「存到得到大脑」与对话推送共用 ── -->
                     <Separator Margin="0,18,0,6" Background="#3A3A3A"/>

@@ -1,3 +1,4 @@
+using FocusCapture.Models;
 using FocusCapture.Services;
 using FocusCapture.Services.AI;
 using FocusCapture.Services.Baidu;
@@ -25,7 +26,6 @@ public partial class SettingsWindow : Window
     private bool _capturing;
     private Action<Models.HotkeyBinding>? _onCaptureDone;
     private bool _suppressEvents = true; // 抑制 InitializeComponent 期间的 ValueChanged 事件
-    private bool _testingAi;
 
     public SettingsWindow(Models.AppSettings s, HotkeyService? hk = null, Action? onChanged = null,
         NoteService? noteService = null, Func<SyncEngine?>? syncEngineProvider = null, Action? onSyncConfigChanged = null,
@@ -72,13 +72,13 @@ public partial class SettingsWindow : Window
     }
 
     private readonly List<SettingEntry> _searchIndex = new();
-    private readonly string[] _sectionNames = { "热键", "AI 模型", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "文件与网盘", "通用" };
+    private readonly string[] _sectionNames = { "热键", "AI 模型", "AI 功能", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "文件与网盘", "通用" };
     private bool _navSuppress; // 程序化切换导航选中项时抑制事件
 
     /// <summary>板块面板列表，顺序与 _sectionNames / 左侧导航一一对应</summary>
     private StackPanel[] SectionPanels() => new[]
     {
-        PanelHotkey, PanelAi, PanelAppearance, PanelDisplay, PanelQuickView,
+        PanelHotkey, PanelAiModel, PanelAi, PanelAppearance, PanelDisplay, PanelQuickView,
         PanelInput, PanelSync, PanelTodo, PanelFiles, PanelGeneral
     };
 
@@ -290,11 +290,11 @@ public partial class SettingsWindow : Window
             QuickViewWindow.MinWidthLimit, QuickViewWindow.MaxWidthLimit)).ToString();
         QuickViewTopmostCheck.IsChecked = _settings.QuickViewTopmost;
         RebuildToolbarEditor();
-        // 供应商下拉：6 预设 + 自定义（Tag=null 表示自定义）
-        AiProviderCombo.Items.Clear();
+        // 预置提供方下拉：只列预置（地址已知，选它就不用自己填地址）；自定义走另一个按钮
+        AiNewPresetCombo.Items.Clear();
         foreach (var p in AiProviders.Presets)
-            AiProviderCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
-        AiProviderCombo.Items.Add(new ComboBoxItem { Content = AiProviders.Custom, Tag = null });
+            AiNewPresetCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
+        if (AiNewPresetCombo.Items.Count > 0) AiNewPresetCombo.SelectedIndex = 0;
 
         // 图片清晰度档位：索引即档位值（0 省流 / 1 标准 / 2 高清），与 ChatAttachmentService.QualitySpec 对应
         AiImageQualityCombo.Items.Clear();
@@ -302,10 +302,7 @@ public partial class SettingsWindow : Window
         AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "标准（长边 1568）" });
         AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "高清（长边 2048）" });
 
-        AiBaseUrlInput.Text = _settings.AiBaseUrl;
-        AiApiKeyInput.Password = _settings.AiApiKey;
-        AiModelInput.Text = _settings.AiModel;
-        AiMaxTokensInput.Text = _settings.AiMaxTokens.ToString();
+        RebuildAiProviderList();          // 多供应商卡片列表（2026-09-23）
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
@@ -317,11 +314,7 @@ public partial class SettingsWindow : Window
         GetNoteClientIdInput.Text = _settings.GetNoteClientId;
         GetNoteTestResult.Text = "";
         LogRetentionInput.Text = _settings.LogRetentionDays.ToString();
-        AiTestResult.Text = "";
-        AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
-        // 按 BaseUrl 反推选中项（匹配不上→自定义）
-        SelectProviderByUrl(_settings.AiBaseUrl);
         UpdateIconUI();
         LoadSyncSettings();
         LoadFileSettings();
@@ -1265,20 +1258,6 @@ public partial class SettingsWindow : Window
         CommitToolbarConfig();
     }
 
-    private void AiBaseUrl_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
-        _settings.Save();
-        SelectProviderByUrl(_settings.AiBaseUrl);   // 手改 BaseUrl 后反推：匹配不上自动切「自定义」
-    }
-
-    private void AiApiKey_PasswordChanged(object sender, RoutedEventArgs e)
-    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyInput.Password; _settings.Save(); }
-
-    private void AiModel_TextChanged(object sender, TextChangedEventArgs e)
-    { if (_suppressEvents) return; _settings.AiModel = AiModelInput.Text.Trim(); _settings.Save(); }
-
     private void AgentEnabled_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressEvents) return;
@@ -1428,88 +1407,235 @@ public partial class SettingsWindow : Window
         AppLog.ApplyRetention(clamped); // 立即生效并清理过期日志
     }
 
-    // ── 供应商联动 / 密钥显隐 / 申请跳转 ──
+    // ══════════════ 模型供应商列表 / 编辑（2026-09-23 多供应商改造） ══════════════
 
-    /// <summary>按 BaseUrl 反推预设并选中对应项；匹配不上选「自定义」。同步更新跳转按钮可见性。
-    /// 注意：保存并恢复 _suppressEvents 原值——此方法会在 LoadSettings（抑制中）与用户改 BaseUrl（未抑制）两种场景调用，
-    /// 不可在 finally 强制设 false，否则会提前解除 LoadSettings 的全程抑制，致后续板块回填误触发事件。</summary>
-    private void SelectProviderByUrl(string? baseUrl)
+    /// <summary>
+    /// 界面快照专用（与其它 Seed*ForSnapshot 同套做法）：造两家供应商再刷列表。
+    ///
+    /// <para>为什么必须塞数据：快照跑在隔离沙箱里，settings.json 是全新的、一个供应商都没有，
+    /// 不塞的话这张图只有一行空态提示 —— 而卡片布局（长地址省略、按钮对齐、**状态点五种配色**）
+    /// 全都看不到。出图就是为了看这些。</para>
+    ///
+    /// <para>刻意不调 Save()：快照只渲染，不写盘（硬规则 0）。</para>
+    /// </summary>
+    internal void SeedAiProvidersForSnapshot()
     {
-        var prev = _suppressEvents;
-        _suppressEvents = true;
-        try
+        _settings.AiModelProviders.Clear();
+        _settings.AiModelProviders.Add(new AiProviderEntry
         {
-            var matched = AiProviders.MatchByUrl(baseUrl);
-            int idx = -1;
-            for (int i = 0; i < AiProviders.Presets.Count; i++)
-                if (ReferenceEquals(AiProviders.Presets[i], matched)) { idx = i; break; }
-            AiProviderCombo.SelectedIndex = idx >= 0 ? idx : AiProviders.Presets.Count;   // 最后一项=自定义
-            UpdateKeyApplyVisibility(matched is not null);
-        }
-        finally { _suppressEvents = prev; }
+            Id = "snap1", Name = "Agnes 中国站", BaseUrl = "https://apihub.agnes-ai.cn/v1",
+            ApiKey = "sk-snapshot-not-a-real-key",
+            LastTestedAt = "2026-09-23T20:40:00", LastTestStatus = "Ok",
+            Models = { new AiModelEntry { Id = "agnes-3.0-flash", DisplayName = "Agnes 3.0 Flash" } },
+        });
+        _settings.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "snap2", Name = "siliconflow", BaseUrl = "https://api.siliconflow.cn/v1",
+            ApiKey = "sk-snapshot-not-a-real-key",
+            LastTestedAt = "2026-09-23T20:41:00", LastTestStatus = "Account",
+            Models =
+            {
+                new AiModelEntry
+                {
+                    Id = "deepseek-ai/DeepSeek-V4-Flash", DisplayName = "DeepSeek V4 Flash",
+                    ContextWindow = 1048576, MaxOutputTokens = 393216,
+                },
+            },
+        });
+        _settings.ActiveModelKey = "snap1/agnes-3.0-flash";
+        RebuildAiProviderList();
     }
 
-    private void UpdateKeyApplyVisibility(bool visible)
-        => AiKeyApplyLink.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-
-    /// <summary>选预设→自动填 BaseUrl；选自定义→清空 BaseUrl 交给用户自行输入。</summary>
-    private void AiProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>
+    /// 重建供应商卡片列表。**整表重建在这里是安全的**：卡片上没有正在编辑的中间态 ——
+    /// 用户真正在编辑的东西在独立的编辑窗口里，改完才回来刷这张列表。
+    /// </summary>
+    private void RebuildAiProviderList()
     {
-        if (_suppressEvents) return;
-        var preset = (AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as AiProviderPreset;
-        UpdateKeyApplyVisibility(preset is not null);
-        if (preset is not null)
-        {
-            if (AiBaseUrlInput.Text.Trim() != preset.BaseUrl)
-                AiBaseUrlInput.Text = preset.BaseUrl;   // 触发 AiBaseUrl_TextChanged 落盘（反推仍命中本预设，不切自定义）
-        }
-        else
-        {
-            // 自定义：清空 BaseUrl，交给用户自行输入（触发 TextChanged 落空值并反推仍为自定义）
-            if (!string.IsNullOrEmpty(AiBaseUrlInput.Text))
-                AiBaseUrlInput.Text = "";
-        }
+        AiProviderList.Children.Clear();
+        foreach (var p in _settings.AiModelProviders)
+            AiProviderList.Children.Add(BuildProviderCard(p));
+
+        AiProviderEmptyText.Visibility = _settings.AiModelProviders.Count == 0
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        var active = AiModelResolver.ResolveActive(_settings);
+        AiActiveModelText.Text = active is null
+            ? "当前使用模型：（未配置）"
+            : $"当前使用模型：{active.DisplayLabel}"
+              + (active.ProviderId == AiModelResolver.LegacyProviderId ? "（读自旧版单供应商配置）" : "");
     }
 
-    private bool _aiKeyVisible;
-    private void AiKeyToggle_Click(object sender, RoutedEventArgs e)
+    /// <summary>建一张供应商卡片：状态点 + 名称/摘要 + 编辑/删除。</summary>
+    private FrameworkElement BuildProviderCard(AiProviderEntry provider)
     {
-        _aiKeyVisible = !_aiKeyVisible;
-        if (_aiKeyVisible)
+        var card = new Border
         {
-            // 切到明文：把 PasswordBox 当前内容带到明文框（设 Text 会触发 TextChanged，抑制避免重复落盘）
-            var prev = _suppressEvents;
-            _suppressEvents = true;
-            try { AiApiKeyPlain.Text = AiApiKeyInput.Password; }
-            finally { _suppressEvents = prev; }
-            AiApiKeyInput.Visibility = Visibility.Collapsed;
-            AiApiKeyPlain.Visibility = Visibility.Visible;
-            AiApiKeyPlain.Focus();
-            AiApiKeyPlain.CaretIndex = AiApiKeyPlain.Text.Length;
-        }
-        else
+            Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12, 8, 12, 8),
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        card.Child = grid;
+
+        var dot = new System.Windows.Shapes.Ellipse
         {
-            // 切回星号：把明文框内容带回 PasswordBox
-            var prev = _suppressEvents;
-            _suppressEvents = true;
-            try { AiApiKeyInput.Password = AiApiKeyPlain.Text; }
-            finally { _suppressEvents = prev; }
-            AiApiKeyPlain.Visibility = Visibility.Collapsed;
-            AiApiKeyInput.Visibility = Visibility.Visible;
-        }
+            Width = 8,
+            Height = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+            Fill = new SolidColorBrush(ProviderStatusColor(provider.LastTestStatus)),
+            ToolTip = ProviderStatusTooltip(provider),
+        };
+        Grid.SetColumn(dot, 0);
+        grid.Children.Add(dot);
+
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(provider.Name) ? "（未命名）" : provider.Name,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            FontSize = 13,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        var preset = AiProviders.MatchByUrl(provider.BaseUrl);
+        text.Children.Add(new TextBlock
+        {
+            Text = $"{provider.Models.Count} 个模型 · {preset?.Name ?? AiProviders.Custom} · {provider.BaseUrl}",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var editBtn = new Button { Content = "编辑", Width = 64, Margin = new Thickness(8, 0, 0, 0) };
+        editBtn.Click += (_, _) => EditProvider(provider);
+        actions.Children.Add(editBtn);
+        var delBtn = new Button { Content = "删除", Width = 64, Margin = new Thickness(6, 0, 0, 0) };
+        delBtn.Click += (_, _) => DeleteProvider(provider);
+        actions.Children.Add(delBtn);
+        Grid.SetColumn(actions, 2);
+        grid.Children.Add(actions);
+
+        return card;
     }
 
-    /// <summary>明文态编辑：落盘真实值。星号态编辑走 AiApiKey_PasswordChanged。切换时单向同步由 AiKeyToggle_Click 负责。</summary>
-    private void AiApiKeyPlain_TextChanged(object sender, TextChangedEventArgs e)
-    { if (_suppressEvents) return; _settings.AiApiKey = AiApiKeyPlain.Text; _settings.Save(); }
-
-    private void AiKeyApplyLink_Click(object sender, RoutedEventArgs e)
+    /// <summary>状态点配色。分类型是因为**断网时所有供应商会一起失败**，若不分类用户会以为 Key 全坏了。</summary>
+    private static Color ProviderStatusColor(string status) => status switch
     {
-        var preset = (AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as AiProviderPreset;
-        var url = preset?.KeyApplyUrl;
-        if (string.IsNullOrEmpty(url)) return;
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
-        catch { /* 无默认浏览器或被取消，静默 */ }
+        "Ok" => Color.FromRgb(0x4C, 0xAF, 0x50),       // 绿：上次检测通过
+        "Account" => Color.FromRgb(0xE5, 0xA3, 0x35),  // 橙：余额/套餐问题 —— 重试无用，得去充值
+        "Key" => Color.FromRgb(0xE5, 0x39, 0x35),      // 红：Key 无效
+        "Server" => Color.FromRgb(0xE5, 0x39, 0x35),   // 红：供应商侧问题
+        "Network" => Color.FromRgb(0x88, 0x88, 0x88),  // 灰：本机网络不通，与配置无关
+        _ => Color.FromRgb(0x66, 0x66, 0x66),          // 深灰：尚未检测
+    };
+
+    /// <summary>状态点的悬停文案。措辞刻意**不写「可用」** —— 它只代表「上次检测的结果 + 时间」。</summary>
+    private static string ProviderStatusTooltip(AiProviderEntry provider)
+    {
+        var when = TryFormatTestTime(provider.LastTestedAt);
+        return provider.LastTestStatus switch
+        {
+            "Ok" => $"上次检测：通过（{when}）",
+            "Account" => $"上次检测：账户余额不足或套餐到期（{when}）",
+            "Key" => $"上次检测：API Key 未通过验证（{when}）",
+            "Server" => $"上次检测：供应商暂时不可用（{when}）",
+            "Network" => $"上次检测：本机网络不可用，与配置无关（{when}）",
+            _ => "尚未检测过 —— 打开编辑页点「测试连接」即可检测",
+        };
+    }
+
+    private static string TryFormatTestTime(string? iso)
+        => DateTime.TryParse(iso ?? "", out var t) ? t.ToString("yyyy-MM-dd HH:mm") : "时间未知";
+
+    private void BtnAddPresetProvider_Click(object sender, RoutedEventArgs e)
+    {
+        if ((AiNewPresetCombo.SelectedItem as ComboBoxItem)?.Tag is not AiProviderPreset preset) return;
+        OpenProviderEditor(new AiProviderEntry
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = preset.Name,
+            BaseUrl = preset.BaseUrl,
+        }, isNew: true);
+    }
+
+    private void BtnAddCustomProvider_Click(object sender, RoutedEventArgs e)
+        => OpenProviderEditor(new AiProviderEntry
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = AiProviders.Custom,
+            BaseUrl = "",
+        }, isNew: true);
+
+    private void EditProvider(AiProviderEntry provider) => OpenProviderEditor(provider, isNew: false);
+
+    /// <summary>
+    /// 打开编辑窗口。**编辑的是草稿副本** —— 点「取消」或直接关窗，原配置一个字都不动。
+    /// 保存后才回写设置并通知主程序重建 provider（改完即生效，不用重启应用）。
+    /// </summary>
+    private void OpenProviderEditor(AiProviderEntry source, bool isNew)
+    {
+        var win = new AiProviderEditWindow(source.Clone()) { Owner = this };
+        if (win.ShowDialog() != true || win.Result is null) return;
+
+        var result = win.Result;
+        var idx = _settings.AiModelProviders.FindIndex(p => p.Id == source.Id);
+        if (idx >= 0) _settings.AiModelProviders[idx] = result;
+        else _settings.AiModelProviders.Add(result);
+
+        // 新建的、或当前还没指定模型的 → 顺手把它的第一个模型设为当前使用，
+        // 否则用户配完还得再找地方选一次（本期没有切换 UI）
+        if (isNew || string.IsNullOrWhiteSpace(_settings.ActiveModelKey))
+        {
+            var first = result.Models.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m.Id));
+            if (first != null) _settings.ActiveModelKey = result.Id + "/" + first.Id;
+        }
+
+        _settings.Save();
+        RebuildAiProviderList();
+        _onChanged?.Invoke();
+    }
+
+    private void DeleteProvider(AiProviderEntry provider)
+    {
+        var name = string.IsNullOrWhiteSpace(provider.Name) ? "（未命名）" : provider.Name;
+        var answer = System.Windows.MessageBox.Show(this,
+            $"确定删除供应商「{name}」吗？\n\n它的 API Key 与 {provider.Models.Count} 个模型配置会一起消失，且无法撤销。",
+            "删除供应商", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK) return;
+
+        _settings.AiModelProviders.RemoveAll(p => p.Id == provider.Id);
+
+        // 刚删的就是当前在用的 → 把当前使用模型挪到第一家可用模型，不留一个指向空气的键
+        if (_settings.ActiveModelKey.StartsWith(provider.Id + "/", StringComparison.Ordinal))
+        {
+            _settings.ActiveModelKey = "";
+            foreach (var p in _settings.AiModelProviders)
+            {
+                var m = p.Models.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Id));
+                if (m == null) continue;
+                _settings.ActiveModelKey = p.Id + "/" + m.Id;
+                break;
+            }
+        }
+
+        _settings.Save();
+        RebuildAiProviderList();
+        _onChanged?.Invoke();
     }
 
     private void AiAssistantName_TextChanged(object sender, TextChangedEventArgs e)
@@ -1518,14 +1644,6 @@ public partial class SettingsWindow : Window
         _settings.AiAssistantName = AiAssistantNameInput.Text.Trim();
         _settings.Save();
         _onChanged?.Invoke();
-    }
-
-    /// <summary>回答长度上限（token）：256~32768 合法才落盘，否则保留旧值（用户输入中途不落盘）</summary>
-    private void AiMaxTokens_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_suppressEvents) return;
-        if (int.TryParse(AiMaxTokensInput.Text.Trim(), out var v) && v is >= 256 and <= 32768)
-        { _settings.AiMaxTokens = v; _settings.Save(); }
     }
 
     /// <summary>Agent 工具轮数上限：1~50 合法才落盘</summary>
@@ -1542,49 +1660,6 @@ public partial class SettingsWindow : Window
         if (_suppressEvents) return;
         if (int.TryParse(AiToolResultLimitInput.Text.Trim(), out var v) && v is >= 500 and <= 65536)
         { _settings.AiToolResultLimit = v; _settings.Save(); }
-    }
-
-    private async void BtnTestAi_Click(object sender, RoutedEventArgs e)
-    {
-        if (_testingAi) return;
-        _testingAi = true;
-        try
-        {
-            // 先落盘当前输入框内容，确保用所见即所得的配置测试
-            _settings.AiBaseUrl = AiBaseUrlInput.Text.Trim();
-            _settings.AiApiKey = _aiKeyVisible ? AiApiKeyPlain.Text : AiApiKeyInput.Password;
-            _settings.AiModel = AiModelInput.Text.Trim();
-            _settings.Save();
-
-            if (string.IsNullOrWhiteSpace(_settings.AiModel))
-            {
-                AiTestResult.Text = "请先填写模型名称";
-                AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-                return;   // finally 会复位 _testingAi 与按钮
-            }
-
-            BtnTestAi.IsEnabled = false;
-            AiTestResult.Text = "连接中...";
-            AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
-
-            var provider = new OpenAICompatibleProvider(
-                _settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
-            var ok = await provider.TestConnectionAsync();
-
-            AiTestResult.Text = ok ? "连接成功" : "连接失败";
-            AiTestResult.Foreground = new SolidColorBrush(
-                ok ? Color.FromRgb(0x4C, 0xAF, 0x50) : Color.FromRgb(0xE5, 0x39, 0x35));
-        }
-        catch (Exception ex)
-        {
-            AiTestResult.Text = ex.Message;
-            AiTestResult.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-        }
-        finally
-        {
-            _testingAi = false;
-            BtnTestAi.IsEnabled = true;
-        }
     }
 
     private static void SetAutoStart(bool enable)
