@@ -427,8 +427,15 @@ public class ChatSyncEngine
         SetChatStatus($"冲突：会话 {sessionId[..8]}… 在另一设备有更新，已跳过上传（等待处理）");
     }
 
-    // ── 分组清单同步（阶段一：按 Id 并集；多端同名分组合并 + GroupId 重映射属分组管理功能，随阶段二 UI 交付） ──
+    // ── 分组清单同步 ──
 
+    /// <summary>
+    /// 分组清单同步。**2026-09-23 重写合并段**，修掉「跨端改名被回滚」：
+    /// 旧实现是 `foreach (var (id, g) in localById) merged[id] = g;` —— 同 Id 无条件用本地覆盖云端，
+    /// 于是 A 端改的分组名会被 B 端下一轮同步推回旧值，再传回 A，A 也变回去（设计稿 §11-3）。
+    /// 现在同 Id 冲突按字段时间戳裁决（`NameUpdatedAt` / `InstructionUpdatedAt`）；旧清单没有时间戳
+    /// （反序列化为 default）时回退到"本地 wins"，保证升级后行为不恶化。
+    /// </summary>
     private async Task SyncGroupsAsync()
     {
         var localGroups = ChatGroupStore.Load();
@@ -446,10 +453,17 @@ public class ChatSyncEngine
             }
             catch (JsonException) { /* 云端分组文件损坏：按空处理，本地并集覆盖回去 */ }
         }
-        foreach (var (id, g) in localById) merged[id] = g;   // 本地 wins 同 Id 冲突（无版本号，简单并集）
 
-        // 多端同名分组合并（阶段二）：按名称去重，胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序），
-        // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）
+        // 同 Id 冲突：逐字段 LWW（取代旧的"本地无条件 wins"）
+        foreach (var (id, localGroup) in localById)
+        {
+            merged[id] = merged.TryGetValue(id, out var cloudGroup)
+                ? ChatGroupMerge.MergeSameId(cloudGroup, localGroup)
+                : localGroup;
+        }
+
+        // 多端同名分组合并：胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序）；
+        // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）。
         foreach (var g in merged.Values)
             if (string.IsNullOrEmpty(g.DeviceId)) g.DeviceId = _settings.Sync.DeviceId;
 
@@ -462,6 +476,8 @@ public class ChatSyncEngine
                 .First();
             foreach (var loser in sameName.Where(g => !string.Equals(g.Id, winner.Id, StringComparison.Ordinal)))
             {
+                // 败者更新的名称/指令要先并进胜者，否则"早建的分组"会把"晚改的指令"一起吞掉
+                ChatGroupMerge.MergeLoserIntoWinner(winner, loser);
                 merged.Remove(loser.Id);
                 remap[loser.Id] = winner.Id;
             }
@@ -477,10 +493,17 @@ public class ChatSyncEngine
             await _storage.UploadFileAsync(CloudGroupsFile, cipher, CancellationToken.None).ConfigureAwait(false);
         }
 
-        // 本地清单对齐合并结果：云端有本地缺的分组落地（他端新建）；同名合并删掉的败者从清单移除
-        if (merged.Values.Any(g => !localById.ContainsKey(g.Id)) || remap.Count > 0)
-            ChatGroupStore.Save(merged.Values.ToList());
+        // 本地清单对齐合并结果（云端有本地缺的分组落地、同名合并删掉的败者从清单移除、字段裁决结果回写）。
+        // **只在内容真的变了才落盘** —— ChatGroupStore.Save 会触发 GroupsChanged → 启动上传防抖窗口，
+        // 每轮无脑保存等于"同步自己触发下一轮同步"，会空转烧掉坚果云 600 请求/30min 的额度。
+        var changed = remap.Count > 0
+            || merged.Count != localById.Count
+            || merged.Values.Any(g => !localById.TryGetValue(g.Id, out var l) || !ChatGroupMerge.IsSameGroup(g, l));
+        if (changed) ChatGroupStore.Save(merged.Values.ToList());
     }
+
+    // 合并裁决的三个纯函数已抽到 Services/Sync/ChatGroupMerge.cs ——
+    // 抽出来是为了能直接写检查点（埋在私有方法里时，除了拿两台真设备没法验证）
 
     /// <summary>同名分组合并后重映射：把本地会话文件中引用败者 GroupId 的改为胜者（Load → 改 → Save，
     /// Rev 自增 + SessionChanged 防抖窗口，重映射结果随下轮推送他端）。</summary>

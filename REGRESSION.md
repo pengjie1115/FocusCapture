@@ -63,10 +63,11 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **162** | 纯逻辑，秒级 | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **460** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs` 时**；交付前 |
+| **快层** | `tests/` | **175** | 纯逻辑，秒级 | **每次代码改动后** |
+| **慢层** | `tests/sync/` | **494** | 需引用主项目（编译较慢）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`** 时**；交付前 |
 
 当前覆盖：加密解密、时间解析、灵感速览标题栏目录（配置清洗/回退/像素预算，快层）、**剪贴板写入容错（占用重试 / 指数退避 / 绝不抛异常 / 空内容不写，快层 [5]，10 条）**；双向同步收敛、桶拆分、删除传播（含"他端可恢复"）、断网降级、游标保护、换授权码重传、密钥不一致提示、行身份与未到期待办（G 组）、**AI 附件（H 组：格式判定 / 文档抽文本 / 非 UTF-8 拒绝 / 压缩档位 / 会话只存引用不嵌 base64 / 会话往返保留混排偏移 / 旧会话兼容 / 孤儿清理）**、**网盘文件仓库（文件仓库组：句柄不可伪造 / 多设备合并规则 / 未上传不淘汰 / 数据目录校验，57 条）**、**Agent 工具（Agent 工具组：原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文，42 条）**、**悬浮球拖放保存（拖放保存组：判定顺序 FileDrop 优先 / 只认 UnicodeText / 哈希名换微信图片名 / 标题截断 / 文本类判定 / 严格 UTF-8 / 卡片头部 / 判定零副作用，46 条）**、**应用图标（应用图标组：图标源容错 / 两处同源 / 恢复默认回落 / 角标完整落在窗口内 / 数字居中 / 角标圆心在球外且悬停放大后仍在球外 / 重叠深度≤5px / 投影余地够淡完，21 条）**、**UI 线程封送（自验：发起端确实不在 UI 线程 / 回调被搬到 UI 线程 / 取消如实传回 / 无调度器与已停用一律按未确认，6 条）**、
+**会话分组与全文搜索（收藏保留分区 / 同名必须拒绝 / 改名与指令各带时间戳 / 删组后会话必须回到未分组 / 8 线程并发不丢分组 / 变更通知只在真改动时发 / 跨端合并三档裁决：本地新取本地、云端新取云端、旧数据本地 wins / 名称与指令各自独立裁决 / 同名合并不吞败者的指令 / CreatedAt 不同不算变化 / 全文搜索命中消息正文且排除 system 与 tool，34 条）**、
 **Skill 外部依赖与授权（自带优先定位 / 静态扫描识别与不误判 / 状态解析七种输入 / 真跑状态查询 / 设备码流拿到 device_code 与验证链接 / 二维码真出 PNG 且落在指定目录 / 失败必须返回 null /
 **依赖闸：未授权不得执行脚本、完成后同一次调用继续执行、不传依赖表则不预检 / 授权类失败的措辞与应用内入口 / 面向用户文案不得含开发者路径 / 候选目录顺序（自带 → 数据目录）与子进程 PATH 全前置 / NotConfigured 单列一态 / 验证链接提取 / 前置配置空转 / 无协议依赖的在位判定 / 注册式依赖表 / 兜底入口字段，54 条；⚠ 依赖闸三条自 2026-09-20 起用**桩依赖**（固定返回未授权），不再依赖真实 lark-cli 登录态 —— 当晚用户真机扫码授权后这三条曾全红，登录态是机器环境不是代码行为）**、
 **标记行挂靠与编辑=替换（跨文件 ref 挂靠：标记行与原笔记被拆进不同文件也能合并 / 同文件顺序颠倒且多条编辑行时按时间戳取最新 / 孤儿标记行带 RawLine 且删除必成功进回收站 / 编辑=替换不追加【编辑】行且旧行进回收站发墓碑 / 替换后旧【编辑】痕迹清理且【AI 释义】保留，20 条）**、
@@ -1056,6 +1057,23 @@
 > 另注：`builtin-skills/lark-cli` 与 `scripts/lark.py` 改过指路文案（「AI 模型」→「AI 功能」），
 > **已经落地过旧版技能的用户不会自动更新**（设计如此：落地即归用户）。
 > 只影响 AI 给用户指路时的说法，不影响功能。
+
+### B-21 会话分组缺陷修复（ChatGroupStore / ChatGroupService / ChatGroupMerge / HistoryDrawer，2026-09-23 新增）
+
+> **为什么这一组必须人工验**：慢层「会话分组」组 34 条已经守住查重、时间戳、删除顺序、并发与合并裁决；
+> 但**跨端改名是否真的不再回滚**要两台设备连着同一片云实跑一遍，**置顶会话是否真的在分组里可见**要肉眼看界面 ——
+> 这两件自动化都证明不了（理由同 B-20）。
+
+| 场景 | 期望 |
+|---|---|
+| ⚠ **跨端改名**（A 端把「闲聊」改成「日常闲聊」并同步，B 端再同步一次） | B 端显示**新名字**，且不会把旧名字推回云端（修复前：B 端会把 A 的改名回滚，再传回来 A 也变回去） |
+| ⚠ **一条会话既置顶、又在某个分组里** | 进该分组能看到它，顶部「置顶」分区也能看到它（修复前：分组区里完全看不到） |
+| ⚠ 连续快速点「新建分组」多次（中途不等同步） | 建出来的分组**一个都不少**（修复前：可能被后台同步周期用旧清单覆盖掉） |
+| ⚠ 会话右键 → 分组到… → 新建分组…，输入一个**已存在**的分组名 | 提示「已存在同名分组」，且**该会话仍留在原处**（修复前：静默塞进老分组；更糟的是返回 null 会被当成"移到未分组"把会话挪走） |
+| ⚠ 删除一个**非空**分组 | 组内会话出现在「未分组」区，且**不出现**「（未知分组）」这类幽灵分区 |
+| ⚠ 分组指令 | 在分组里写一句指令后重进该分组 → 指令仍在；超过 2000 字被自动截断 |
+
+**自动化已覆盖（不必手工重复）**：收藏保留分区不可改名/删除/加指令、同名拒绝、时间戳刷新、删组顺序、8 线程并发不丢分组、变更通知次数、跨端合并三档裁决、全文搜索命中正文且排除 system/tool。
 
 ## 五、维护约定
 

@@ -53,7 +53,8 @@ public class ChatGroupsWindow : Window
     private void Reload()
     {
         _listPanel.Children.Clear();
-        var groups = ChatGroupStore.Load();
+        // 收藏是系统保留分区（2026-09-23）：不出现在分组管理窗里，也不允许重命名 / 删除
+        var groups = ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)).ToList();
         if (groups.Count == 0)
         {
             _listPanel.Children.Add(new System.Windows.Controls.TextBlock
@@ -99,15 +100,16 @@ public class ChatGroupsWindow : Window
     {
         var name = PromptDialog.Show(this, "新建分组", "分组名称：");
         if (string.IsNullOrWhiteSpace(name)) return;
-        var groups = ChatGroupStore.Load();
-        if (groups.Any(g => g.Name == name))
+
+        // 2026-09-23：查重与落盘统一走 ChatGroupService —— 原先窗口与历史抽屉各写一套，
+        // 撞名行为还不一致（这里拒绝、抽屉那边静默复用），现在只有一处定义
+        ChatGroupService.Create(name, out var result);
+        if (result == ChatGroupService.CreateResult.NameExists)
         {
             System.Windows.MessageBox.Show(this, "已存在同名分组", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        groups.Add(ChatGroupStore.Create(name));
-        ChatGroupStore.Save(groups);
         Reload();
     }
 
@@ -115,17 +117,16 @@ public class ChatGroupsWindow : Window
     {
         var name = PromptDialog.Show(this, "重命名分组", "新名称：", group.Name);
         if (string.IsNullOrWhiteSpace(name) || name == group.Name) return;
-        var groups = ChatGroupStore.Load();
-        var target = groups.FirstOrDefault(g => g.Id == group.Id);
-        if (target == null) return;
-        if (groups.Any(g => g.Id != group.Id && g.Name == name))
+
+        if (!ChatGroupService.Rename(group.Id, name, out var error))
         {
-            System.Windows.MessageBox.Show(this, "已存在同名分组", "提示",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            if (error.Length > 0)
+            {
+                System.Windows.MessageBox.Show(this, error, "提示",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
             return;
         }
-        target.Name = name;
-        ChatGroupStore.Save(groups);
         Reload();
     }
 
@@ -136,29 +137,11 @@ public class ChatGroupsWindow : Window
                 "删除分组", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
-        var groups = ChatGroupStore.Load();
-        groups.RemoveAll(g => g.Id == group.Id);
-        ChatGroupStore.Save(groups);
-
-        // 组内会话回未分组：逐个改字段 Save（Rev 自增 + NotifyLocalChange，同步管道自动上传）
-        foreach (var file in SafeSessionFiles())
-        {
-            try
-            {
-                var svc = ChatSessionService.Load(file);
-                if (svc == null || svc.GroupId != group.Id) continue;
-                svc.GroupId = "";
-                svc.Save();
-            }
-            catch { /* 单个文件失败不影响其余 */ }
-        }
+        // 2026-09-23 顺序修正：先清组内会话的分组引用、再删分组记录 —— 原先反着来，
+        // 中途失败会留下「分组没了但会话还挂着失效 GroupId」，界面上冒出一个「（未知分组）」幽灵分区。
+        // 现在整个顺序由 ChatGroupService 保证。
+        ChatGroupService.DeleteGroup(group.Id, out _);
         Reload();
-    }
-
-    private static IEnumerable<string> SafeSessionFiles()
-    {
-        var dir = FocusCapturePaths.Combine("chat_history");
-        return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*.json") : Array.Empty<string>();
     }
 
     private static Button MakeLinkButton(string text, RoutedEventHandler onClick) => new Button

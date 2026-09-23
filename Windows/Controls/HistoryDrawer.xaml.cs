@@ -159,8 +159,16 @@ public partial class HistoryDrawer : UserControl
 
         foreach (var item in _flatItems)
         {
-            if (item.Pinned) { pinned.Add(item); continue; }
-            if (string.IsNullOrEmpty(item.GroupId)) ungrouped.Add(item);
+            // 2026-09-23 修：置顶会话**同时**进置顶区与所属分组，不再 continue 摘出。
+            // 原先的 `if (item.Pinned) { pinned.Add(item); continue; }` 会让「既置顶又在某分组」的会话
+            // 在分组区彻底看不到 —— 与需求「置顶会话两处都显示」正面冲突。
+            if (item.Pinned) pinned.Add(item);
+
+            if (string.IsNullOrEmpty(item.GroupId))
+            {
+                // 置顶的未分组会话只在置顶区出现，不在「未分组」再列一遍 —— 两者同屏，重复无信息量
+                if (!item.Pinned) ungrouped.Add(item);
+            }
             else
             {
                 if (!byGroup.TryGetValue(item.GroupId, out var list))
@@ -175,8 +183,10 @@ public partial class HistoryDrawer : UserControl
             foreach (var i in pinned) Items.Add(i);
         }
 
-        // 分组顺序按 chat_groups.json 清单顺序（Load 的 groups 顺序），清单外的悬空分组兜底追加
-        var groupList = ChatGroupStore.Load();
+        // 分组顺序按 chat_groups.json 清单顺序（Load 的 groups 顺序），清单外的悬空分组兜底追加。
+        // 收藏保留分区（2026-09-23 新增）刻意不在这里渲染 —— 它是批 2 新侧边栏的独立分区，
+        // 批 0 保持抽屉行为与改动前完全一致。
+        var groupList = ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)).ToList();
         var orderedIds = groupList.Select(g => g.Id)
             .Concat(byGroup.Keys.Where(id => groupList.All(g => g.Id != id)));
         foreach (var gid in orderedIds)
@@ -298,21 +308,26 @@ public partial class HistoryDrawer : UserControl
         {
             var name = PromptDialog.Show(Window.GetWindow(this), "新建分组", "分组名称：");
             if (string.IsNullOrWhiteSpace(name)) return;
-            onPicked(CreateGroup(name));
+            // 撞名时 CreateGroup 返回 null 且已弹出提示 —— 必须提前 return。
+            // 否则 null 会被 onPicked 当成「移到未分组」，把会话悄悄挪出原分组。
+            var newId = CreateGroup(name);
+            if (newId == null) return;
+            onPicked(newId);
         };
         parent.Items.Add(create);
     }
 
-    /// <summary>新建分组并落盘（查重：同名直接返回已有分组 Id）</summary>
-    private string CreateGroup(string name)
+    /// <summary>新建分组（2026-09-23：统一走 ChatGroupService，与「会话分组管理」窗口行为一致）。
+    /// 撞名返回 null 并就地提示 —— 原先这里是静默复用已有分组，用户以为新建了、实际把会话塞进了老组且无任何提示。</summary>
+    private string? CreateGroup(string name)
     {
-        var groups = ChatGroupStore.Load();
-        var exist = groups.FirstOrDefault(g => g.Name == name);
-        if (exist != null) return exist.Id;
-        var group = ChatGroupStore.Create(name);
-        groups.Add(group);
-        ChatGroupStore.Save(groups);
-        return group.Id;
+        var group = ChatGroupService.Create(name, out var result);
+        if (group != null) return group.Id;
+
+        if (result == ChatGroupService.CreateResult.NameExists)
+            MessageBox.Show(Window.GetWindow(this), "已存在同名分组", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        return null;
     }
 
     private static (string Name, ExportFormat Format)[] ExportFormatList() =>

@@ -70,6 +70,11 @@
          它错了的后果最阴：裁剪把「工具调用对」拆散 → 随机 400；估算不留余量 → 偶发超窗；
          图片按字符算 → 完全估不准。这三件都不报错，只在特定长会话里发作。 -->
     <Compile Include="..\Services\AI\ContextBudget.cs" Link="Src\ContextBudget.cs" />
+    <!-- 全文搜索的匹配纯函数（2026-09-23）：ChatSearchMatcher 刻意零项目依赖
+         （只吃 string、不用 AppLog、不碰配置），所以能在这层秒级测。
+         它错了的后果是**静默**的 —— 片段里的换行被压成空格后字符串长度变了，
+         若仍用替换前的下标做高亮，界面上的高亮会整体错位，且不报任何错。 -->
+    <Compile Include="..\Services\AI\ChatSearchMatcher.cs" Link="Src\ChatSearchMatcher.cs" />
   </ItemGroup>
 
 </Project>
