@@ -253,7 +253,8 @@ public partial class AIDialogWindow : Window
     {
         _noteService = noteService;
         _settings = settings;
-        _provider = new OpenAICompatibleProvider(settings.AiBaseUrl, settings.AiApiKey, settings.AiModel, settings.AiMaxTokens);
+        // 2026-09-23 多供应商改造：改走统一解析入口（配置 → provider 的唯一映射点）
+        _provider = AiModelResolver.CreateProvider(settings);
         InitializeComponent();
         DarkTitleBar.Enable(this);   // 2026-09-21：主动申请深色原生标题栏（WPF 默认白底，不申请就靠系统心情）
         // MessagesList.ItemsSource 在 Activate() 时按活跃会话绑定（多会话并行：切会话即切 Bubbles 源）
@@ -2444,18 +2445,22 @@ public static class AIDialogHelper
         if (!LicenseGate.EnsureAllowed(LicenseGate.FeatureAiChat, "AI 问答")) return;
         if (_noteService == null || _settings == null) return;
 
-        if (string.IsNullOrWhiteSpace(_settings.AiApiKey))
+        // 2026-09-23 多供应商改造：不再直判「AiApiKey / AiModel 是否为空」（那是单供应商时代的写法，
+        // 多供应商下这两个字段可能只是历史残留），改为按「当前使用模型」的解析结果判断。
+        // 提示仍分两种，比原来更具体：缺整体配置 / 缺该供应商的 Key。
+        var activeModel = AiModelResolver.ResolveActive(_settings);
+        if (activeModel == null)
         {
             System.Windows.MessageBox.Show(_owner ?? Application.Current.MainWindow,
-                "请先在设置中配置 API Key", "提示",
+                "请先在 设置 → AI 模型 中添加模型供应商并选择模型", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.AiModel))
+        if (string.IsNullOrWhiteSpace(activeModel.ApiKey))
         {
             System.Windows.MessageBox.Show(_owner ?? Application.Current.MainWindow,
-                "请先在设置 → AI 模型中填写模型名称", "提示",
+                "请先在 设置 → AI 模型 中填写该供应商的 API Key", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }

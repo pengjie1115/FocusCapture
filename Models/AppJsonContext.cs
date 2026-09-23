@@ -21,6 +21,12 @@ namespace FocusCapture;
 [JsonSerializable(typeof(SyncBucket))]
 // v3.9 标题栏可组装：AppSettings.QuickViewToolbarLeft/Right 为 List<string>，漏注册运行时抛 NotSupportedException。
 [JsonSerializable(typeof(List<string>))]
+// 2026-09-23 AI 模型多供应商：AppSettings.AiModelProviders 是 List<AiProviderEntry>。
+// 漏注册 → 运行时抛 NotSupportedException，**编译期零提示**（本文件已经因同类原因踩过两次）。
+[JsonSerializable(typeof(AiProviderEntry))]
+[JsonSerializable(typeof(List<AiProviderEntry>))]
+[JsonSerializable(typeof(AiModelEntry))]
+[JsonSerializable(typeof(List<AiModelEntry>))]
 internal partial class AppJsonContext : JsonSerializerContext
 {
 }

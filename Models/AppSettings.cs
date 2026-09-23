@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FocusCapture;
+using FocusCapture.Services;      // 迁移失败时要落日志（AppLog 在 Services 命名空间下）
+using FocusCapture.Services.AI;   // 迁移时按 BaseUrl 反查预置供应商名（AiProviders.MatchByUrl）
 
 namespace FocusCapture.Models;
 
@@ -59,11 +61,28 @@ public class AppSettings
     public ExportConfig? LastExportConfig { get; set; }
 
     // ── AI 模型 ──
+    // 【2026-09-23 多供应商改造】下面四个扁平字段是「单供应商时代」的遗留：
+    //   AiBaseUrl / AiApiKey / AiModel / AiMaxTokens
+    // 首次加载时由 MigrateLegacyAiConfig() 合成 AiModelProviders 里的第一条供应商；
+    // 之后新代码不再读它们（唯一的兜底读取在 Services/AI/AiModelResolver）。
+    // 刻意不删：回退旧版本时仍能读到配置，不至于让用户「降级即失联」。
     public string AiBaseUrl { get; set; } = "https://apihub.agnes-ai.cn/v1";
     public string AiApiKey { get; set; } = "";
     public string AiModel { get; set; } = "";   // 不再预置：模型更新快，交给用户自填
+    public int AiMaxTokens { get; set; } = 4096;  // 回答长度上限（token）= 请求体 max_tokens
+
+    // ── AI 模型：多供应商 × 多模型（2026-09-23 新增）──
+    /// <summary>已配置的供应商列表（每个自带 BaseUrl / Key / 若干模型）。</summary>
+    public List<AiProviderEntry> AiModelProviders { get; set; } = new();
+
+    /// <summary>
+    /// 当前使用的模型，格式 <c>&lt;providerId&gt;/&lt;modelId&gt;</c>。
+    /// 本期只留数据字段与解析入口（<see cref="AiModelResolver.ResolveActive"/>），
+    /// 切换 UI 在 AI 问答侧后续接入 —— 那时只需改这一个值，其余代码零改动。
+    /// </summary>
+    public string ActiveModelKey { get; set; } = "";
+
     public string AiAssistantName { get; set; } = "AI 问答";
-    public int AiMaxTokens { get; set; } = 4096;  // 回答长度上限（token）：此前不传由供应商默认值决定，常致长回答被 finish_reason=length 截断
     public int AiToolResultLimit { get; set; } = 8000;  // 工具结果喂回模型前的单条截断阈值（防超长结果撑爆上下文）
 
     // ── AI 附件（2026-09-14：问答输入框支持图片与文档）──
@@ -180,6 +199,7 @@ public class AppSettings
     // ── 序列化 ──
     public static AppSettings Load()
     {
+        AppSettings? loaded = null;
         try
         {
             var dir = Path.GetDirectoryName(ConfigPath)!;
@@ -188,12 +208,74 @@ public class AppSettings
             if (File.Exists(ConfigPath))
             {
                 var json = File.ReadAllText(ConfigPath);
-                var settings = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings);
-                if (settings != null) return settings;
+                loaded = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings);
             }
         }
-        catch { /* fall through to defaults */ }
-        return new AppSettings();
+        catch { /* 读不出来就用默认值 —— 与原行为一致 */ }
+
+        var settings = loaded ?? new AppSettings();
+
+        // 老配置迁移**刻意放在上面那个 try 之外**：它自带 try，失败时什么都不改。
+        // 若放进同一个 try，迁移里任何意外都会落进 catch → 返回 new AppSettings() → **用户配置全丢**。
+        // 2026-09-23 当天刚出过一次「配置被静默清空」的事故，这类风险一律不冒。
+        settings.MigrateLegacyAiConfig();
+        return settings;
+    }
+
+    /// <summary>
+    /// 老配置迁移（2026-09-23 多供应商改造）：把扁平的 AiBaseUrl / AiApiKey / AiModel / AiMaxTokens
+    /// 合成 <see cref="AiModelProviders"/> 里的第一条供应商。
+    ///
+    /// <para><b>幂等</b>：已有任何供应商就完全不动，防止重复迁移生成多条。</para>
+    /// <para><b>保命</b>：全程 try 住，失败只是「没迁移」——
+    /// AiModelResolver.ResolveActive 有读旧扁平字段的兜底路径，
+    /// 所以迁移失败不会让 AI 不可用，只是用户看到的仍是旧配置形态。</para>
+    /// </summary>
+    public void MigrateLegacyAiConfig()
+    {
+        try
+        {
+            if (AiModelProviders.Count > 0) return;   // 幂等：已经迁移过了
+
+            var baseUrl = (AiBaseUrl ?? "").Trim();
+            var apiKey = AiApiKey ?? "";
+            var model = (AiModel ?? "").Trim();
+
+            // 判据刻意**不看 BaseUrl**：它有非空默认值（apihub.agnes-ai.cn），
+            // 拿它当「配过」的证据，会让全新用户凭空多出一条没有 Key、没有模型的 Agnes 供应商卡片。
+            // Key 或模型名只要有一个填过，才算真配过。
+            if (apiKey.Length == 0 && model.Length == 0) return;
+
+            var preset = AiProviders.MatchByUrl(baseUrl);
+            var provider = new AiProviderEntry
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Name = preset?.Name ?? AiProviders.Custom,
+                BaseUrl = baseUrl,
+                ApiKey = apiKey,
+            };
+
+            if (model.Length > 0)
+            {
+                provider.Models.Add(new AiModelEntry
+                {
+                    Id = model,
+                    DisplayName = model,                                     // 迁移来的没有更漂亮的名字，Id 即显示名
+                    ContextWindow = 0,                                       // 不预填猜测值（见 AiModelEntry 注释）
+                    MaxOutputTokens = AiMaxTokens > 0 ? AiMaxTokens : 4096,   // 旧值 ≤0 视为未配置，回退默认
+                });
+                ActiveModelKey = provider.Id + "/" + model;
+            }
+
+            AiModelProviders.Add(provider);
+        }
+        catch (Exception ex)
+        {
+            // 迁移失败不致命（解析层有兜底），所以这里不外抛。
+            // AppLog 自己再套一层 try：此处已在 catch 里，若日志写入再抛就没东西接了，
+            // 会顺着 Load() 一路冒到启动路径 —— 记不上日志事小，启动崩了事大。
+            try { AppLog.Error("Settings", $"老配置迁移失败，AI 模型将按旧扁平字段兜底运行：{ex.Message}"); } catch { }
+        }
     }
 
     public void Save()

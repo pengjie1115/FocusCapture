@@ -10,6 +10,10 @@
 // 退出码：0 = 全部通过；1 = 有检查点失败
 // ═══════════════════════════════════════════════════════════════════
 
+// 本文件是顶层语句（没有 namespace FocusCapture 包着），所以链接进来的被测类的命名空间
+// 必须显式 using —— 不能用 Services.AI.X 这种从 FocusCapture 起算的写法。
+using FocusCapture.Services.AI;
+
 using System;
 using System.IO;
 using System.Linq;
@@ -1025,6 +1029,44 @@ Check(rdCs.Contains("安全软件") && rdCs.Contains("白名单"),
 Check(rdCs.Contains("SecurityBlockHint;"),
       "Fail 路径必须真的追加 SecurityBlockHint（return 处漏接 = 白写）",
       "找不到 failMessage += SecurityBlockHint 的接线");
+
+// ── [13] AI 模型数值输入解析（2026-09-23）──
+// 守的是「用户照供应商文档抄的写法能不能被吃下」。这批错法全是静默的：
+// 384K 被当非法值丢掉（用户以为填上了）、K 与 M 差 1024 倍（窗口算错一个数量级）——
+// 界面上都不会报错，所以只能靠机器守。
+Console.WriteLine("[13] AI 模型数值输入解析 TokenCountParser");
+
+Check(TokenCountParser.TryParse("4096", out var tk1) && tk1 == 4096,
+      "纯数字：4096 → 4096");
+Check(TokenCountParser.TryParse("384K", out var tk2) && tk2 == 393216,
+      "带 K 后缀：384K → 393216（1024 进制）");
+Check(TokenCountParser.TryParse("384k", out var tk3) && tk3 == 393216,
+      "K 后缀大小写不敏感");
+Check(TokenCountParser.TryParse("1M", out var tk4) && tk4 == 1048576,
+      "带 M 后缀：1M → 1048576");
+Check(TokenCountParser.TryParse("1.5K", out var tk5) && tk5 == 1536,
+      "小数 + 后缀：1.5K → 1536");
+Check(TokenCountParser.TryParse("  8 K  ", out var tk6) && tk6 == 8192,
+      "前后空格容忍（用户复制粘贴常带空格）");
+Check(TokenCountParser.TryParse("", out var tk7) && tk7 == 0,
+      "留空 = 不限制：返回 true + 0，不是非法输入");
+Check(TokenCountParser.TryParse(null, out var tk8) && tk8 == 0,
+      "null 与留空同处理");
+Check(TokenCountParser.TryParse("   ", out var tk9) && tk9 == 0,
+      "全空白与留空同处理");
+Check(TokenCountParser.TryParse("0", out var tk10) && tk10 == 0,
+      "显式填 0 = 不限制（与留空同义）");
+Check(!TokenCountParser.TryParse("abc", out _),
+      "非数字必须判非法 —— 调用方保留原值，不许静默写成 0");
+Check(!TokenCountParser.TryParse("-5", out _),
+      "负数判非法（窗口/输出上限都没有负数语义）");
+Check(!TokenCountParser.TryParse("K", out _),
+      "只写单位不写数字判非法");
+Check(!TokenCountParser.TryParse("99999999999", out _),
+      "超出 int 范围判非法 —— 打错一位数时宁可拒绝，也不静默存下天文数字（它会真被写进请求体）");
+Check(TokenCountParser.MaxContextWindow == 10_000_000
+      && TokenCountParser.MaxOutputTokens == 1_000_000,
+      "上限常量与拍板值一致：窗口 1~10,000,000 / 输出 1~1,000,000");
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");

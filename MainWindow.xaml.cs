@@ -93,7 +93,8 @@ public partial class MainWindow : Window
             _inputWindow = new InputWindow(_noteService, _settings);
             _inputWindow.NoteSaved += () => _floatBall?.FlashGreen();
             // v3.5：共享 AI provider（与 AI 对话框同源配置；面板编辑待办时间识别 LLM 兜底用，设置变更后由 OpenSettings 回调重建）
-            _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
+            // 2026-09-23 多供应商改造：改走统一解析入口（配置 → provider 的唯一映射点）
+            _aiProvider = AiModelResolver.CreateProvider(_settings);
             _quickViewWindow = new QuickViewWindow(_noteService, _settings, () => _syncEngine, _aiProvider);
             // v3.9：灵感速览标题栏的扩展功能（待办汇总/回收站/设置/导入/每日总结）统一由主程序开窗 ——
             // 这些窗口的依赖（热键服务、悬浮球锚点、导入预览构造）只有这里持有，
@@ -581,7 +582,7 @@ public partial class MainWindow : Window
             {
                 _hotkeyService?.RegisterAll();
                 // v3.5：AI 配置可能变更 → 重建共享 provider 并同步给面板（编辑待办时间识别 LLM 兜底用当前配置）
-                _aiProvider = new OpenAICompatibleProvider(_settings.AiBaseUrl, _settings.AiApiKey, _settings.AiModel, _settings.AiMaxTokens);
+                _aiProvider = AiModelResolver.CreateProvider(_settings);
                 _quickViewWindow?.UpdateAiProvider(_aiProvider);
                 _todoSummaryWindow?.UpdateAiProvider(_aiProvider);   // v3.10：待办汇总的时间识别也吃同一个 provider
                 _inputWindow?.SetOpacity(_settings.InputOpacity);

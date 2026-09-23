@@ -86,6 +86,7 @@ internal static class Program
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
+            Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）
             Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
@@ -1218,6 +1219,172 @@ print(json.dumps({
         enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
         using var fs = File.Create(path);
         enc.Save(fs);
+    }
+
+    // ══════════════════ AI 模型配置（多供应商改造，2026-09-23） ══════════════════
+    //
+    // 这一组守三件「错了会静默」的事：
+    //   ① 老配置迁移 —— 迁错了用户升个版本 AI 就用不了，而「迁移失败」本身不报任何错；
+    //   ② 三级解析回退 —— 回退链断一环，用户删个模型就能把整个 AI 锁死，且看不出原因；
+    //   ③ AppJsonContext 漏注册 —— 编译期零提示，用户点开设置那一刻才炸（源生成序列化的已知坑）。
+    //
+    // 全部在**内存对象**上跑，不读写任何真实数据目录（硬规则 0）：
+    // 迁移与解析都不调用 Save()，JSON 往返也是纯内存。
+    private static void TestAiModelConfig()
+    {
+        // ── 迁移：真配过的老配置 → 恰好一条供应商 ──
+        var legacy = new AppSettings
+        {
+            AiBaseUrl = "https://api.deepseek.com/v1",
+            AiApiKey = "sk-legacy-abcdefghijklmn",
+            AiModel = "deepseek-chat",
+            AiMaxTokens = 8192,
+        };
+        legacy.MigrateLegacyAiConfig();
+
+        Check(legacy.AiModelProviders.Count == 1, "老配置迁移出恰好 1 条供应商",
+              "条数不对 → 空值判断或幂等判断写反了");
+        var p = legacy.AiModelProviders.Count > 0 ? legacy.AiModelProviders[0] : null;
+        Check(p != null && p.ApiKey == "sk-legacy-abcdefghijklmn",
+              "迁移不许改动 API Key（逐字符相等）",
+              "Key 被改写 = 用户升级后直接失联，且当场看不出为什么");
+        Check(p != null && p.BaseUrl == "https://api.deepseek.com/v1", "迁移保留 BaseUrl");
+        Check(p != null && p.Name == "DeepSeek", "BaseUrl 命中预置表 → 供应商名取预置名");
+        Check(p != null && p.Models.Count == 1 && p.Models[0].Id == "deepseek-chat",
+              "旧模型名迁成 1 条模型条目");
+        Check(p != null && p.Models.Count == 1 && p.Models[0].MaxOutputTokens == 8192,
+              "旧的「长度上限」迁成该模型的「最大输出 Token」");
+        Check(p != null && p.Models.Count == 1 && p.Models[0].ContextWindow == 0,
+              "迁移出来的模型上下文窗口必须留空（0 = 不裁剪）—— 不预填猜测值");
+        Check(p != null && legacy.ActiveModelKey == p.Id + "/deepseek-chat",
+              "迁移后 ActiveModelKey 指向该供应商的该模型");
+        Check(legacy.AiModel == "deepseek-chat" && legacy.AiApiKey.Length > 0,
+              "旧扁平字段刻意保留（回退旧版本时还能读到配置）");
+
+        // ── 幂等：再迁一次不许重复 ──
+        var providerIdBefore = p?.Id;
+        legacy.MigrateLegacyAiConfig();
+        Check(legacy.AiModelProviders.Count == 1 && legacy.AiModelProviders[0].Id == providerIdBefore,
+              "迁移幂等：再调一次不新增、不改 Id",
+              "不幂等 → 用户会看到一堆重复供应商");
+
+        // ── 保命：已有新结构时，老字段不许覆盖它 ──
+        var withNew = new AppSettings
+        {
+            AiApiKey = "sk-old-should-be-ignored",
+            AiModel = "old-model",
+        };
+        withNew.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "kept", Name = "手配的", BaseUrl = "https://kept.example/v1",
+            Models = { new AiModelEntry { Id = "m1", MaxOutputTokens = 1234 } },
+        });
+        withNew.MigrateLegacyAiConfig();
+        Check(withNew.AiModelProviders.Count == 1 && withNew.AiModelProviders[0].Id == "kept",
+              "已有供应商列表时迁移完全不动（不覆盖用户的新结构）");
+
+        // ── 全新用户：不许凭空造出一条空供应商 ──
+        var fresh = new AppSettings();
+        fresh.MigrateLegacyAiConfig();
+        Check(fresh.AiModelProviders.Count == 0,
+              "全新用户不迁移 —— 判据必须只看 Key/模型名，不看 BaseUrl",
+              "混进了 BaseUrl 的非空默认值 → 界面上会凭空多一张没有 Key 也没有模型的卡片");
+
+        // ── 源生成序列化往返：漏注册在这里就炸（编译期没有任何提示）──
+        var json = JsonSerializer.Serialize(withNew, AppJsonContext.Default.AppSettings);
+        var back = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings);
+        Check(back != null && back.AiModelProviders.Count == 1
+              && back.AiModelProviders[0].ApiKey == withNew.AiModelProviders[0].ApiKey
+              && back.AiModelProviders[0].Models.Count == 1
+              && back.AiModelProviders[0].Models[0].Id == "m1"
+              && back.AiModelProviders[0].Models[0].MaxOutputTokens == 1234,
+              "AppJsonContext 能完整往返多供应商结构（漏注册会在此抛 NotSupportedException）",
+              "源生成上下文里少了 AiProviderEntry / AiModelEntry 的注册");
+
+        // ── 三级解析回退 ──
+        var three = new AppSettings { ActiveModelKey = "pA/mA1" };
+        three.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pA", Name = "A", BaseUrl = "https://a.example/v1",
+            Models = { new AiModelEntry { Id = "mA1", DisplayName = "模型甲", MaxOutputTokens = 2048, ContextWindow = 128000 } },
+        });
+        three.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pB", Name = "B", BaseUrl = "https://b.example/v1",
+            Models = { new AiModelEntry { Id = "mB1" } },
+        });
+
+        var hit = AiModelResolver.ResolveActive(three);
+        Check(hit != null && hit.BaseUrl == "https://a.example/v1" && hit.ModelId == "mA1",
+              "一级：按 ActiveModelKey 精确命中");
+        Check(hit != null && hit.MaxOutputTokens == 2048 && hit.ContextWindow == 128000,
+              "解析结果必须带出该模型自己的输出上限与上下文窗口",
+              "丢了这两个值 → 请求的 max_tokens 与裁剪阈值都会用错数");
+        Check(hit != null && hit.DisplayLabel == "A · 模型甲", "界面标签用「供应商 · 显示名」");
+
+        three.ActiveModelKey = "pA/已被删掉的模型";
+        var fellBack = AiModelResolver.ResolveActive(three);
+        Check(fellBack != null && fellBack.ModelId == "mA1",
+              "二级：键失效（用户删了模型）时回退到第一个可用模型，不把 AI 整个锁死",
+              "回退 2 断了 → 一个过期键就能让 AI 完全不可用，而用户只会看到「用不了」");
+
+        // ── 三级兜底：迁移失败也不能让 AI 不可用 ──
+        var fallbackOnly = new AppSettings
+        {
+            AiBaseUrl = "https://api.moonshot.cn/v1",
+            AiApiKey = "sk-fallback",
+            AiModel = "kimi-k2",
+            AiMaxTokens = 4096,
+        };
+        var legacyHit = AiModelResolver.ResolveActive(fallbackOnly);
+        Check(legacyHit != null && legacyHit.ModelId == "kimi-k2" && legacyHit.ApiKey == "sk-fallback",
+              "三级：供应商列表为空时回退读旧扁平字段（这是迁移的保命路径）",
+              "兜底断了 → 迁移一旦失败，老用户升级后 AI 直接不可用");
+
+        var empty = new AppSettings { AiBaseUrl = "", AiApiKey = "", AiModel = "" };
+        Check(AiModelResolver.ResolveActive(empty) == null && !AiModelResolver.IsConfigured(empty),
+              "完全没配置 → 返回 null（契约是「解析不到给 null、永不抛」）");
+        var createThrew = false;
+        try { _ = AiModelResolver.CreateProvider(empty); } catch { createThrew = true; }
+        Check(!createThrew,
+              "未配置时 CreateProvider 不许抛（旧行为是造一个「存在但一用就报未配置」的 provider）");
+
+        // ── 残缺配置跳过，不挡后面好的 ──
+        var partial = new AppSettings();
+        partial.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "bad", Name = "缺地址", BaseUrl = "",
+            Models = { new AiModelEntry { Id = "mX" } },
+        });
+        partial.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "good", Name = "好的", BaseUrl = "https://g.example/v1",
+            Models = { new AiModelEntry { Id = "mY" } },
+        });
+        var skipped = AiModelResolver.ResolveActive(partial);
+        Check(skipped != null && skipped.ProviderId == "good",
+              "残缺配置（缺 BaseUrl）被跳过，不挡住后面配置完整的供应商");
+
+        // ── max_tokens 规则（2026-09-23 变更：≤0 = 不传该字段）──
+        var payloadZero = new System.Text.Json.Nodes.JsonObject();
+        OpenAICompatibleProvider.ApplyMaxTokens(payloadZero, 0);
+        Check(!payloadZero.ContainsKey("max_tokens"),
+              "最大输出 Token 填 0 → 请求体不含 max_tokens（交给供应商默认值）",
+              "旧实现把 ≤0 强行回退成 4096，用户想表达「别限制我」时无路可走");
+        var payloadSet = new System.Text.Json.Nodes.JsonObject();
+        OpenAICompatibleProvider.ApplyMaxTokens(payloadSet, 4096);
+        Check(payloadSet.ContainsKey("max_tokens") && payloadSet["max_tokens"]!.GetValue<int>() == 4096,
+              "填了正数 → 正常写入 max_tokens");
+
+        // ── 源码契约：max_tokens 只能有一处写入点 ──
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var provPath = Path.Combine(repoRoot, "Services", "AI", "OpenAICompatibleProvider.cs");
+        var provSrc = File.Exists(provPath) ? File.ReadAllText(provPath) : "";
+        var writes = System.Text.RegularExpressions.Regex.Matches(provSrc, "\\[\"max_tokens\"\\]\\s*=").Count;
+        Check(writes == 1,
+              "max_tokens 只能由 ApplyMaxTokens 一处写入（恰好 1 处）",
+              $"源码里出现了 {writes} 处 [\"max_tokens\"] = 赋值，应恰好 1 处（ApplyMaxTokens 内部）——"
+              + "分散写入就等于又分叉出三条请求逻辑，改一处必漏一处");
     }
 
     // ══════════════════ 分组计时（2026-09-17） ══════════════════

@@ -30,7 +30,21 @@ public class OpenAICompatibleProvider : IChatProvider
         _baseUrl = (baseUrl ?? "").Trim().TrimEnd('/');
         _apiKey = apiKey ?? "";
         _model = model ?? "";   // 不再 fallback 到固定模型；请求时由 BuildRequest 校验空值
-        _maxTokens = maxTokens > 0 ? maxTokens : 4096;  // ≤0 视为未配置，回退默认，避免传 0/负数致供应商报错
+        // ≤0 **原样保留**（2026-09-23 改）：它表示「不传 max_tokens，由供应商默认值决定」。
+        // 旧实现把 ≤0 强行回退成 4096 —— 等于用户想表达「别限制我」时无路可走。
+        _maxTokens = maxTokens;
+    }
+
+    /// <summary>
+    /// 按需写入 max_tokens：**≤0 时整个字段都不写**（交给供应商默认值）。
+    /// 三条请求路径（流式 / 带工具 / 非流式）共用这一处，避免逻辑分叉。
+    ///
+    /// <para><c>internal</c> 是为了让慢层检查点能直接断言这条规则 ——
+    /// 走网络去验证「字段没发出去」既不现实也不可靠。</para>
+    /// </summary>
+    internal static void ApplyMaxTokens(JsonObject payload, int maxTokens)
+    {
+        if (maxTokens > 0) payload["max_tokens"] = maxTokens;
     }
 
     /// <summary>非流式补全：解析 choices[0].message.content</summary>
@@ -92,8 +106,8 @@ public class OpenAICompatibleProvider : IChatProvider
             ["model"] = _model,
             ["stream"] = true,
             ["messages"] = BuildMessagesArray(messages),
-            ["max_tokens"] = _maxTokens,
         };
+        ApplyMaxTokens(payload, _maxTokens);
         if (tools != null && tools.Count > 0)
             payload["tools"] = BuildToolsArray(tools);
 
@@ -251,8 +265,8 @@ public class OpenAICompatibleProvider : IChatProvider
             ["stream"] = false,
             ["messages"] = BuildMessagesArray(messages),
             ["tools"] = BuildToolsArray(tools),
-            ["max_tokens"] = _maxTokens
         };
+        ApplyMaxTokens(payload, _maxTokens);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");
         if (!string.IsNullOrEmpty(_apiKey))
@@ -474,9 +488,10 @@ public class OpenAICompatibleProvider : IChatProvider
             ["model"] = _model,
             ["messages"] = BuildMessagesArray(messages),
             ["stream"] = stream,
-            // CompleteAsync 不传 → 用配置的 _maxTokens；TestConnectionAsync 显式传 1 → 用 1（最小请求测连通）
-            ["max_tokens"] = maxTokens ?? _maxTokens,
         };
+        // CompleteAsync 不传 → 用配置的 _maxTokens；TestConnectionAsync 显式传 1 → 用 1（最小请求测连通）；
+        // 两者任一 ≤0 都表示「不写该字段」，由 ApplyMaxTokens 统一决定
+        ApplyMaxTokens(payload, maxTokens ?? _maxTokens);
 
         var request = new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/chat/completions");
         if (!string.IsNullOrEmpty(_apiKey))
