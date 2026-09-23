@@ -1449,6 +1449,50 @@ print(json.dumps({
             Check(ChatSearchService.Search("茄子", null).Count == 0,
                   "tool 角色的消息不参与搜索",
                   "工具返回是给模型看的机器数据（JSON 大文本），收录它会让真正的用户内容被淹没");
+
+            // ══ 会话级模型 + 分组指令注入（批 1，2026-09-23）══
+            var modelSession = new ChatSessionService(ExplainMode.Ask);
+            modelSession.AddUser("会话级模型往返测试");
+            modelSession.ModelKey = "prov-1/model-x";
+            modelSession.Save();
+
+            var modelPath = ChatSessionService.LoadByAnyId(modelSession.SessionId)!;
+            Check(ChatSessionService.LoadFile(modelPath)?.ModelKey == "prov-1/model-x",
+                  "会话级模型（ModelKey）必须能落盘并原样读回",
+                  "读不回来 = 下次打开会话又悄悄用回全局模型，用户完全看不出来");
+
+            var chatDir = FocusCapturePaths.Combine("chat_history");
+            Directory.CreateDirectory(chatDir);
+            var legacyPath = Path.Combine(chatDir, "legacy-no-modelkey.json");
+            File.WriteAllText(legacyPath,
+                "{\"Id\":\"legacy-no-modelkey\",\"Mode\":\"Ask\",\"Messages\":[{\"Role\":\"user\",\"Content\":\"老会话\"}]}",
+                Encoding.UTF8);
+            var legacySession = ChatSessionService.Load(legacyPath);
+            Check(legacySession != null && legacySession.ModelKey.Length == 0,
+                  "旧会话文件没有 ModelKey 字段 → 读出空串（= 跟随全局默认，零迁移）",
+                  "若这里抛异常，用户升级后所有历史会话都打不开");
+
+            var instructionGroup = ChatGroupService.Create("得到大脑", out _)!;
+            ChatGroupService.SetInstruction(instructionGroup.Id, "我的一切指令默认对象都是得到大脑");
+
+            Check(ChatGroupService.GetInstruction(instructionGroup.Id) == "我的一切指令默认对象都是得到大脑",
+                  "GetInstruction 能取到分组指令（现读语义）");
+            Check(ChatGroupService.GetInstruction("") == ""
+                  && ChatGroupService.GetInstruction(ChatGroupStore.FavoriteId) == "",
+                  "未分组 / 收藏分区取不到指令（返回空串，不是 null）");
+            Check(ChatGroupService.GetGroupName(instructionGroup.Id) == "得到大脑", "GetGroupName 能取到分组名");
+
+            var instructionContext = ChatGroupService.BuildInstructionContext(instructionGroup.Id);
+            Check(instructionContext.Contains("分组指令") && instructionContext.Contains("得到大脑")
+                  && instructionContext.Contains("不能覆盖") && instructionContext.Contains("系统规则"),
+                  "分组指令的注入文本必须标出来源与从属关系",
+                  "不标从属 = 模型会把用户写的分组指令当成最高命令，等于开了一条绕过系统红线的后门");
+            Check(instructionContext.Contains("我的一切指令默认对象都是得到大脑"),
+                  "注入文本必须原样带上用户的指令正文");
+
+            Check(ChatGroupService.BuildInstructionContext("") == ""
+                  && ChatGroupService.BuildInstructionContext(ChatGroupStore.FavoriteId) == "",
+                  "没有指令时不构造注入文本（不往上下文里塞一个空标题）");
         }
         finally
         {

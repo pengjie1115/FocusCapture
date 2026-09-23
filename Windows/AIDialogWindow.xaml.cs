@@ -1624,6 +1624,27 @@ public partial class AIDialogWindow : Window
         }
     }
 
+    /// <summary>分组指令的注入文本（现读 + 带来源与从属标注）。
+    /// 实现搬到 <see cref="ChatGroupService.BuildInstructionContext"/> —— 放服务层才守得住
+    /// 「必须显式标注从属关系，不得覆盖系统红线」这条安全要求（窗口的私有方法测不到）。</summary>
+    private static string BuildGroupInstructionContext(ChatSessionService session)
+        => ChatGroupService.BuildInstructionContext(session.GroupId);
+
+    /// <summary>
+    /// 普通问答路径的请求消息 = 会话历史 +（可选）一条**临时附加**的分组指令 system 消息。
+    ///
+    /// 为什么不复用 Agent 路径的 ExtraSystemContext：那条通道挂在 AgentRunService 上，
+    /// 不开 Agent 工具时根本不走。这里手动加一份不写回会话历史的副本，让两条路径行为一致。
+    /// </summary>
+    private static List<ChatMessage> BuildPlainRequestMessages(ConversationRuntime runtime)
+    {
+        var groupInstruction = BuildGroupInstructionContext(runtime.Session);
+        var messages = runtime.Session.Messages.ToList();
+        if (groupInstruction.Length > 0)
+            messages.Add(new ChatMessage(ChatRoles.System, groupInstruction));
+        return messages;
+    }
+
     /// <summary>普通问答路径：消费 StreamChatWithToolsAsync 事件流（无 tools），正文打字机 + 思考过程展示。
     /// 用户停止时已生成的部分内容照常写入会话历史。</summary>
     private async Task StreamPlainReplyAsync(ConversationRuntime runtime, ChatBubbleViewModel current, CancellationTokenSource cts)
@@ -1631,7 +1652,7 @@ public partial class AIDialogWindow : Window
         var sb = new StringBuilder();
         try
         {
-            await foreach (var ev in _provider.StreamChatWithToolsAsync(runtime.Session.Messages, tools: null, cts.Token))
+            await foreach (var ev in _provider.StreamChatWithToolsAsync(BuildPlainRequestMessages(runtime), tools: null, cts.Token))
             {
                 // 多会话并行：不再因切会话丢弃旧流；取消由 cts.Token 触发 OperationCanceledException
                 switch (ev)
@@ -1707,6 +1728,12 @@ public partial class AIDialogWindow : Window
                 var skills = _skillCatalog?.GetSkills();
                 if (skills is { Count: > 0 })
                     sb.Append('\n').Append(SkillManifest.Build(skills, _skillRuntime?.IsPresent ?? false));
+
+                // 分组指令（2026-09-23）：与「当前时间」「文件牌号」同类的短期状态 —— 现读、随时可变、不进历史。
+                // 刻意走这条通道而不是 AppendSystemRules：那条会把文本写进会话文件，
+                // 于是用户改了指令之后，旧会话里存的还是上一版，而模型每轮又都看得见它（对不上账）。
+                var groupInstruction = BuildGroupInstructionContext(runtime.Session);
+                if (groupInstruction.Length > 0) sb.Append('\n').Append(groupInstruction);
 
                 return sb.ToString();
             },

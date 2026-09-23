@@ -82,6 +82,15 @@ public class AppSettings
     /// </summary>
     public string ActiveModelKey { get; set; } = "";
 
+    // ── AI 问答界面（2026-09-23 重构：侧边栏 / 起手页）──
+
+    /// <summary>用户在 AI 问答里的昵称。驱动两处：起手页欢迎语（「{昵称}，今天干点啥？」）与侧边栏底部用户区。
+    /// 为空时欢迎语降级为不带称呼的句式，界面不显示空占位。</summary>
+    public string ChatUserNickname { get; set; } = "";
+
+    /// <summary>打开 AI 问答时侧边栏是否默认展开。默认 false = 收起（对话区更宽敞），设置里可改。</summary>
+    public bool ChatSidebarDefaultExpanded { get; set; }
+
     public string AiAssistantName { get; set; } = "AI 问答";
     public int AiToolResultLimit { get; set; } = 8000;  // 工具结果喂回模型前的单条截断阈值（防超长结果撑爆上下文）
 
