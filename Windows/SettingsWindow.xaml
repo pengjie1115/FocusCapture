@@ -426,11 +426,9 @@
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
 
                     <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                        <ComboBox x:Name="AiNewPresetCombo" Width="200" Height="30"
-                                  Style="{StaticResource DarkComboBox}"
-                                  ToolTip="预置提供方（API 地址已知，加完只需填 Key）"/>
                         <Button x:Name="BtnAddPresetProvider" Content="添加提供方"
-                                Width="110" Height="30" Margin="8,0,0,0"
+                                Width="110" Height="30"
+                                ToolTip="从预置提供方里选一个（API 地址已知，加完只需填 Key）"
                                 Click="BtnAddPresetProvider_Click"/>
                         <Button x:Name="BtnAddCustomProvider" Content="添加自定义提供方"
                                 Width="140" Height="30" Margin="8,0,0,0"

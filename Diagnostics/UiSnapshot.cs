@@ -94,9 +94,10 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
-            // 供应商编辑页（2026-09-23 新增窗口）。
-            // 为什么必须单独出一张：模型行是 code-behind 拼出来的（两个输入框 + 展开 + 删除），
-            // 「展开区会不会把底部按钮挤出窗口」「长模型 ID 会不会撑破布局」静态代码都看不出来。
+            // 供应商编辑页（2026-09-23 新增窗口；同日按用户反馈改过两处排版）。
+            // 展开第一行、第二行保持折叠 —— 一张图同时看到：
+            //   ① 展开态的「上下文窗口 / 最大输出 Token 并排一行」（用户反馈改过的地方）
+            //   ② 折叠态的展开箭头与垃圾桶图标（同样是反馈改过的：字形改成了画的 Path）
             Capture("03a2-供应商编辑页", () =>
             {
                 var draft = new AiProviderEntry
@@ -109,7 +110,9 @@ internal static class UiSnapshot
                         new AiModelEntry { Id = "deepseek-reasoner", DisplayName = "DeepSeek Reasoner", ContextWindow = 131072, MaxOutputTokens = 65536 },
                     },
                 };
-                return new AiProviderEditWindow(draft);
+                var w = new AiProviderEditWindow(draft);
+                w.ExpandFirstModelForSnapshot();
+                return w;
             }, outDir, log);
 
             // AI 功能板块（2026-09-23 从原「AI 模型」板块拆出）：Skill 分区住在这里。

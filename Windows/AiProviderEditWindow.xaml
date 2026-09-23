@@ -83,7 +83,7 @@
             </DockPanel>
 
             <DockPanel Margin="0,10">
-                <TextBlock Text="API 地址" Style="{StaticResource FieldLabel}"/>
+                <TextBlock Text="Base URL" Style="{StaticResource FieldLabel}"/>
                 <Button x:Name="EditKeyApplyLink" DockPanel.Dock="Right" Content="申请 Key"
                         Margin="6,0,0,0" Visibility="Collapsed"
                         Click="EditKeyApplyLink_Click"/>
@@ -125,7 +125,7 @@
                         Width="96" Click="BtnAddModel_Click"/>
             </DockPanel>
             <TextBlock Grid.Row="1" Style="{StaticResource HintText}" Margin="0,4,0,6"
-                       Text="左侧填模型 ID（发给供应商的原始标识），右侧是给你自己看的显示名。点右侧箭头展开可单独设置该模型的上下文窗口与最大输出 Token —— 两者都支持 384K / 1M 这类写法，留空表示不限制。"/>
+                       Text="左侧填模型 ID（发给供应商的原始标识），右侧是给你自己看的显示名。点右侧箭头展开可单独设置该模型的上下文窗口与最大输出 Token。"/>
 
             <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">

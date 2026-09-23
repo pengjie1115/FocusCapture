@@ -290,12 +290,6 @@ public partial class SettingsWindow : Window
             QuickViewWindow.MinWidthLimit, QuickViewWindow.MaxWidthLimit)).ToString();
         QuickViewTopmostCheck.IsChecked = _settings.QuickViewTopmost;
         RebuildToolbarEditor();
-        // 预置提供方下拉：只列预置（地址已知，选它就不用自己填地址）；自定义走另一个按钮
-        AiNewPresetCombo.Items.Clear();
-        foreach (var p in AiProviders.Presets)
-            AiNewPresetCombo.Items.Add(new ComboBoxItem { Content = p.Name, Tag = p });
-        if (AiNewPresetCombo.Items.Count > 0) AiNewPresetCombo.SelectedIndex = 0;
-
         // 图片清晰度档位：索引即档位值（0 省流 / 1 标准 / 2 高清），与 ChatAttachmentService.QualitySpec 对应
         AiImageQualityCombo.Items.Clear();
         AiImageQualityCombo.Items.Add(new ComboBoxItem { Content = "省流（长边 768）" });
@@ -1562,16 +1556,37 @@ public partial class SettingsWindow : Window
     private static string TryFormatTestTime(string? iso)
         => DateTime.TryParse(iso ?? "", out var t) ? t.ToString("yyyy-MM-dd HH:mm") : "时间未知";
 
+    /// <summary>
+    /// 「添加提供方」→ 就地弹出预置列表（2026-09-23 按用户反馈调整）。
+    ///
+    /// <para>改前是「外层先选下拉、再点按钮」，读起来是两步互不相干的动作；
+    /// 现在把选择收进按钮里 —— 点它才出现选项，与原来「点模型供应商即弹出预置」的手感一致。</para>
+    ///
+    /// <para>用 <c>new ContextMenu()</c> <b>不带对象初始化器</b>：自带 Style/模板会顶掉 App.xaml 的深色模板，
+    /// 结果是一条浅色白条（项目在待办汇总右键菜单上实际踩过这个坑）。</para>
+    /// </summary>
     private void BtnAddPresetProvider_Click(object sender, RoutedEventArgs e)
     {
-        if ((AiNewPresetCombo.SelectedItem as ComboBoxItem)?.Tag is not AiProviderPreset preset) return;
-        OpenProviderEditor(new AiProviderEntry
+        var menu = new ContextMenu();
+        foreach (var preset in AiProviders.Presets)
+        {
+            var item = new MenuItem { Header = preset.Name };
+            var picked = preset;   // 显式局部变量：避免闭包捕获的歧义读法
+            item.Click += (_, _) => AddProviderFromPreset(picked);
+            menu.Items.Add(item);
+        }
+        menu.PlacementTarget = BtnAddPresetProvider;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void AddProviderFromPreset(AiProviderPreset preset)
+        => OpenProviderEditor(new AiProviderEntry
         {
             Id = Guid.NewGuid().ToString("N"),
             Name = preset.Name,
             BaseUrl = preset.BaseUrl,
         }, isNew: true);
-    }
 
     private void BtnAddCustomProvider_Click(object sender, RoutedEventArgs e)
         => OpenProviderEditor(new AiProviderEntry

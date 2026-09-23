@@ -128,9 +128,24 @@ public partial class AiProviderEditWindow : Window
     private void RebuildModelList()
     {
         EditModelList.Children.Clear();
+        _expandPanels.Clear();
         foreach (var m in _draft.Models) EditModelList.Children.Add(BuildModelRow(m));
         EditEmptyHint.Visibility = _draft.Models.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         EditModelCountText.Text = _draft.Models.Count == 0 ? "模型目录" : $"模型目录（{_draft.Models.Count}）";
+    }
+
+    /// <summary>各行的展开区，按行序（只给快照用：展开第一行，让两张布局同时出现在一张图里）。</summary>
+    private readonly List<StackPanel> _expandPanels = new();
+
+    /// <summary>
+    /// 界面快照专用：展开第一行模型。
+    /// 不展开的话，展开区完全不在图里 —— 而「上下文窗口 / 最大输出 Token 并排一行」正是用户反馈改过的位置，
+    /// 只拍折叠态等于没验。第二行保持折叠，于是一张图同时能看到两种状态与两个图标。
+    /// </summary>
+    internal void ExpandFirstModelForSnapshot()
+    {
+        if (_expandPanels.Count == 0) return;
+        _expandPanels[0].Visibility = Visibility.Visible;
     }
 
     /// <summary>
@@ -168,18 +183,16 @@ public partial class AiProviderEditWindow : Window
         Grid.SetColumn(nameBox, 1);
         head.Children.Add(nameBox);
 
-        // 展开区：上下文窗口 + 最大输出 Token（**留空 = 不限制**，不做猜测预填）
-        var expandPanel = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 6, 0, 2) };
-        expandPanel.Children.Add(BuildTokenRow("上下文窗口", model.ContextWindow, TokenCountParser.MaxContextWindow,
-            "超出这个长度的历史消息会被丢弃；留空 = 不裁剪（本项目改造前的行为）",
-            v => model.ContextWindow = v));
-        expandPanel.Children.Add(BuildTokenRow("最大输出 Token", model.MaxOutputTokens, TokenCountParser.MaxOutputTokens,
-            "单次回答的长度上限；留空 = 不传该字段，由供应商默认值决定",
-            v => model.MaxOutputTokens = v));
+        // 展开区：上下文窗口 + 最大输出 Token **并排一排**（同参考图）。
+        // 两者都留空 = 不限制，不做猜测预填。
+        var expandPanel = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 2) };
+        expandPanel.Children.Add(BuildTokenPair(model));
+        _expandPanels.Add(expandPanel);
 
+        var chevron = ChevronIcon(down: true);
         var expandBtn = new Button
         {
-            Content = "⌄", Width = 30, Margin = new Thickness(6, 0, 0, 0),
+            Content = chevron, Width = 32, Margin = new Thickness(6, 0, 0, 0),
             Padding = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Center,
             ToolTip = "展开：单独设置该模型的上下文窗口与最大输出 Token",
         };
@@ -187,14 +200,14 @@ public partial class AiProviderEditWindow : Window
         {
             var show = expandPanel.Visibility != Visibility.Visible;
             expandPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            expandBtn.Content = show ? "⌃" : "⌄";
+            chevron.Data = Geometry.Parse(show ? UpChevron : DownChevron);
         };
         Grid.SetColumn(expandBtn, 2);
         head.Children.Add(expandBtn);
 
         var delBtn = new Button
         {
-            Content = "✕", Width = 30, Margin = new Thickness(6, 0, 0, 0),
+            Content = TrashIcon(), Width = 32, Margin = new Thickness(6, 0, 0, 0),
             Padding = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Center,
             ToolTip = "从该供应商移除这个模型（不影响供应商本身）",
         };
@@ -211,22 +224,53 @@ public partial class AiProviderEditWindow : Window
         return root;
     }
 
-    /// <summary>一行「标签 + 输入框 + 灰色说明」。数值解析统一走 TokenCountParser，非法输入不落值（保留原值）。</summary>
-    private FrameworkElement BuildTokenRow(string label, int current, int max, string hint, Action<int> apply)
+    /// <summary>
+    /// 展开区内容：上下文窗口 / 最大输出 Token **并排一排**（各组「标签在上、输入框在下」）。
+    /// 说明文字合并成一行放在下面 —— 两组各带一段说明会把并排的意义抵消掉（宽度不够就换行错位）。
+    /// </summary>
+    private FrameworkElement BuildTokenPair(AiModelEntry model)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var left = BuildTokenField("上下文窗口", model.ContextWindow, TokenCountParser.MaxContextWindow,
+            v => model.ContextWindow = v);
+        Grid.SetColumn(left, 0);
+        grid.Children.Add(left);
+
+        var right = BuildTokenField("最大输出 Token", model.MaxOutputTokens, TokenCountParser.MaxOutputTokens,
+            v => model.MaxOutputTokens = v);
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(right);
+
+        var wrap = new StackPanel();
+        wrap.Children.Add(grid);
+        wrap.Children.Add(new TextBlock
+        {
+            Text = "留空 = 不限制。上下文窗口超出后最早的历史会被丢弃；最大输出 Token 留空则由供应商默认值决定。"
+                 + "两者都支持 384K / 1M 这类写法。",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+        return wrap;
+    }
+
+    /// <summary>一个数值字段：标签在上、输入框在下。解析统一走 TokenCountParser，非法输入不落值（保留原值）。</summary>
+    private FrameworkElement BuildTokenField(string label, int current, int max, Action<int> apply)
     {
         var panel = new StackPanel();
 
-        var row = new DockPanel();
-        panel.Children.Add(row);
-
-        var labelBlock = new TextBlock
+        panel.Children.Add(new TextBlock
         {
-            Text = label, Width = 110, VerticalAlignment = VerticalAlignment.Center,
+            Text = label,
             Foreground = new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0)),
             FontSize = 12,
-        };
-        DockPanel.SetDock(labelBlock, Dock.Left);
-        row.Children.Add(labelBlock);
+            Margin = new Thickness(0, 0, 0, 4),
+        });
 
         var box = new TextBox
         {
@@ -237,18 +281,45 @@ public partial class AiProviderEditWindow : Window
         box.TextChanged += (_, _) =>
         {
             if (_loading) return;
-            // 非法输入刻意**不落值**：用户打字中途（如刚要补 K）不该把配置改成 0
+            // 非法输入刻意**不落值**：用户打字中途（例如刚敲到「384K」的 K 之前）不该把配置改成 0
             if (TokenCountParser.TryParse(box.Text, out var v)) apply(Math.Clamp(v, 0, max));
         };
-        row.Children.Add(box);
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = hint, Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(110, 2, 0, 0),
-        });
+        panel.Children.Add(box);
         return panel;
     }
+
+    // 图标一律用 Path 画，不用字体字形（2026-09-23）：
+    //   ① 字形受字体影响，缺字形会渲染成豆腐块（项目里有「图标字符可用性自检」就是为这个）
+    //   ② 字形画不出想要的笔画角度 —— 用户明确提过展开箭头的角太窄
+    private const string DownChevron = "M1,2 L7.5,8 L14,2";
+    private const string UpChevron = "M1,8 L7.5,2 L14,8";
+
+    private static System.Windows.Shapes.Path ChevronIcon(bool down) => new()
+    {
+        Data = Geometry.Parse(down ? DownChevron : UpChevron),
+        Stroke = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+        StrokeThickness = 1.8,
+        StrokeStartLineCap = PenLineCap.Round,
+        StrokeEndLineCap = PenLineCap.Round,
+        StrokeLineJoin = PenLineJoin.Round,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    /// <summary>垃圾桶图标（桶盖 + 桶身 + 两道竖纹）。</summary>
+    private static System.Windows.Shapes.Path TrashIcon() => new()
+    {
+        Data = Geometry.Parse("M1.5,3.8 H14.5 M5,3.8 V1.8 H11 V3.8 "
+                             + "M3.2,3.8 L4.1,14.2 H11.9 L12.8,3.8 "
+                             + "M6.4,6.4 V11.6 M9.6,6.4 V11.6"),
+        Stroke = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+        StrokeThickness = 1.35,
+        StrokeStartLineCap = PenLineCap.Round,
+        StrokeEndLineCap = PenLineCap.Round,
+        StrokeLineJoin = PenLineJoin.Round,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
 
     // ══════════════ 测试连接 ══════════════
 
