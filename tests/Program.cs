@@ -1164,6 +1164,97 @@ Check(hzNet.Status == AiHealthStatus.Network
       "连不上 → Network，且文案要同时提示「本机网络」与「地址填错」两种可能",
       "只说网络问题会把「地址写错」这种用户自己能修的情况掩盖掉");
 
+// ── [15] 上下文裁剪 ContextBudget（2026-09-23）──
+// 守六个坑，每一个错了都不报错，只在特定长会话里表现为「AI 莫名忘了前面说的」或「随机 400」。
+Console.WriteLine("[15] 上下文裁剪 ContextBudget");
+
+ContextItem Ci(string role, int tokens, bool toolCalls = false, int images = 0)
+    => new(role, toolCalls, tokens, images);
+
+// 坑①：估算系数与安全余量
+Check(ContextBudget.EstimateTokens("") == 0 && ContextBudget.EstimateTokens(null) == 0,
+      "空文本估算为 0 token");
+Check(ContextBudget.EstimateTokens("中文八个字呀") > ContextBudget.EstimateTokens("abcdefghij"),
+      "中文按更密的系数估（同样长度中文 token 更多）—— 按 ASCII 的 4 字符算会严重低估");
+
+// 窗口留空（0）= 不裁剪：这是改造前行为的回归保护
+var noWindow = ContextBudget.Plan(new[] { Ci("user", 999999) }, 0, 4096, 0);
+Check(!noWindow.ShouldTrim && !noWindow.SingleMessageTooLarge,
+      "上下文窗口留空（0）→ 一律不裁剪（与改造前行为一致）");
+
+var emptyPlan = ContextBudget.Plan(Array.Empty<ContextItem>(), 100000, 4096, 0);
+Check(!emptyPlan.ShouldTrim, "没有消息 → 不裁剪");
+
+// 装得下就不裁
+var fits = ContextBudget.Plan(new[] { Ci("user", 100), Ci("assistant", 100), Ci("user", 50) }, 100000, 4096, 1000);
+Check(!fits.ShouldTrim, "内容装得下 → 一条都不裁（不做无谓动作）");
+
+// 超窗口 → 从最早丢、保留最近的
+var many = Enumerable.Range(0, 40).Select(i => Ci("user", 300)).ToList();
+var cut = ContextBudget.Plan(many, 3000, 0, 0);
+Check(cut.ShouldTrim && cut.DroppedCount > 0 && cut.KeepFromIndex > 0,
+      "超窗口 → 从最早的开始丢（保留最近的对话）");
+Check(cut.UserHint != null && cut.UserHint.Contains(cut.DroppedCount.ToString()),
+      "裁剪必须给出轻提示，且提示里带丢掉的条数",
+      "没有提示的话用户只会解读成「AI 变笨了」，永远查不到原因");
+
+// 坑②：工具调用对不能被拆散（**本组最重要的一条**）
+var toolUnit = new[]
+{
+    Ci("user", 30),
+    Ci("assistant", 40, toolCalls: true),
+    Ci("tool", 40),
+    Ci("user", 5),
+};
+var unitPlan = ContextBudget.Plan(toolUnit, 100, 0, 0);   // 可用 80：只剩最后一组装得下
+// 组划分：①[user30] ②[assistant40(tool_calls), tool40] ③[user5]
+// 期望丢掉 ①② 共 3 条；关键是 KeepFromIndex 必须落在**组边界**（2）上。
+// 若落在组内部（1）说明工具调用对被从中间切开 —— 那正是会引发随机 400 的形态。
+Check(unitPlan.KeepFromIndex == 2 && unitPlan.DroppedCount == 3,
+      "裁剪边界必须落在「完整工具调用单元」的边界上（不许从组内部切）",
+      $"实际 KeepFromIndex={unitPlan.KeepFromIndex}、DroppedCount={unitPlan.DroppedCount}；"
+      + "落在 1 就意味着 assistant(tool_calls) 与它的 tool 结果被拆散 → 接口 400（tool_call_id 找不到对应调用）");
+
+var toolUnit2 = new[]
+{
+    Ci("user", 30),
+    Ci("assistant", 30, toolCalls: true),
+    Ci("tool", 5),
+    Ci("tool", 5),
+    Ci("assistant", 10),
+    Ci("user", 5),
+};
+var unitPlan2 = ContextBudget.Plan(toolUnit2, 100, 0, 0);
+Check(unitPlan2.DroppedCount == 1 && unitPlan2.KeepFromIndex == 1,
+      "只丢最前面那条独立消息时，工具调用组完整保留（不误伤）");
+
+// 坑④：图片按固定值计入，不按字符
+var textOnly = ContextBudget.Plan(new[] { Ci("user", 100), Ci("user", 100), Ci("user", 100) }, 1000, 0, 0);
+var withImage = ContextBudget.Plan(
+    new[] { Ci("user", 100, images: ContextBudget.ImageTokensPerImage), Ci("user", 100), Ci("user", 100) },
+    1000, 0, 0);
+Check(withImage.KnownTokens - textOnly.KnownTokens == ContextBudget.ImageTokensPerImage,
+      "图片必须单独占一份固定 token 估算（差值恰为 ImageTokensPerImage）",
+      "图片以 base64 塞进正文，按字符算会严重低估，然后被供应商 400");
+
+// 坑⑥：单条自己就超窗口 → 拒绝发送，而不是把用户的消息也丢掉
+var oversized = ContextBudget.Plan(new[] { Ci("user", 5000) }, 2000, 0, 0);
+Check(oversized.SingleMessageTooLarge && !oversized.ShouldTrim && oversized.UserHint != null,
+      "单条消息本身就超窗口 → 标为「太大」并给出人话提示，绝不裁剪掉用户刚发的内容",
+      "裁剪历史救不了这种情况，只能拒绝发送并说清原因，不然就是去撞英文 400");
+
+// 固定开销（系统提示词 + 工具定义）把窗口吃光
+var eaten = ContextBudget.Plan(new[] { Ci("user", 10) }, 2000, 500, 1900);
+Check(eaten.SingleMessageTooLarge && eaten.UserHint != null && eaten.UserHint.Contains("工具定义"),
+      "系统提示词 + 工具定义占满窗口 → 提示换更大窗口的模型（这种情况裁剪无能为力）");
+
+// 坑①续：安全余量真的存在 —— 内容没超窗口但超「窗口 − 20%」时也该裁
+var marginItems = Enumerable.Range(0, 10).Select(_ => Ci("user", 900)).ToList();   // 共 9000
+var marginPlan = ContextBudget.Plan(marginItems, 10000, 0, 0);                     // 可用 8000
+Check(marginPlan.ShouldTrim,
+      "内容 9000 < 窗口 10000，但超过「窗口 − 20% 余量」→ 必须裁",
+      "不留余量的话，估算误差（没有 tokenizer，误差可达 20%+）会偶发把请求顶出窗口");
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

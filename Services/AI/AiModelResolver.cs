@@ -111,7 +111,7 @@ public static class AiModelResolver
     {
         var m = ResolveActive(s);
         return m != null
-            ? new OpenAICompatibleProvider(m.BaseUrl, m.ApiKey, m.ModelId, m.MaxOutputTokens)
+            ? new OpenAICompatibleProvider(m.BaseUrl, m.ApiKey, m.ModelId, m.MaxOutputTokens, m.ContextWindow)
             : new OpenAICompatibleProvider(s.AiBaseUrl, s.AiApiKey, s.AiModel, s.AiMaxTokens);
     }
 

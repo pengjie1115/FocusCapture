@@ -20,12 +20,19 @@ public class OpenAICompatibleProvider : IChatProvider
     private readonly string _apiKey;
     private readonly string _model;
     private readonly int _maxTokens;
+    private readonly int _contextWindow;
+
+    /// <summary>
+    /// 上一次请求发生裁剪时的轻提示（没裁剪或无窗口配置时为 null），供界面照实告诉用户
+    /// 「最早的 N 条本轮不再发送」。**裁剪是隐形的**：不提示的话用户只会解读成「AI 变笨了」。
+    /// </summary>
+    public string? LastTrimHint { get; private set; }
 
     public string Model => _model;
     public string BaseUrl => _baseUrl;
     public string ApiKey => _apiKey;
 
-    public OpenAICompatibleProvider(string baseUrl, string apiKey, string model, int maxTokens = 4096)
+    public OpenAICompatibleProvider(string baseUrl, string apiKey, string model, int maxTokens = 4096, int contextWindow = 0)
     {
         _baseUrl = (baseUrl ?? "").Trim().TrimEnd('/');
         _apiKey = apiKey ?? "";
@@ -33,6 +40,77 @@ public class OpenAICompatibleProvider : IChatProvider
         // ≤0 **原样保留**（2026-09-23 改）：它表示「不传 max_tokens，由供应商默认值决定」。
         // 旧实现把 ≤0 强行回退成 4096 —— 等于用户想表达「别限制我」时无路可走。
         _maxTokens = maxTokens;
+        _contextWindow = contextWindow;   // 0 = 不裁剪（用户没填窗口，与改造前行为一致）
+    }
+
+    /// <summary>
+    /// 发请求前按上下文预算裁剪消息（2026-09-23）。**三条请求路径共用这一处** ——
+    /// 分开写必然漏一处（本项目在附件序列化上正是这么丢过附件的）。
+    ///
+    /// <para>裁剪不发生时原样返回，零开销。</para>
+    /// </summary>
+    private IReadOnlyList<ChatMessage> ApplyContextBudget(
+        IReadOnlyList<ChatMessage> messages, IReadOnlyList<ToolDefinition>? tools)
+    {
+        LastTrimHint = null;
+        if (_contextWindow <= 0 || messages.Count == 0) return messages;
+
+        // 系统提示词与工具定义**永远不会被丢**，所以它们只算进固定开销、不参与裁剪
+        var systemTokens = 0;
+        var conversation = new List<ChatMessage>(messages.Count);
+        foreach (var m in messages)
+        {
+            if (m.Role == ChatRoles.System) systemTokens += ContextBudget.EstimateTokens(m.Content);
+            else conversation.Add(m);
+        }
+
+        var items = conversation.Select(ToContextItem).ToList();
+        var fixedOverhead = systemTokens + EstimateToolsTokens(tools);
+        var plan = ContextBudget.Plan(items, _contextWindow, _maxTokens, fixedOverhead);
+
+        if (plan.SingleMessageTooLarge)
+            throw new InvalidOperationException(plan.UserHint ?? "这条内容超过模型能装下的上限。");
+
+        if (!plan.ShouldTrim) return messages;
+
+        LastTrimHint = plan.UserHint;
+        var kept = new List<ChatMessage>(messages.Count);
+        kept.AddRange(messages.Where(m => m.Role == ChatRoles.System));
+        kept.AddRange(conversation.Skip(plan.KeepFromIndex));
+        return kept;
+    }
+
+    /// <summary>
+    /// 映射成裁剪用的视图。**附件必须单独算**：
+    /// 图片按固定值（base64 几万字符但供应商按分辨率折算，字符估算对它彻底失效）；
+    /// 文档附件同样要算 —— 它的正文只在序列化时才拼进请求（<c>ExtractedText</c>），
+    /// 不在这里计入就会「以为还空着」，然后长文档一来就超窗。
+    /// </summary>
+    private static ContextItem ToContextItem(ChatMessage m)
+    {
+        var textTokens = ContextBudget.EstimateTokens(m.Content) + ContextBudget.EstimateTokens(m.ToolCallsJson);
+        var imageTokens = 0;
+        foreach (var a in m.Attachments ?? Enumerable.Empty<ChatAttachment>())
+        {
+            if (a.Kind == ChatAttachmentKind.Image)
+                imageTokens += ContextBudget.ImageTokensPerImage;
+            else
+                textTokens += ContextBudget.EstimateTokens(a.ExtractedText);
+        }
+        return new ContextItem(m.Role, !string.IsNullOrEmpty(m.ToolCallsJson), textTokens, imageTokens);
+    }
+
+    /// <summary>工具定义的 token 估算（名称 + 描述 + 参数 schema）。拿不到就按 0 —— 少算只是保守度下降，不会算错。</summary>
+    private static int EstimateToolsTokens(IReadOnlyList<ToolDefinition>? tools)
+    {
+        if (tools == null || tools.Count == 0) return 0;
+        var total = 0;
+        foreach (var t in tools)
+            total += ContextBudget.EstimateTokens(t.Name)
+                   + ContextBudget.EstimateTokens(t.Description)
+                   + ContextBudget.EstimateTokens(t.ParametersJson)
+                   + 8;   // 每个工具的 JSON 骨架开销
+        return total;
     }
 
     /// <summary>
@@ -50,7 +128,7 @@ public class OpenAICompatibleProvider : IChatProvider
     /// <summary>非流式补全：解析 choices[0].message.content</summary>
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
     {
-        using var request = BuildRequest(messages, stream: false);
+        using var request = BuildRequest(ApplyContextBudget(messages, null), stream: false);
         using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
@@ -100,6 +178,8 @@ public class OpenAICompatibleProvider : IChatProvider
     {
         if (string.IsNullOrWhiteSpace(_model))
             throw new InvalidOperationException("未配置模型名称，请在设置 → AI 模型中填写模型名称。");
+
+        messages = ApplyContextBudget(messages, tools);   // 三条路径共用的裁剪入口（2026-09-23）
 
         var payload = new JsonObject
         {
@@ -258,6 +338,8 @@ public class OpenAICompatibleProvider : IChatProvider
     {
         if (string.IsNullOrWhiteSpace(_model))
             throw new InvalidOperationException("未配置模型名称，请在设置 → AI 模型中填写模型名称。");
+
+        messages = ApplyContextBudget(messages, tools);   // 三条路径共用的裁剪入口（2026-09-23）
 
         var payload = new JsonObject
         {

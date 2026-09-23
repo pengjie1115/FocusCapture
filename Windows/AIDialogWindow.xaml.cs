@@ -1589,6 +1589,13 @@ public partial class AIDialogWindow : Window
                 runtime.Session.AddUser(text, attachments);
                 await StreamPlainReplyAsync(runtime, current, cts);
             }
+
+            // 上下文裁剪是隐形的（设计稿 §6 坑⑤）：本轮真丢了消息就如实告诉用户。
+            // 只写进气泡的**显示内容**，不进会话历史 —— 这是我们给的提示，不是模型说的话。
+            // 放在两条路径的共同收尾处而不是各路径内部：写两处必然漏一处。
+            var trimHint = _provider.LastTrimHint;
+            if (!string.IsNullOrWhiteSpace(trimHint))
+                current.Content = (current.Content ?? "") + "\n\n（" + trimHint + "）";
         }
         catch (Exception ex)
         {
