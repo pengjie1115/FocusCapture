@@ -32,6 +32,10 @@ public class AppSettings
     public double FloatBallOpacity { get; set; } = 0.85;
     public double QuickViewOpacity { get; set; } = 0.80;
 
+    // ── 输入框圆角（2026-09-23 新增；可调四角弧度，0=纯直角，默认 10 = 改造前现状）──
+    // 落「显示」板块；窗口 Background 改透明后，此值才真正露出圆角（见 InputWindow.xaml）
+    public double InputBorderRadius { get; set; } = 10;
+
     // ── 存储 ──
     public string NotesPath { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FocusCapture");

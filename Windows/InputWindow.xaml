@@ -7,15 +7,13 @@
         ShowInTaskbar="False"
         Topmost="True"
         Width="600" Height="80"
-        Background="#1E1E1E"
+        Background="Transparent"
         Opacity="0.80"
         WindowStartupLocation="Manual"
         Loaded="Window_Loaded"
         Deactivated="Window_Deactivated">
 
     <Window.Resources>
-        <DropShadowEffect x:Key="BoxShadow" BlurRadius="20" ShadowDepth="4" Opacity="0.4" Color="#000000"/>
-
         <!-- v3.5：类型小按钮（选中态由代码切换 BorderBrush/Foreground） -->
         <Style x:Key="TypeButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#1E1E1E"/>
@@ -48,8 +46,7 @@
         </Style>
     </Window.Resources>
 
-    <Border CornerRadius="10" Background="#1E1E1E"
-            Effect="{StaticResource BoxShadow}"
+    <Border x:Name="RootBorder" CornerRadius="10" Background="#1E1E1E"
             BorderBrush="#3A3A3A" BorderThickness="1"
             MouseLeftButtonDown="Border_MouseLeftButtonDown">
         <Grid Margin="12,10">

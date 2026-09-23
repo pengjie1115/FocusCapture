@@ -585,6 +585,7 @@ public partial class MainWindow : Window
                 _quickViewWindow?.UpdateAiProvider(_aiProvider);
                 _todoSummaryWindow?.UpdateAiProvider(_aiProvider);   // v3.10：待办汇总的时间识别也吃同一个 provider
                 _inputWindow?.SetOpacity(_settings.InputOpacity);
+                _inputWindow?.SetCornerRadius(_settings.InputBorderRadius);
                 _floatBall?.SetOpacity(_settings.FloatBallOpacity);
                 if (_quickViewWindow != null) _quickViewWindow.Opacity = _settings.QuickViewOpacity;
                 _quickViewWindow?.ApplySettings();   // v3.9：宽度/置顶/标题栏按钮即时生效

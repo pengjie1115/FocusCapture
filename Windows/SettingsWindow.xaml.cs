@@ -271,6 +271,8 @@ public partial class SettingsWindow : Window
         InputOpacityLabel.Text = $"{(int)(_settings.InputOpacity * 100)}%";
         BallOpacityLabel.Text = $"{(int)(_settings.FloatBallOpacity * 100)}%";
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
+        InputBorderRadiusSlider.Value = _settings.InputBorderRadius;
+        InputBorderRadiusLabel.Text = $"{(int)Math.Round(_settings.InputBorderRadius)}";
         // 悬浮球拖放保存（2026-09-16）：开关 + 浮层不透明度 + 小条停留秒数
         DragToSaveCheck.IsChecked = _settings.DragToSaveEnabled;
         DropActionOpacitySlider.Value = Math.Clamp(_settings.DropActionOpacity, 0.3, 1.0);
@@ -1057,6 +1059,8 @@ public partial class SettingsWindow : Window
     { if (_suppressEvents) return; _settings.FloatBallOpacity = e.NewValue; BallOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
     private void QuickViewOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (_suppressEvents) return; _settings.QuickViewOpacity = e.NewValue; QuickViewOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
+    private void InputBorderRadius_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (_suppressEvents) return; _settings.InputBorderRadius = e.NewValue; InputBorderRadiusLabel.Text = $"{(int)Math.Round(e.NewValue)}"; _settings.Save(); _onChanged?.Invoke(); }
 
     // 悬浮球拖放保存（2026-09-16）。_onChanged 里会让已打开的小条/卡片实时跟手，
     // 否则「拖完再调滑块」看不到变化，会被当成功能坏了。

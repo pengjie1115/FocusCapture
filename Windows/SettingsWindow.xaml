@@ -636,6 +636,19 @@
 
                     <StackPanel Margin="0,4">
                         <Grid>
+                            <TextBlock Text="输入框圆角" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="InputBorderRadiusLabel" Text="10"
+                                       HorizontalAlignment="Right"/>
+                        </Grid>
+                        <Slider x:Name="InputBorderRadiusSlider"
+                                Minimum="0" Maximum="30" SmallChange="1"
+                                Value="10"
+                                Margin="0,4,0,12"
+                                ValueChanged="InputBorderRadius_Changed"/>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,4">
+                        <Grid>
                             <TextBlock Text="悬浮球不透明度" VerticalAlignment="Center"/>
                             <TextBlock x:Name="BallOpacityLabel" Text="85%"
                                        HorizontalAlignment="Right"/>

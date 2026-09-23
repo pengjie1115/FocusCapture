@@ -23,6 +23,7 @@ public partial class InputWindow : Window
         _noteService = noteService;
         _settings = settings;
         Opacity = settings.InputOpacity;
+        RootBorder.CornerRadius = new CornerRadius(settings.InputBorderRadius);
     }
 
     /// <summary>v3.5：切换笔记/待办类型（全局热键调用）。窗口可见时立即刷新高亮，不可见时仅切字段（下次打开生效）。</summary>
@@ -63,6 +64,9 @@ public partial class InputWindow : Window
     }
 
     public void SetOpacity(double o) => Opacity = Math.Clamp(o, 0.3, 1.0);
+
+    /// <summary>设置输入框边框圆角（2026-09-23 新增；由设置面板「输入框圆角」滑块实时联动调用）</summary>
+    public void SetCornerRadius(double r) => RootBorder.CornerRadius = new CornerRadius(Math.Clamp(r, 0, 30));
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
