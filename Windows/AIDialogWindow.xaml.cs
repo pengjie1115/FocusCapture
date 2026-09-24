@@ -2640,10 +2640,42 @@ public partial class AIDialogWindow : Window
 
         _settings.ChatUserNickname = "彭杰";
 
+        // 头像圆形裁剪（2026-09-26）：给沙箱造一张**长方形**头像并导入 ——
+        // 不塞图的话快照里只有"昵称首字色块"那一支，圆形裁剪根本不在图上，等于没守护。
+        TrySeedAvatarForSnapshot();
+
         _drawerOpen = true;
         Sidebar.Width = 220;
         Sidebar.MinWidth = DrawerMinWidth;
         RefreshDrawer();
+    }
+
+    /// <summary>快照：在沙箱数据根里现造一张**长方形**头像图并导入，供「头像圆形裁剪」出图守护。
+    /// 为什么刻意用长方形：方图裁成圆肉眼看不出差别，长方形才能一眼看出是"按圆裁掉多余的"、
+    /// 而不是拉伸变形（Stretch=UniformToFill 的老写法会把人脸压扁）。
+    /// 造图失败只吞掉自己（快照的其它场景不受影响），绝不抛。</summary>
+    private static void TrySeedAvatarForSnapshot()
+    {
+        try
+        {
+            var source = FocusCapturePaths.Combine("snapshot_avatar_source.png");
+            var visual = new DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x2F, 0x6F, 0xEB)), null, new Rect(0, 0, 90, 30));
+                dc.DrawEllipse(Brushes.White, null, new Point(45, 15), 7, 7);
+            }
+            var bitmap = new RenderTargetBitmap(90, 30, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(visual);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var fs = File.Create(source)) encoder.Save(fs);
+            ChatAssetsService.ImportUserAvatar(source);
+        }
+        catch
+        {
+            // 快照造图失败不该让整轮快照挂掉：这张图没了，其它场景照出
+        }
     }
 
     /// <summary>快照：在侧边栏数据之上再点进某个分组（验分组视图的排版）</summary>
