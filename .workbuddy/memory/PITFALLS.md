@@ -26,3 +26,8 @@
 - DataTemplate 条目自身状态用 `Trigger SourceName`，禁 `RelativeSource AncestorType`（会绑到外层共享元素）
 - 带子菜单的父项**绝不绑 Click**（context=null 被宿主解释成动作）
 - XAML 模板根只能一个子级（MC3089）；模板内 x:Name 不进窗口 NameScope
+
+## Git Bash 会转换 `git show 分支:路径` 的冒号参数（2026-09-24）
+
+Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.workbuddy/memory/2026-09-24.md` 会变成 `feature\x;.workbuddy\memory\...` → fatal: ambiguous argument。
+解法：命令前加 `MSYS_NO_PATHCONV=1`，或先把两个 ref 各自 dump 到临时文件再 diff。
