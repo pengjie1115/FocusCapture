@@ -54,36 +54,74 @@
                 <RowDefinition Height="42"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
+            <!-- 列结构上提到顶层（2026-09-26 用户拍板：竖向分隔线要贯通到窗口顶部）。
+                 改之前列定义在 Row1 那个子 Grid 里，标题栏是横贯的一整块 —— 竖线只能从正文顶部开始，
+                 视觉上标题栏与正文是两截。现在标题栏也按同一套列切分：左半截属于侧边栏、右半截属于对话区。
+                 铁律不变：宽度动画/拖拽只作用于 Sidebar.Width，不动 ColumnDefinition。 -->
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-            <!-- 标题栏（底部 2px 品牌绿 accent 线，配色方案 B 的标志） -->
-            <Border Grid.Row="0" Background="#252525" CornerRadius="6,6,0,0"
-                    BorderBrush="#4CAF50" BorderThickness="0,0,0,2">
-                <Grid Margin="14,0">
-                    <TextBlock x:Name="TitleText"
-                               Text="AI 问答"
-                               Foreground="#CCCCCC"
-                               FontSize="14" FontWeight="SemiBold"
-                               VerticalAlignment="Center"/>
-                    <!-- 2026-09-24：标题栏「历史」「+ 新会话」按钮已删 —— 开关侧边栏交给主区左上角
-                         BtnToggleSidebar，新会话交给侧边栏「新对话」（用户拍板：标题栏只留标题）。
-                         关窗走原生标题栏 ×（旧窗口内关闭按钮的字形裁切问题见下）。 -->
-                </Grid>
-            </Border>
+            <!-- 标题栏底色：横贯整窗，**没有底部绿线**。
+                 2026-09-26 用户拍板去掉那条 2px 品牌绿 accent 线：它会把窗口横着切成两截，
+                 与"竖线贯通到顶、标题栏和正文连成整体"的诉求正面冲突。
+                 代价是配色方案 B 的标记物之一退场，同日的检查点已同步改断言（别再当回归加回来）。 -->
+            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#252525" CornerRadius="6,6,0,0"/>
 
-            <!-- 消息列表 + 侧边栏（列 Auto 跟随 Sidebar.Width，宽度动画/拖拽都作用于 Sidebar.Width——
-                 WPF GridLength 无 DoubleAnimation，铁律：不动画/拖拽 ColumnDefinition）。
-                 拖拽用 Thumb（GridSplitter 基类，样式照搬 SettingsWindow 的 splitter）：其自动 resize 只能改列宽，
-                 与"只改 Sidebar.Width"铁律冲突，故 DragDelta 手动改控件宽度。 -->
-            <Grid Grid.Row="1">
+            <!-- 标题栏左半截（宽度 = 侧边栏宽度，随拖拽实时伸缩）：展开态专用。
+                 左 = 助手名（跟随设置里的「AI 助手名称」，用户可自定义）；右 = 搜索 / 收起两个图标，
+                 紧贴竖线 —— 拖列宽时整块跟着走，图标永远落在分隔线边上。 -->
+            <!-- 标题栏左半截（在侧边栏宽度内）：展开态专用。
+                 左 = 助手名（跟随设置里的「AI 助手名称」，用户可自定义）；右 = 搜索 / 收起两个图标，
+                 紧贴竖线 —— 拖列宽时整块跟着走，图标永远落在分隔线边上。
+                 MaxWidth 绑 Sidebar.Width 是**必须的**（快照 10i 抓到过）：本列是 Auto，
+                 宽度取"子元素期望宽度"的最大值 —— 不加约束的话，用户起个长助手名会把标题栏内容
+                 的期望宽度顶上去，侧边栏跟着被撑宽（实测名字一长侧边栏从 220 涨到 400）。
+                 绑上之后本块的期望宽度最多等于侧边栏自身宽度，列宽重新只由 Sidebar 说了算。 -->
+            <Grid x:Name="SidebarHeaderPanel" Grid.Row="0" Grid.Column="0"
+                  Visibility="Collapsed" ClipToBounds="True"
+                  MaxWidth="{Binding Width, ElementName=Sidebar}">
+                <!-- 分两列而不是"同格左对齐 + 同格右对齐"叠放：助手名是用户自定义的，可能很长；
+                     叠放时 TextBlock 拿到的可用宽度是整格，超长文本会一路伸到图标底下被盖住（TextTrimming 不生效）。
+                     左右内边距下沉到子元素、本 Grid 自身不留 Margin —— 见上面 MaxWidth 那条注释：
+                     留在本 Grid 上的 Margin 不计入 MaxWidth，列宽照样会被顶宽。 -->
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <!-- 主区左上角：展开/收起侧边栏 + 全局搜索（2026-09-24，取代标题栏「历史」按钮）。
-                 两按钮在主区列(Grid.Column="2")顶部，不随侧边栏宽度裁剪；BtnToggleSidebar 文案按抽屉状态切换。 -->
-            <StackPanel Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Top"
-                        Margin="6,6,0,0" Orientation="Horizontal" Panel.ZIndex="50">
+                <TextBlock x:Name="TitleText"
+                           Grid.Column="0"
+                           Text="AI 问答"
+                           Margin="14,0,8,0"
+                           Foreground="#CCCCCC"
+                           FontSize="14" FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            Margin="0,0,14,0"
+                            HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- 展开态：搜索在左、收起在右（用户拍板；与收起态正好相反） -->
+                    <Button x:Name="BtnHeaderSearch" Click="BtnGlobalSearch_Click"
+                            Width="28" Height="28" Padding="0"
+                            Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                            ToolTip="搜索会话（跨所有会话搜消息正文）">
+                        <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                              Stroke="#B8B8B8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                    </Button>
+                    <Button x:Name="BtnHeaderCollapse" Click="BtnToggleSidebar_Click"
+                            Width="28" Height="28" Padding="0" Margin="4,0,0,0" FontSize="15"
+                            Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                            ToolTip="收起侧边栏">‹</Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- 标题栏右半截：收起态专用（此时侧边栏宽度为 0，左半截整块不可见）。
+                 靠最左起排：≡ 在左、搜索在右（用户拍板，与展开态相反）。 -->
+            <StackPanel x:Name="CollapsedHeaderPanel" Grid.Row="0" Grid.Column="2"
+                        Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Margin="14,0,0,0">
                 <Button x:Name="BtnToggleSidebar" Click="BtnToggleSidebar_Click"
                         Width="28" Height="28" Padding="0" FontSize="15"
                         Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
@@ -96,22 +134,26 @@
                           Stroke="#B8B8B8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 </Button>
             </StackPanel>
-            <controls:ChatSidebar x:Name="Sidebar" Grid.Column="0" Width="0"/>
-                <Thumb x:Name="DrawerSplitter" Grid.Column="1" Width="5" Margin="0,0"
-                       Cursor="SizeWE" DragDelta="DrawerSplitter_DragDelta" DragCompleted="DrawerSplitter_DragCompleted">
-                    <Thumb.Template>
-                        <ControlTemplate TargetType="Thumb">
-                            <Border Background="Transparent">
-                                <Rectangle Width="1" HorizontalAlignment="Center" Fill="#3A3A3A"/>
-                            </Border>
-                        </ControlTemplate>
-                    </Thumb.Template>
-                </Thumb>
 
-                <!-- 2026-09-21 重排：对话列（消息区 + 输入区）收进第三列 —— 历史抽屉列纵贯全窗，
-                     输入区与对话区同宽，拖抽屉时输入区实时跟随（用户要求"分区管理"）。
-                     原结构：消息区在 Row1 的第三列、输入区横贯整窗底部（Row2）。 -->
-                <Grid Grid.Column="2">
+            <controls:ChatSidebar x:Name="Sidebar" Grid.Row="1" Grid.Column="0" Width="0"/>
+
+            <!-- 竖向分隔线：Grid.RowSpan="2" 让它从窗口**最顶端**一直贯到底（2026-09-26）。
+                 收起态由 code-behind 置 Collapsed —— 侧边栏都不在了，没有"两个区域"要分。 -->
+            <Thumb x:Name="DrawerSplitter" Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Width="5" Margin="0,0"
+                   Cursor="SizeWE" DragDelta="DrawerSplitter_DragDelta" DragCompleted="DrawerSplitter_DragCompleted">
+                <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="Transparent">
+                            <Rectangle Width="1" HorizontalAlignment="Center" Fill="#3A3A3A"/>
+                        </Border>
+                    </ControlTemplate>
+                </Thumb.Template>
+            </Thumb>
+
+            <!-- 2026-09-21 重排：对话列（消息区 + 输入区）收进第三列 —— 历史抽屉列纵贯全窗，
+                 输入区与对话区同宽，拖抽屉时输入区实时跟随（用户要求"分区管理"）。
+                 原结构：消息区在 Row1 的第三列、输入区横贯整窗底部（Row2）。 -->
+            <Grid Grid.Row="1" Grid.Column="2">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
@@ -683,7 +725,6 @@
                 </Grid>
                 </Grid>
             </Border>
-                </Grid>
             </Grid>
         </Grid>
     </Border>

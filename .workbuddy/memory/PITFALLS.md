@@ -26,6 +26,7 @@
 - DataTemplate 条目自身状态用 `Trigger SourceName`，禁 `RelativeSource AncestorType`（会绑到外层共享元素）
 - 带子菜单的父项**绝不绑 Click**（context=null 被宿主解释成动作）
 - XAML 模板根只能一个子级（MC3089）；模板内 x:Name 不进窗口 NameScope
+- **Auto 列宽 = 所有子元素期望宽度的最大值**：往 `Width="Auto"` 的列里塞用户可控长度的文本，文本会把列撑宽（2026-09-24 实测：AI 问答标题栏放长助手名，侧边栏从 220 涨到 400）。修法是让该子元素的期望宽度不超列源——`MaxWidth` 绑宽度源的 `Width`（**且该元素自身不能带 Margin**，Margin 不计入 MaxWidth，照样撑宽；边距要下沉到子元素）
 
 ## Git Bash 会转换 `git show 分支:路径` 的冒号参数（2026-09-24）
 

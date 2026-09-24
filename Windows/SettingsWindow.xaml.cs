@@ -1490,6 +1490,7 @@ public partial class SettingsWindow : Window
             },
         });
         _settings.ActiveModelKey = "snap1/agnes-3.0-flash";
+        _settings.DefaultModelKey = "snap1/agnes-3.0-flash";
         RebuildAiProviderList();
     }
 
@@ -1506,11 +1507,69 @@ public partial class SettingsWindow : Window
         AiProviderEmptyText.Visibility = _settings.AiModelProviders.Count == 0
             ? Visibility.Visible : Visibility.Collapsed;
 
-        var active = AiModelResolver.ResolveActive(_settings);
-        AiActiveModelText.Text = active is null
-            ? "当前使用模型：（未配置）"
-            : $"当前使用模型：{active.DisplayLabel}"
-              + (active.ProviderId == AiModelResolver.LegacyProviderId ? "（读自旧版单供应商配置）" : "");
+        AiDefaultModelText.Text = BuildDefaultModelText();
+    }
+
+    /// <summary>
+    /// 「默认模型」那一行显示什么（2026-09-26）。
+    /// <list type="bullet">
+    /// <item>用户设的那个键<b>精确命中</b> → 显示模型名（以用户自己填的显示名为准，跨供应商重名时才补「（供应商）」）。</item>
+    /// <item>没设过 / 键已失效 → 说明白<b>新会话实际会用哪个</b>。写「（未设置）」会让刚配好模型的用户
+    /// 以为哪里坏了 —— 其实解析链会回退到「上次使用」或第一个可用模型，AI 照常能用。</item>
+    /// </list>
+    /// </summary>
+    private string BuildDefaultModelText()
+    {
+        var exact = AiModelResolver.TryResolveExact(_settings, _settings.DefaultModelKey);
+        if (exact != null) return AiModelResolver.DisplayNameFor(_settings, exact);
+
+        var fallback = AiModelResolver.ResolveForNewSession(_settings);
+        return fallback == null
+            ? "（未配置）"
+            : $"（未设置 · 新会话用 {AiModelResolver.DisplayNameFor(_settings, fallback)}）";
+    }
+
+    /// <summary>点「默认模型」那一行 → 弹已配置模型列表，点中即生效（用户拍板：不弹确认框）。
+    /// 与 AI 问答里那个会话级下拉同一套展示口径（名字不带供应商前缀，重名才补）。</summary>
+    private void DefaultModelRow_Click(object sender, MouseButtonEventArgs e)
+    {
+        // 刻意用 new ContextMenu() 不用初始化器：自带 Style 会顶掉 App.xaml 深色模板出白条（项目已踩过）
+        var menu = new ContextMenu();
+        foreach (var p in _settings.AiModelProviders)
+        {
+            foreach (var m in p.Models)
+            {
+                if (string.IsNullOrWhiteSpace(m.Id)) continue;
+                var key = p.Id + "/" + m.Id;
+                var resolved = AiModelResolver.TryResolveExact(_settings, key);
+                var label = resolved != null
+                    ? AiModelResolver.DisplayNameFor(_settings, resolved)
+                    : (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
+                var item = new MenuItem { Header = label, IsChecked = _settings.DefaultModelKey == key };
+                var captured = key;
+                item.Click += (_, _) => ApplyDefaultModel(captured);
+                menu.Items.Add(item);
+            }
+        }
+
+        if (menu.Items.Count == 0)
+            menu.Items.Add(new MenuItem { Header = "（还没有配置任何模型）", IsEnabled = false });
+
+        menu.PlacementTarget = DefaultModelRow;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>设置默认模型：写 <see cref="AppSettings.DefaultModelKey"/>，
+    /// <b>同时</b>把「上次使用」一起覆盖成同一个键 —— 否则用户刚改完默认模型，新会话仍被"上次使用"盖住，
+    /// 看起来就是"设置了没反应"（2026-09-26 用户明确要求改完即生效）。</summary>
+    private void ApplyDefaultModel(string key)
+    {
+        _settings.DefaultModelKey = key;
+        _settings.ActiveModelKey = key;
+        _settings.Save();
+        RebuildAiProviderList();
+        _onChanged?.Invoke();
     }
 
     /// <summary>建一张供应商卡片：状态点 + 名称/摘要 + 编辑/删除。</summary>
@@ -1661,21 +1720,45 @@ public partial class SettingsWindow : Window
         if (win.ShowDialog() != true || win.Result is null) return;
 
         var result = win.Result;
+        // 保存**之前**先记下"此前能不能用" —— 这是判断"用户第一次把模型配起来"的唯一依据。
+        // 写进去之后再问 IsConfigured 必然为真，弹窗就永远问得着（每次都弹 = 打扰）。
+        var wasConfigured = AiModelResolver.IsConfigured(_settings);
+
         var idx = _settings.AiModelProviders.FindIndex(p => p.Id == source.Id);
         if (idx >= 0) _settings.AiModelProviders[idx] = result;
         else _settings.AiModelProviders.Add(result);
 
-        // 新建的、或当前还没指定模型的 → 顺手把它的第一个模型设为当前使用，
-        // 否则用户配完还得再找地方选一次（本期没有切换 UI）
-        if (isNew || string.IsNullOrWhiteSpace(_settings.ActiveModelKey))
-        {
-            var first = result.Models.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m.Id));
-            if (first != null) _settings.ActiveModelKey = result.Id + "/" + first.Id;
-        }
-
         _settings.Save();
         RebuildAiProviderList();
+
+        // 首次配置成功 → 问一句要不要设为默认模型（2026-09-26 用户拍板）。
+        // 这里原来是"静默把第一个模型设为当前使用"（旧语义＝全局默认模型，本期已退场）：
+        // 现在改成显式征询并落 DefaultModelKey，用户选"否"也不影响可用性（解析链会回退到第一个可用模型）。
+        if (!wasConfigured) PromptSetDefaultModel(result);
+
+        RebuildAiProviderList();
         _onChanged?.Invoke();
+    }
+
+    /// <summary>首次配置成功时的询问（2026-09-26 用户拍板）：要不要把这个模型设为默认模型。
+    /// 这是全 App 唯一一处主动弹窗问模型 —— 其余场合都靠"上次使用"记忆与解析回退静默处理。</summary>
+    private void PromptSetDefaultModel(AiProviderEntry provider)
+    {
+        var first = provider.Models.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m.Id));
+        if (first == null) return;
+        var name = string.IsNullOrWhiteSpace(first.DisplayName) ? first.Id : first.DisplayName;
+
+        var answer = MessageBox.Show(this,
+            $"是否把「{name}」设为默认模型？\n\n" +
+            "默认模型只在你还用不上「上次使用的模型」时起作用；以后新会话默认用你上次用过的那个。\n" +
+            "之后可以随时在本页「默认模型」那一行更换。",
+            "设置默认模型", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        var key = provider.Id + "/" + first.Id;
+        _settings.DefaultModelKey = key;
+        _settings.ActiveModelKey = key;   // 同值：用户此刻的意图就是"以后就用它"，别让"上次使用"再盖回去
+        _settings.Save();
     }
 
     private void DeleteProvider(AiProviderEntry provider)
@@ -1688,18 +1771,22 @@ public partial class SettingsWindow : Window
 
         _settings.AiModelProviders.RemoveAll(p => p.Id == provider.Id);
 
-        // 刚删的就是当前在用的 → 把当前使用模型挪到第一家可用模型，不留一个指向空气的键
-        if (_settings.ActiveModelKey.StartsWith(provider.Id + "/", StringComparison.Ordinal))
+        // 删掉的正好是「上次使用」或「默认模型」指向的那家 → 两个键都别留成指向空气的（2026-09-26：
+        // 以前只顾了 ActiveModelKey；现在设置页会显示默认模型，留着失效键会显示成一句看不懂的话）。
+        // 回退到删完之后第一个「配置完整」的模型；一个都没有就置空，解析层还有旧扁平字段兜底。
+        var prefix = provider.Id + "/";
+        var fallback = "";
+        foreach (var p in _settings.AiModelProviders)
         {
-            _settings.ActiveModelKey = "";
-            foreach (var p in _settings.AiModelProviders)
-            {
-                var m = p.Models.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Id));
-                if (m == null) continue;
-                _settings.ActiveModelKey = p.Id + "/" + m.Id;
-                break;
-            }
+            var m = p.Models.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Id));
+            if (m == null || string.IsNullOrWhiteSpace(p.BaseUrl)) continue;
+            fallback = p.Id + "/" + m.Id;
+            break;
         }
+        if ((_settings.ActiveModelKey ?? "").StartsWith(prefix, StringComparison.Ordinal))
+            _settings.ActiveModelKey = fallback;
+        if ((_settings.DefaultModelKey ?? "").StartsWith(prefix, StringComparison.Ordinal))
+            _settings.DefaultModelKey = fallback;
 
         _settings.Save();
         RebuildAiProviderList();

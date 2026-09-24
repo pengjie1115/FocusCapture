@@ -44,6 +44,95 @@ public static class AiModelResolver
     public static ResolvedAiModel? ResolveActive(AppSettings s) => Resolve(s, s.ActiveModelKey);
 
     /// <summary>
+    /// 新会话该用哪个模型（2026-09-26 用户拍板的优先级链）：
+    /// <list type="number">
+    /// <item><b>上次使用</b>（<see cref="AppSettings.ActiveModelKey"/>）—— 会话里每切一次就更新一次</item>
+    /// <item><b>默认模型</b>（<see cref="AppSettings.DefaultModelKey"/>）—— 用户显式设的那个，首次使用时顶用</item>
+    /// <item>三级回退（第一个配置完整的模型 / 旧扁平字段）—— 保证「没配过也能用」</item>
+    /// </list>
+    ///
+    /// <para><b>为什么前两档必须用精确命中而不是 <see cref="Resolve"/></b>：Resolve 在键失效时
+    /// 会回退到「第一个可用模型」，于是「上次使用的键已失效」和「命中了第一个可用」在返回值上
+    /// 长得一模一样 —— 后面那档「默认模型」就永远轮不到。</para>
+    ///
+    /// <para>代价（已知并接受）：历史会话记录里的 <c>ModelKey</c> 可能为空（老数据 = 跟随全局），
+    /// 这类会话回看时会跟着"上次使用"一起漂移。不做数据迁移 —— 扫全量会话文件的风险与收益不成比例。</para>
+    /// </summary>
+    public static ResolvedAiModel? ResolveForNewSession(AppSettings s)
+    {
+        if (s == null) return null;
+        return TryResolveExact(s, s.ActiveModelKey)
+            ?? TryResolveExact(s, s.DefaultModelKey)
+            ?? Resolve(s, null);
+    }
+
+    /// <summary>
+    /// <b>只做精确命中</b>：键能对上供应商 + 模型才返回，否则一律 null，<b>不回退</b>。
+    ///
+    /// <para>与 <see cref="Resolve"/> 的区别就在这一点上。凡是要表达"优先…其次…再其次"的场合
+    /// （见 <see cref="ResolveForNewSession"/>）都必须用它：回退式 Resolve 会把"键失效"
+    /// 伪装成"命中了第一个可用模型"，让优先级链退化成"永远只有第一档有效"。</para>
+    /// </summary>
+    public static ResolvedAiModel? TryResolveExact(AppSettings s, string? key)
+    {
+        if (s == null || string.IsNullOrWhiteSpace(key)) return null;
+        try
+        {
+            var slash = key.IndexOf('/');
+            if (slash <= 0 || slash >= key.Length - 1) return null;
+
+            var providerId = key[..slash];
+            var modelId = key[(slash + 1)..];
+            foreach (var p in s.AiModelProviders)
+            {
+                if (!string.Equals(p.Id, providerId, StringComparison.Ordinal)) continue;
+                foreach (var m in p.Models)
+                {
+                    if (!string.Equals(m.Id, modelId, StringComparison.Ordinal)) continue;
+                    return Build(p, m);
+                }
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 界面展示用的模型名（2026-09-26 用户拍板）：<b>以用户自己填的显示名为准，默认不带供应商前缀</b>。
+    ///
+    /// <para>只有跨供应商出现同名时才补「（供应商）」—— 两家都叫「V4 Flash」时，
+    /// 光看模型名用户分不清自己选的是哪一家，那种"简洁"是误导。</para>
+    /// </summary>
+    public static string DisplayNameFor(AppSettings s, ResolvedAiModel m)
+    {
+        if (m == null) return "";
+        var name = string.IsNullOrWhiteSpace(m.ModelDisplayName) ? m.ModelId : m.ModelDisplayName;
+        if (s == null || string.IsNullOrWhiteSpace(m.ProviderName)) return name;
+
+        var sameName = 0;
+        foreach (var p in s.AiModelProviders)
+        {
+            foreach (var mm in p.Models)
+            {
+                var candidate = string.IsNullOrWhiteSpace(mm.DisplayName) ? mm.Id : mm.DisplayName;
+                if (string.Equals(candidate, name, StringComparison.Ordinal)) sameName++;
+            }
+        }
+        return sameName > 1 ? name + "（" + m.ProviderName + "）" : name;
+    }
+
+    /// <summary>按稳定键取展示名；键无效时回退成键原文（宁可显示丑的，也不显示空白）。</summary>
+    public static string DisplayNameForKey(AppSettings s, string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return "";
+        var hit = TryResolveExact(s, key);
+        return hit != null ? DisplayNameFor(s, hit) : key!;
+    }
+
+    /// <summary>
     /// 解析指定键对应的模型。三级回退，越往后越「保住能用」：
     /// <list type="number">
     /// <item>按 <paramref name="key"/> 精确命中供应商 + 模型</item>
@@ -57,25 +146,8 @@ public static class AiModelResolver
         {
             if (s == null) return null;
 
-            if (!string.IsNullOrWhiteSpace(key))
-            {
-                var slash = key.IndexOf('/');
-                if (slash > 0 && slash < key.Length - 1)
-                {
-                    var providerId = key[..slash];
-                    var modelId = key[(slash + 1)..];
-                    foreach (var p in s.AiModelProviders)
-                    {
-                        if (!string.Equals(p.Id, providerId, StringComparison.Ordinal)) continue;
-                        foreach (var m in p.Models)
-                        {
-                            if (!string.Equals(m.Id, modelId, StringComparison.Ordinal)) continue;
-                            var hit = Build(p, m);
-                            if (hit != null) return hit;
-                        }
-                    }
-                }
-            }
+            var exact = TryResolveExact(s, key);
+            if (exact != null) return exact;
 
             // 回退 2：第一个「配置完整」的模型。
             // 跳过配置不全的条目而不是直接放弃 —— 一个空 BaseUrl 的脏数据不该把后面好的挡住。

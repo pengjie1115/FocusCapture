@@ -435,10 +435,30 @@
                                 Click="BtnAddCustomProvider_Click"/>
                     </StackPanel>
 
-                    <TextBlock x:Name="AiActiveModelText" Text=""
-                               Foreground="#CCCCCC" FontSize="12" TextWrapping="Wrap" Margin="0,18,0,0"/>
-                    <TextBlock Text="上面是「新建会话的初始模型」—— 新会话从第一句话起固定用它；之后在某个会话内切换模型只影响该会话本身（会话级模型）。"
-                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                    <!-- 默认模型（2026-09-26 用户拍板）：全 App 唯一在 UI 上露出的模型配置项。
+                         点一下弹已配置模型列表，点中即生效 —— 不再弹确认框。
+                         上面那两行「当前使用模型：…」+ 机制说明已删：机制本身换了，「上次使用的模型」
+                         刻意不在这里露出（它是记忆不是配置，用户在会话里临时切换不该改到设置页这个值）。 -->
+                    <Border x:Name="DefaultModelRow" Margin="0,18,0,0" Padding="12,8"
+                            Background="#2A2A2A" BorderBrush="#3A3A3A" BorderThickness="1"
+                            CornerRadius="4" Cursor="Hand"
+                            MouseLeftButtonUp="DefaultModelRow_Click"
+                            ToolTip="点一下从已配置的模型里选一个（它决定「你还用不上上次使用的模型」时新会话用哪个）">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="默认模型" Foreground="#B8B8B8"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock x:Name="AiDefaultModelText" Grid.Column="1" Text=""
+                                       Margin="12,0,8,0" Foreground="#E0E0E0"
+                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="更换" Foreground="#7A9E7A"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
                 </StackPanel>
 
                 <!-- ── 板块 2：AI 功能（原「AI 模型」板块里除供应商/模型之外的设置，2026-09-23 拆出） ── -->

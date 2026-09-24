@@ -76,11 +76,32 @@ public class AppSettings
     public List<AiProviderEntry> AiModelProviders { get; set; } = new();
 
     /// <summary>
-    /// 当前使用的模型，格式 <c>&lt;providerId&gt;/&lt;modelId&gt;</c>。
-    /// 本期只留数据字段与解析入口（<see cref="AiModelResolver.ResolveActive"/>），
-    /// 切换 UI 在 AI 问答侧后续接入 —— 那时只需改这一个值，其余代码零改动。
+    /// <b>上次使用的模型</b>（不是「默认模型」，2026-09-26 语义修正），格式 <c>&lt;providerId&gt;/&lt;modelId&gt;</c>。
+    ///
+    /// <para>由用户在 AI 问答里每切一次会话模型就自动改写一次，<b>刻意不在设置页露出</b> ——
+    /// 它是"记忆"不是"配置"：用户在会话里临时换个模型，不该顺手把设置页的那个值也改掉。
+    /// 新会话取模型时它排在第一优先（<see cref="AiModelResolver.ResolveForNewSession"/>）。</para>
+    ///
+    /// <para><b>跨启动持久化是刻意的</b>：不存盘的话每次重开应用新会话都会跳回默认模型，
+    /// 用户会以为"我选的模型老是丢" —— 那正是 2026-09-26 这轮要修的病。</para>
+    ///
+    /// <para>字段名保持 <c>ActiveModelKey</c> 是为了不改 settings.json 的键名（改名会静默丢掉老用户的
+    /// 这个值，还得额外写迁移）。存在为空/失效时由解析层一路回退，永不锁死 AI。</para>
     /// </summary>
     public string ActiveModelKey { get; set; } = "";
+
+    /// <summary>
+    /// <b>默认模型</b>（2026-09-26 新增），格式同 <see cref="ActiveModelKey"/>。
+    ///
+    /// <para>设置 → AI 模型 里可见、可点击更换，是唯一在 UI 上露出的模型配置。
+    /// 它的作用时机是「用户还没有任何使用记录」—— 也就是第一次配好模型那会儿；
+    /// 一旦用户用过（<see cref="ActiveModelKey"/> 有效）就以"上次使用"为准。
+    /// 用户显式改默认模型时会把 <see cref="ActiveModelKey"/> 一起覆盖，使改动立即对新会话生效
+    /// （否则会出现"我在设置里改了却没反应"的错觉）。</para>
+    ///
+    /// <para>为空不影响可用性：解析链最后一档是「第一个配置完整的模型」。</para>
+    /// </summary>
+    public string DefaultModelKey { get; set; } = "";
 
     // ── AI 问答界面（2026-09-23 重构：侧边栏 / 起手页）──
 
@@ -281,6 +302,9 @@ public class AppSettings
                     MaxOutputTokens = AiMaxTokens > 0 ? AiMaxTokens : 4096,   // 旧值 ≤0 视为未配置，回退默认
                 });
                 ActiveModelKey = provider.Id + "/" + model;
+                // 默认模型一起落上（2026-09-26）：迁移来的老用户设置页不该显示「（未设置）」——
+                // 他的旧配置本来就只有这一个模型，两者同值就是行为等价。
+                DefaultModelKey = provider.Id + "/" + model;
             }
 
             AiModelProviders.Add(provider);

@@ -238,6 +238,21 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // 长助手名的标题栏（2026-09-26）：AI 助手名称是用户可自定义的，名字一长，
+            // 标题栏右端那两个图标会不会被文字挤到/叠到，只有出图才看得见。
+            // 这不是假想风险：本次实现的第一版用"同格左对齐 + 同格右对齐"叠放，TextBlock 拿到的可用宽度
+            // 是整格，超长文本会一路伸到图标底下被盖住（TextTrimming 根本不生效）。
+            // 助手名在窗口关闭时还原（Closed 在截图之后触发），后面的场景不受影响。
+            Capture("10i-AI 对话-标题栏长助手名", () =>
+            {
+                var previous = settings.AiAssistantName;
+                settings.AiAssistantName = "我的超级智能知识助手小秘书（项目开发专用版）";
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedSidebarForSnapshot();
+                w.Closed += (_, _) => settings.AiAssistantName = previous;
+                return w;
+            }, outDir, log);
+
             // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
             // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
             // 这类错误静态代码看不出来，只能靠渲染结果判定。

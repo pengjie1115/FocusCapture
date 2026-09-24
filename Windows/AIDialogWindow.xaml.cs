@@ -273,6 +273,8 @@ public partial class AIDialogWindow : Window
         _provider = AiModelResolver.CreateProvider(settings);
         InitializeComponent();
         DarkTitleBar.Enable(this);   // 2026-09-21：主动申请深色原生标题栏（WPF 默认白底，不申请就靠系统心情）
+        ApplyHeaderLayout(false);    // 标题栏起始态 = 收起（构造函数里还没开侧边栏；默认展开走下面的 Loaded）
+        ApplyAssistantName();        // 标题跟随设置里的 AI 助手名称（不等 Activate —— 空白窗口期也不该闪默认名）
         // MessagesList.ItemsSource 在 Activate() 时按活跃会话绑定（多会话并行：切会话即切 Bubbles 源）
         InitInputArea();
         // 预览浮层预热：Popup 首次显示要创建宿主窗口（低配机上可感知），
@@ -379,8 +381,11 @@ public partial class AIDialogWindow : Window
         var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit)
         {
             GroupId = groupId,   // 空 = 未分组（原行为不变）
-            // 2026-09-24 任务5：新建会话即写入当时全局默认模型 —— 会话从第一句起固定，之后改全局不影响它
-            ModelKey = _settings.ActiveModelKey ?? "",
+            // 2026-09-26 用户拍板的优先级链：上次使用 → 默认模型 → 第一个可用（详见 AiModelResolver.ResolveForNewSession）。
+            // 与旧写法的差别：以前这里恒取 AppSettings.ActiveModelKey（当时语义是"全局默认"），
+            // 而用户在会话里切模型从不回写它 —— 于是「分组里先选好模型再发言」会被这一步用旧值覆盖，
+            // 就是用户报的「分组里选的模型不生效」。现在会话里的每次切换都会回写"上次使用"（见 ApplySessionModel）。
+            ModelKey = AiModelResolver.ResolveForNewSession(_settings)?.Key ?? "",
         };
         var runtime = new ConversationRuntime(session, mode, targetNote);
         _runtimes[session.SessionId] = runtime;
@@ -394,8 +399,7 @@ public partial class AIDialogWindow : Window
         PersistActiveSession();   // 切走前把旧会话落盘，使它进历史列表、用户可点它切回看答案
         _active = runtime;
         MessagesList.ItemsSource = runtime.Bubbles;
-        TitleText.Text = GetModeTitle(runtime.Mode);
-        Title = GetModeTitle(runtime.Mode);
+        ApplyAssistantName();   // 2026-09-26：标题一律跟随设置里的 AI 助手名称（不再显示模式名）
         SetBusyUi(runtime.IsStreaming);
         RefreshHandleChips();     // 牌号卡片跟会话走（2026-09-21）：切到哪个会话就摆哪个会话选的文件
         RestoreDraft(runtime);   // 回填目标 runtime 的草稿
@@ -403,59 +407,79 @@ public partial class AIDialogWindow : Window
         UpdateSessionModelButton();   // 会话级模型下拉显示跟会话走（2026-09-24 任务5）
     }
 
-    // ── 会话级模型下拉（2026-09-24 任务5）──
-    // 新建会话已写入当时全局默认 ModelKey（见 StartNewSession），这里给用户改本会话模型的入口：
-    // 点开弹所有可用模型（供应商 × 模型）+「跟随全局默认」；选中只改本会话 ModelKey，不动全局。
+    // ── 会话级模型下拉（2026-09-24 任务5；2026-09-26 改为"上次使用"记忆）──
+    // 新会话的初始模型由 StartNewSession 按「上次使用 → 默认模型 → 第一个可用」写入（会话从第一句起固定）。
+    // 这里给用户改本会话模型的入口：点开弹所有可用模型，选中即改本会话 ModelKey，
+    // 同时把它记为"上次使用"，使下一个新会话（含在分组里新建）跟它走。
+    // 「跟随全局默认」那一项已于 2026-09-26 删除 —— "全局默认"这个概念退场了，
+    // 现在唯一的模型配置是设置里的「默认模型」，而它只在用户还没有使用记录时顶用。
     private void BtnSessionModel_Click(object sender, RoutedEventArgs e)
     {
         if (_active == null) return;
         // 刻意用 new ContextMenu() 不用初始化器：自带 Style 会顶掉 App.xaml 深色模板出白条（项目已踩过）
         var menu = new ContextMenu();
-        var follow = new MenuItem { Header = "跟随全局默认", IsChecked = string.IsNullOrWhiteSpace(_active.Session.ModelKey) };
-        follow.Click += (_, _) => ApplySessionModel("");
-        menu.Items.Add(follow);
 
         foreach (var p in _settings.AiModelProviders)
         {
             foreach (var m in p.Models)
             {
+                if (string.IsNullOrWhiteSpace(m.Id)) continue;
                 var key = p.Id + "/" + m.Id;
-                var label = (string.IsNullOrWhiteSpace(p.Name) ? "" : p.Name + " · ") +
-                            (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
+                var resolved = AiModelResolver.TryResolveExact(_settings, key);
+                // 显示名以用户自己填的为准、不带供应商前缀；只有跨供应商同名时才自动补「（供应商）」
+                var label = resolved != null
+                    ? AiModelResolver.DisplayNameFor(_settings, resolved)
+                    : (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
                 var item = new MenuItem { Header = label, IsChecked = _active.Session.ModelKey == key };
                 var captured = key;
                 item.Click += (_, _) => ApplySessionModel(captured);
                 menu.Items.Add(item);
             }
         }
+
+        if (menu.Items.Count == 0)
+            menu.Items.Add(new MenuItem { Header = "（还没有配置任何模型）", IsEnabled = false });
+
         menu.PlacementTarget = BtnSessionModel;
         menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;
     }
 
-    /// <summary>切换当前会话的模型：改本会话 ModelKey + 清 provider 缓存（key 变了旧缓存失效）+ 刷新下拉</summary>
+    /// <summary>切换当前会话的模型：改本会话 ModelKey + <b>回写「上次使用」</b> + 清 provider 缓存 + 刷新下拉。
+    ///
+    /// <para>回写这一步是 2026-09-26 修「分组里选的模型不生效」的关键：用户在分组视图里选好模型后一发言，
+    /// SendCurrentInput 会先 StartNewSession 建新会话，新会话的初始模型取自"上次使用" ——
+    /// 不回写的话它拿到的还是旧值，用户的选择当场被覆盖。回写后无论直接新建对话还是在分组里新建都一致。</para>
+    ///
+    /// <para>落盘失败不抛（best effort，沿用本项目通则）：设置没存下去最多是下次启动回到旧值，
+    /// 不该让"切个模型"把界面弄崩。</para>
+    /// </summary>
     private void ApplySessionModel(string key)
     {
         if (_active == null) return;
         _active.Session.ModelKey = key;
+        _settings.ActiveModelKey = key;
+        try { _settings.Save(); } catch { /* best effort */ }
         _sessionProviders.Clear();
         UpdateSessionModelButton();
     }
 
-    /// <summary>下拉按钮显示：空 = 「模型 ▾」，非空 = 解析出的 DisplayLabel</summary>
+    /// <summary>下拉按钮显示：解析出的模型名（不带供应商前缀）+ ▾。
+    /// 键为空/失效时 Resolve 有一路回退，所以正常人看到的永远是"实际会用的那个模型"，不会空白。</summary>
     private void UpdateSessionModelButton()
     {
         if (_active == null || BtnSessionModel == null) return;
         var key = _active.Session.ModelKey ?? "";
-        if (string.IsNullOrWhiteSpace(key))
+        var resolved = AiModelResolver.Resolve(_settings, key);
+        if (resolved == null)
         {
             BtnSessionModel.Content = "模型 ▾";
-            BtnSessionModel.ToolTip = "跟随全局默认（点开切换本会话模型）";
+            BtnSessionModel.ToolTip = "还没有配置可用的模型（去「设置 → AI 模型」添加）";
             return;
         }
-        var resolved = AiModelResolver.Resolve(_settings, key);
-        BtnSessionModel.Content = (resolved?.DisplayLabel ?? "模型") + " ▾";
-        BtnSessionModel.ToolTip = "本会话使用：" + (resolved?.DisplayLabel ?? key) + "（点开切换）";
+        var label = AiModelResolver.DisplayNameFor(_settings, resolved);
+        BtnSessionModel.Content = label + " ▾";
+        BtnSessionModel.ToolTip = "本会话使用：" + label + "（点开切换）";
     }
 
     /// <summary>把当前输入框的纯文本草稿存到活跃会话（切会话/关窗前调用）。</summary>
@@ -555,8 +579,6 @@ public partial class AIDialogWindow : Window
         if (a == null || b == null) return false;
         return a.Timestamp == b.Timestamp;
     }
-
-    private static string GetModeTitle(ExplainMode mode) => "AI " + AiModeText.Get(mode);
 
     private void AddBubble(ConversationRuntime runtime, bool isUser, string content, bool isFillable = false,
         IReadOnlyList<ChatAttachmentViewModel>? attachments = null)
@@ -690,10 +712,11 @@ public partial class AIDialogWindow : Window
         catch { return ""; }
     }
 
-    /// <summary>设置里改了昵称 / 自定义欢迎语 / 头像后重刷界面（由 <see cref="AIDialogHelper.NotifyChatUiSettingsChanged"/> 调用）。
-    /// 起手页那句话与侧边栏底部用户区都跟着设置走；窗口没开着就不会走到这里。</summary>
+    /// <summary>设置里改了昵称 / 自定义欢迎语 / 头像 / AI 助手名称后重刷界面（由 <see cref="AIDialogHelper.NotifyChatUiSettingsChanged"/> 调用）。
+    /// 起手页那句话、侧边栏底部用户区、窗口标题都跟着设置走；窗口没开着就不会走到这里。</summary>
     internal void RefreshChatUiFromSettings()
     {
+        ApplyAssistantName();
         UpdateWelcomeContent();
         Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
     }
@@ -2080,7 +2103,7 @@ public partial class AIDialogWindow : Window
         // 输入框回答期间保持可用（可预输入下一条），发送动作由 _active.IsStreaming 守卫拦截
     }
 
-    /// <summary>主区左上角：展开/收起侧边栏（2026-09-24，取代标题栏「历史」按钮）。
+    /// <summary>侧边栏开关（标题栏里两个位置的按钮共用：收起态的 ≡ 与展开态的 ‹）。
     /// 开关逻辑与旧 BtnHistory_Click 一致：收起态先刷新再展开，展开态直接收起。</summary>
     private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
     {
@@ -2089,7 +2112,7 @@ public partial class AIDialogWindow : Window
         OpenDrawer(!_drawerOpen);
     }
 
-    /// <summary>主区左上角：打开全局搜索窗（跨所有会话搜消息正文，点结果跳转会话）。
+    /// <summary>打开全局搜索窗（标题栏里两个位置的放大镜共用；跨所有会话搜消息正文，点结果跳转会话）。
     /// 搜索底层走 ChatSearchService.Search(query, null)（null = 搜全部会话含已分组），
     /// 防抖与结果展示在 ChatSearchWindow 内；点结果回调本窗 OpenSessionFromSearch 打开会话。</summary>
     private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e)
@@ -2142,15 +2165,43 @@ public partial class AIDialogWindow : Window
     private const double DrawerMinWidth = 150;   // 防拖没了
     private const double DrawerMaxWidth = 480;
 
+    /// <summary>
+    /// 标题栏两态的显隐切换（2026-09-26 用户拍板的新布局）：
+    /// <list type="bullet">
+    /// <item><b>展开态</b>：标题栏左半截（宽度 = 侧边栏宽度）显示「助手名 + [搜索][收起]」，
+    /// 图标右对齐紧贴竖线 —— 拖列宽时整块跟着走，图标永远落在分隔线边上。右半截那组图标隐藏。</item>
+    /// <item><b>收起态</b>：左半截宽度为 0 自然不可见，图标组落在对话区标题栏最左（≡ 在左、搜索在右）。</item>
+    /// </list>
+    /// 竖线只在展开态可见：侧边栏都不在了，没有"两个区域"要分。
+    /// <para><b>为什么抽成独立方法</b>：快照 Seed（SeedSidebarForSnapshot）刻意不走 OpenDrawer（避开 180ms 动画），
+    /// 若显隐逻辑写死在 OpenDrawer 里，快照里的侧边栏展开图就会缺掉整套标题栏内容。</para>
+    /// </summary>
+    private void ApplyHeaderLayout(bool open)
+    {
+        SidebarHeaderPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        CollapsedHeaderPanel.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
+        DrawerSplitter.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// 把设置里的「AI 助手名称」刷到窗口标题两处：窗口内标题栏（TextBlock）与原生标题栏（Window.Title）。
+    /// 2026-09-26 用户拍板：AI 问答窗口不再显示「AI 问答 / AI 翻译」这种模式名，一律跟随助手名 ——
+    /// 用户自定义后窗口内标题栏、任务栏、Alt-Tab 一起变。留空回退默认名。
+    /// </summary>
+    private void ApplyAssistantName()
+    {
+        var name = string.IsNullOrWhiteSpace(_settings.AiAssistantName) ? "AI 问答" : _settings.AiAssistantName.Trim();
+        TitleText.Text = name;
+        Title = name;
+    }
+
     /// <summary>展开/收起抽屉（"历史"按钮与抽屉内收起按钮共用）。
     /// 动画仍作用于 Sidebar.Width（铁律：不动 ColumnDefinition）；展开宽度 = 设置记忆宽度（240 参数化）。
     /// 收起状态不记忆——下次展开仍用记忆宽度。</summary>
     private void OpenDrawer(bool open)
     {
         _drawerOpen = open;
-        // 同步主区左上角开关按钮的文案（2026-09-24，取代标题栏「历史」按钮）
-        BtnToggleSidebar.Content = open ? "‹" : "≡";
-        BtnToggleSidebar.ToolTip = open ? "收起侧边栏" : "展开侧边栏";
+        ApplyHeaderLayout(open);
         DrawerSplitter.IsEnabled = false; // 动画期间禁用拖拽，避免与动画打架（铁律 2）
         if (open)
         {
@@ -2645,6 +2696,7 @@ public partial class AIDialogWindow : Window
         TrySeedAvatarForSnapshot();
 
         _drawerOpen = true;
+        ApplyHeaderLayout(true);   // 快照不走 OpenDrawer（避开动画），标题栏两态的显隐必须在这里补上
         Sidebar.Width = 220;
         Sidebar.MinWidth = DrawerMinWidth;
         RefreshDrawer();

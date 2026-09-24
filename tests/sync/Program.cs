@@ -674,13 +674,59 @@ print(json.dumps({
         Check(appXaml.Contains("ScrollBar.PageUpCommand") && appXaml.Contains("IsEnabled=\"False\""),
               "轨道两端的翻页按钮必须隐藏且禁用（IsEnabled=False 让点击轨道翻页仍然可用）");
 
-        // ── 2. AI 问答窗口：主动申请深色标题栏 + 品牌绿 accent 线 ──
+        // ── 2. AI 问答窗口：主动申请深色标题栏 ──
         Check(aiCs.Contains("DarkTitleBar.Enable(this)"),
               "AI 问答窗口必须主动申请深色原生标题栏（WPF 默认白底；设置窗口的深色是系统行为，不可依赖）");
         Check(darkSrc.Contains("{ 19, 20 }"),
               "深色标题栏必须同时尝试 DWM 属性 19 与 20（1809 旧值 / 1903 正式值，缺一个老系统就回退白底）");
-        Check(aiXaml.Contains("BorderBrush=\"#4CAF50\" BorderThickness=\"0,0,0,2\""),
-              "AI 问答窗口内标题栏必须有 2px 品牌绿 accent 线（方案 B 的标志，丢了 = 配色走样）");
+
+        // ── 2b. 标题栏两态布局（2026-09-26 用户拍板重排）──
+        // 改之前：标题栏横贯整窗 + 底部 2px 品牌绿 accent 线；开/关侧边栏的两个图标浮在正文区左上角。
+        // 改之后：列结构上提到顶层，竖线贯通到窗口顶部；图标按展开/收起两态分两组落位，顺序正好相反。
+        // 为什么这些要变成断言：它们全是"只有出图才看得见"的排版事实 ——
+        // 出图对比容易被人一眼带过，而这类结构被改回去时不会编译报错、也没有任何运行时报错。
+        static string TagOf(string xaml, string name)
+        {
+            var i = xaml.IndexOf("x:Name=\"" + name + "\"", StringComparison.Ordinal);
+            if (i < 0) return "";
+            var start = xaml.LastIndexOf('<', i);
+            var end = xaml.IndexOf('>', i);
+            return start >= 0 && end > start ? xaml[start..(end + 1)] : "";
+        }
+
+        Check(!aiXaml.Contains("BorderThickness=\"0,0,0,2\""),
+              "标题栏不许再有底部 2px 绿线 —— 它会横着把窗口切成两截，与「竖线贯通到顶」正面冲突",
+              "那条线是配色方案 B 的旧标志，2026-09-26 用户拍板去掉；别当回归加回来");
+        Check(TagOf(aiXaml, "DrawerSplitter").Contains("Grid.RowSpan=\"2\""),
+              "竖向分隔线必须跨两行（Grid.RowSpan=2），从窗口最顶端一直贯到底",
+              "只跨正文行 = 回到「标题栏与正文两截」的老样子，这正是本次要修的");
+
+        var expandedStart = aiXaml.IndexOf("x:Name=\"SidebarHeaderPanel\"", StringComparison.Ordinal);
+        var collapsedStart = aiXaml.IndexOf("x:Name=\"CollapsedHeaderPanel\"", StringComparison.Ordinal);
+        var sidebarStart = aiXaml.IndexOf("x:Name=\"Sidebar\"", StringComparison.Ordinal);
+        var expandedSeg = expandedStart >= 0 && collapsedStart > expandedStart ? aiXaml[expandedStart..collapsedStart] : "";
+        var collapsedSeg = collapsedStart >= 0 && sidebarStart > collapsedStart ? aiXaml[collapsedStart..sidebarStart] : "";
+
+        Check(expandedSeg.Length > 0 && collapsedSeg.Length > 0,
+              "标题栏必须分成展开态 / 收起态两组（SidebarHeaderPanel / CollapsedHeaderPanel）",
+              "少了任何一组 = 某一态下图标无处可放");
+        Check(expandedSeg.IndexOf("BtnHeaderSearch", StringComparison.Ordinal) >= 0
+              && expandedSeg.IndexOf("BtnHeaderSearch", StringComparison.Ordinal) < expandedSeg.IndexOf("BtnHeaderCollapse", StringComparison.Ordinal),
+              "展开态：搜索在左、收起在右（用户拍板，与收起态正好相反）");
+        Check(collapsedSeg.IndexOf("BtnToggleSidebar", StringComparison.Ordinal) >= 0
+              && collapsedSeg.IndexOf("BtnToggleSidebar", StringComparison.Ordinal) < collapsedSeg.IndexOf("BtnGlobalSearch", StringComparison.Ordinal),
+              "收起态：≡ 在左、搜索在右（用户拍板）");
+
+        Check(aiCs.Contains("ApplyAssistantName") && !aiCs.Contains("GetModeTitle"),
+              "窗口标题必须跟随设置里的「AI 助手名称」（拼模式名的 GetModeTitle 老写法已退场）");
+        Check(!aiCs.Contains("Header = \"跟随全局默认\""),
+              "会话级模型下拉不许再有「跟随全局默认」—— 全局默认模型这个概念已退场（2026-09-26 用户拍板删）");
+
+        var settingsXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml"));
+        Check(!settingsXaml.Contains("AiActiveModelText"),
+              "设置页不许再显示「当前使用模型：…」（2026-09-26 用户拍板删除 —— 机制本身换了）");
+        Check(settingsXaml.Contains("x:Name=\"DefaultModelRow\"") && settingsXaml.Contains("DefaultModelRow_Click"),
+              "设置页必须有可点击的「默认模型」行（点中即生效，不再弹确认框）");
 
         // ── 3. 死样式不许复活：只定义未引用的 ScrollbarStyle 已删，别再加回来 ──
         Check(!aiXaml.Contains("x:Key=\"ScrollbarStyle\""),
@@ -1714,6 +1760,62 @@ print(json.dumps({
               && back.AiModelProviders[0].Models[0].MaxOutputTokens == 1234,
               "AppJsonContext 能完整往返多供应商结构（漏注册会在此抛 NotSupportedException）",
               "源生成上下文里少了 AiProviderEntry / AiModelEntry 的注册");
+
+        // ── 新会话取模型：上次使用 → 默认模型 → 第一个可用（2026-09-26 用户拍板重写）──
+        // 为什么必须单独守：这条链的每一档坏了都**不报错**，用户看到的只是「我选的模型被悄悄换回另一个」——
+        // 那正是本次要修的那个 bug 的形态。尤其第二档：回退式 Resolve 会把「键失效」伪装成
+        // 「命中了第一个可用模型」，一旦有人图省事把它换回去，「默认模型」就永远轮不到，而测试照样全绿。
+        var chain = new AppSettings { ActiveModelKey = "pB/mB1", DefaultModelKey = "pA/mA1" };
+        chain.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pA", Name = "A", BaseUrl = "https://a.example/v1",
+            Models = { new AiModelEntry { Id = "mA1", DisplayName = "同名词" } },
+        });
+        chain.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pB", Name = "B", BaseUrl = "https://b.example/v1",
+            Models = { new AiModelEntry { Id = "mB1", DisplayName = "同名词" } },
+        });
+
+        Check(AiModelResolver.ResolveForNewSession(chain)?.Key == "pB/mB1",
+              "第一档：新会话优先用「上次使用」的模型（这正是「分组里选的模型不生效」要修的根）");
+
+        chain.ActiveModelKey = "pA/已被删掉的模型";
+        Check(AiModelResolver.ResolveForNewSession(chain)?.Key == "pA/mA1",
+              "第二档：上次使用的键失效 → 改用「默认模型」",
+              "这里若换成回退式 Resolve，它会偷偷命中第一个可用模型，让「默认模型」永远轮不到");
+
+        chain.DefaultModelKey = "pB/也没有这个";
+        Check(AiModelResolver.ResolveForNewSession(chain)?.Key == "pA/mA1",
+              "第三档：两个键都失效 → 回退第一个配置完整的模型（一个过期键不许把 AI 锁死）");
+
+        // ── 精确命中与回退命中必须能区分（上面第二档成立的全部前提）──
+        Check(AiModelResolver.TryResolveExact(chain, "pA/已被删掉的模型") == null,
+              "TryResolveExact 键失效必须给 null —— 它会回退就区分不出「失效」与「命中第一个」",
+              "优先级链靠它才成立，见 AiModelResolver.ResolveForNewSession 的注释");
+        Check(AiModelResolver.TryResolveExact(chain, "pA/mA1")?.Key == "pA/mA1",
+              "TryResolveExact 命中即返回");
+        Check(AiModelResolver.TryResolveExact(chain, "") == null
+              && AiModelResolver.TryResolveExact(chain, "没有斜杠") == null
+              && AiModelResolver.TryResolveExact(chain, "/") == null,
+              "空键 / 畸形键必须安全返回 null（不抛）—— 老设置文件里的脏键不能把新会话建崩");
+
+        // ── 显示名：以用户自己填的为准，默认不带供应商前缀；跨供应商重名才补「（供应商）」（2026-09-26 用户拍板）──
+        // 为什么重名要补：两家都叫「同名词」时，光看模型名用户分不清自己选的是哪一家，那种"简洁"是误导。
+        var aHit = AiModelResolver.TryResolveExact(chain, "pA/mA1")!;
+        Check(AiModelResolver.DisplayNameFor(chain, aHit) == "同名词（A）",
+              "两家供应商存在同名模型 → 必须补「（供应商）」区分，否则用户分不清选的是哪家");
+        chain.AiModelProviders[1].Models[0].DisplayName = "另一个名字";
+        Check(AiModelResolver.DisplayNameFor(chain, aHit) == "同名词",
+              "显示名不重复时不许带供应商前缀 —— 用户设的那个名字才是唯一口径");
+
+        // ── 两个模型键都要进序列化往返（源生成上下文漏注册不会编译报错，只会在用户存设置那一刻炸）──
+        withNew.DefaultModelKey = "snap/m1";
+        var keyBack = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(withNew, AppJsonContext.Default.AppSettings),
+            AppJsonContext.Default.AppSettings);
+        Check(keyBack != null && keyBack.DefaultModelKey == "snap/m1",
+              "DefaultModelKey 必须进 AppJsonContext 序列化往返（漏注册 = 用户存一次设置就丢默认模型）");
 
         // ── 三级解析回退 ──
         var three = new AppSettings { ActiveModelKey = "pA/mA1" };
