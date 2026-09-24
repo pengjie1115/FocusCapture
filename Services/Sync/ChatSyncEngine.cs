@@ -61,7 +61,7 @@ public class ChatSyncEnvelope
 /// - 删除闭环①：MarkDeleted → 本地移入 trash + 清单上传；他端拉到后本地文件移入各自的会话回收站；
 ///   镜像目录 / Purged 跨端清空 / 恢复跨端传播延后 v2。
 /// </summary>
-public class ChatSyncEngine
+public class ChatSyncEngine : IDisposable
 {
     private const string ChatFilePrefix = "chat-";            // 云端会话文件名：chat-{Id}.json（与笔记 notes-* 前缀隔离）
     private const string CloudGroupsFile = "chat_groups.json";
@@ -82,6 +82,7 @@ public class ChatSyncEngine
     private byte[]? _dek;
     private string _dekSalt = "";                 // 派生 _dek 时用的盐（笔记端盐变更后自动重派生）
     private volatile bool _dirty;
+    private volatile bool _disposed;              // Dispose 后所有同步入口直接返回，禁止再写任何真实目录
 
     /// <summary>
     /// 检测到会话版本冲突（双端在共同基线之上都有修改）时触发，阶段二 UI 订阅弹窗裁决。
@@ -103,11 +104,24 @@ public class ChatSyncEngine
         _mergeTimer = new Timer(_ => OnMergeWindowElapsed(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
+    /// <summary>
+    /// 停用引擎（幂等）：停防抖定时器 + 置停用标志。**订阅方（MainWindow）负责在重建/退出时调用** ——
+    /// 不 Dispose 的后果：静态事件唤醒已停用引擎的 _mergeTimer 去写真实目录（2026-09-23 事故同款）。
+    /// 构造函数**不订阅任何静态事件**，事件订阅由唯一创建点（MainWindow.CreateSyncEngine）负责，
+    /// 与 Dispose 成对管理（ChatGroupStore.GroupsChanged 注释有同一约定）。
+    /// </summary>
+    public void Dispose()
+    {
+        _disposed = true;
+        _mergeTimer.Dispose();
+    }
+
     // ── 触发入口 ──
 
     /// <summary>会话本地变更后调用（ChatSessionService.SessionChanged 订阅入口），启动/重置上传防抖窗口。</summary>
     public void NotifyLocalChange()
     {
+        if (_disposed) return;
         if (!_settings.Sync.ChatSyncEnabled) return;
         if (!EnsureDekCurrent()) return;   // 盐未就绪：静默跳过（状态已留痕）
         _dirty = true;
@@ -117,7 +131,7 @@ public class ChatSyncEngine
 
     private void OnMergeWindowElapsed()
     {
-        if (!_dirty) return;
+        if (_disposed || !_dirty) return;
         _dirty = false;
         _ = Task.Run(() => RunOnceAsync());
     }
@@ -129,6 +143,7 @@ public class ChatSyncEngine
     /// </summary>
     public async Task RunOnceAsync()
     {
+        if (_disposed) return;
         if (!_settings.Sync.ChatSyncEnabled) return;
         if (!EnsureDekCurrent()) return;
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -427,11 +442,20 @@ public class ChatSyncEngine
         SetChatStatus($"冲突：会话 {sessionId[..8]}… 在另一设备有更新，已跳过上传（等待处理）");
     }
 
-    // ── 分组清单同步（阶段一：按 Id 并集；多端同名分组合并 + GroupId 重映射属分组管理功能，随阶段二 UI 交付） ──
+    // ── 分组清单同步 ──
 
+    /// <summary>
+    /// 分组清单同步。**2026-09-23 重写合并段**，修掉「跨端改名被回滚」：
+    /// 旧实现是 `foreach (var (id, g) in localById) merged[id] = g;` —— 同 Id 无条件用本地覆盖云端，
+    /// 于是 A 端改的分组名会被 B 端下一轮同步推回旧值，再传回 A，A 也变回去（设计稿 §11-3）。
+    /// 现在同 Id 冲突按字段时间戳裁决（`NameUpdatedAt` / `InstructionUpdatedAt`）；旧清单没有时间戳
+    /// （反序列化为 default）时回退到"本地 wins"，保证升级后行为不恶化。
+    /// </summary>
     private async Task SyncGroupsAsync()
     {
-        var localGroups = ChatGroupStore.Load();
+        // ⚠️ 必须用 LoadAll（含删除墓碑）：合并要拿得到墓碑才能压制云端残留。
+        // 用 Load()（过滤墓碑）的话，本机删的分组在合并时"看起来不存在"，云端那份又并回来 —— 删除复活。
+        var localGroups = ChatGroupStore.LoadAll();
         var localById = localGroups.GroupBy(g => g.Id, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var cloudJson = await _storage.DownloadFileAsync(CloudGroupsFile, CancellationToken.None).ConfigureAwait(false);
@@ -446,10 +470,17 @@ public class ChatSyncEngine
             }
             catch (JsonException) { /* 云端分组文件损坏：按空处理，本地并集覆盖回去 */ }
         }
-        foreach (var (id, g) in localById) merged[id] = g;   // 本地 wins 同 Id 冲突（无版本号，简单并集）
 
-        // 多端同名分组合并（阶段二）：按名称去重，胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序），
-        // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）
+        // 同 Id 冲突：逐字段 LWW（取代旧的"本地无条件 wins"）
+        foreach (var (id, localGroup) in localById)
+        {
+            merged[id] = merged.TryGetValue(id, out var cloudGroup)
+                ? ChatGroupMerge.MergeSameId(cloudGroup, localGroup)
+                : localGroup;
+        }
+
+        // 多端同名分组合并：胜出 = CreatedAt 最早（平局按 DeviceId 字典序 → Id 字典序）；
+        // 败者分组删除、引用败者的会话 GroupId 重映射到胜者（重映射走 Load→Save，Rev 自增随下轮推送）。
         foreach (var g in merged.Values)
             if (string.IsNullOrEmpty(g.DeviceId)) g.DeviceId = _settings.Sync.DeviceId;
 
@@ -462,7 +493,11 @@ public class ChatSyncEngine
                 .First();
             foreach (var loser in sameName.Where(g => !string.Equals(g.Id, winner.Id, StringComparison.Ordinal)))
             {
-                merged.Remove(loser.Id);
+                // 败者更新的名称/指令要先并进胜者，否则"早建的分组"会把"晚改的指令"一起吞掉
+                ChatGroupMerge.MergeLoserIntoWinner(winner, loser);
+                // 败者不真删：标墓碑保留在清单里 —— 另一端可能还存着它，真删会被下一轮并集复活
+                //（与 DeleteGroup 同一道理）；墓碑记录 Load() 会过滤，UI 看不到
+                loser.DeletedAt = DateTime.Now;
                 remap[loser.Id] = winner.Id;
             }
         }
@@ -477,10 +512,17 @@ public class ChatSyncEngine
             await _storage.UploadFileAsync(CloudGroupsFile, cipher, CancellationToken.None).ConfigureAwait(false);
         }
 
-        // 本地清单对齐合并结果：云端有本地缺的分组落地（他端新建）；同名合并删掉的败者从清单移除
-        if (merged.Values.Any(g => !localById.ContainsKey(g.Id)) || remap.Count > 0)
-            ChatGroupStore.Save(merged.Values.ToList());
+        // 本地清单对齐合并结果（云端有本地缺的分组落地、同名合并删掉的败者从清单移除、字段裁决结果回写）。
+        // **只在内容真的变了才落盘** —— ChatGroupStore.Save 会触发 GroupsChanged → 启动上传防抖窗口，
+        // 每轮无脑保存等于"同步自己触发下一轮同步"，会空转烧掉坚果云 600 请求/30min 的额度。
+        var changed = remap.Count > 0
+            || merged.Count != localById.Count
+            || merged.Values.Any(g => !localById.TryGetValue(g.Id, out var l) || !ChatGroupMerge.IsSameGroup(g, l));
+        if (changed) ChatGroupStore.Save(merged.Values.ToList());
     }
+
+    // 合并裁决的三个纯函数已抽到 Services/Sync/ChatGroupMerge.cs ——
+    // 抽出来是为了能直接写检查点（埋在私有方法里时，除了拿两台真设备没法验证）
 
     /// <summary>同名分组合并后重映射：把本地会话文件中引用败者 GroupId 的改为胜者（Load → 改 → Save，
     /// Rev 自增 + SessionChanged 防抖窗口，重映射结果随下轮推送他端）。</summary>

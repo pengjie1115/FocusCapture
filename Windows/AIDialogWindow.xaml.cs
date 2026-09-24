@@ -117,6 +117,19 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         }
     }
 
+    private bool _searchHighlight;
+    /// <summary>搜索命中标记：从全局搜索跳转过来时，命中气泡短暂高亮（2026-09-24，气泡 DataTemplate 的 DataTrigger 改背景）</summary>
+    public bool SearchHighlight
+    {
+        get => _searchHighlight;
+        set
+        {
+            if (_searchHighlight == value) return;
+            _searchHighlight = value;
+            FirePropertyChanged(nameof(SearchHighlight));
+        }
+    }
+
     private string _reasoningText = "";
     /// <summary>思考过程文本（仅思考型模型产生；流式追加）</summary>
     public string ReasoningText
@@ -204,6 +217,9 @@ public partial class AIDialogWindow : Window
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
     private readonly OpenAICompatibleProvider _provider;
+    // 会话级模型 provider 缓存（2026-09-24 任务5）：按会话 ModelKey 解析，同 key 复用同一 provider 实例
+    // —— 否则 LastTrimHint 会因每次 new 新 provider 而丢失（发送设的裁剪提示取不回来）。
+    private readonly Dictionary<string, OpenAICompatibleProvider> _sessionProviders = new(StringComparer.Ordinal);
     private bool _closed;
     private bool _drawerOpen;               // 历史抽屉展开状态
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
@@ -262,12 +278,31 @@ public partial class AIDialogWindow : Window
         // 预览浮层预热：Popup 首次显示要创建宿主窗口（低配机上可感知），
         // 放到窗口加载完成后的空闲时机先开合一次，把这份开销挪到用户看不见的地方
         Loaded += (_, _) => Dispatcher.BeginInvoke(new Action(_preview.Prewarm), DispatcherPriority.Background);
-        HistoryPanel.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
-        HistoryPanel.ItemAction += (item, action, context) => Dispatcher.BeginInvoke(new Action(() => HandleItemAction(item, action, context)));
-        HistoryPanel.BatchAction += (action, items, context) => Dispatcher.BeginInvoke(new Action(() => HandleBatchAction(action, items, context)));
-        HistoryPanel.GroupsManageRequested += () => Dispatcher.BeginInvoke(new Action(HandleGroupsManage));
-        HistoryPanel.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
-        HistoryPanel.CollapseRequested += () => Dispatcher.BeginInvoke(new Action(() => OpenDrawer(false))); // 抽屉内收起按钮：复用同一动画逻辑
+        // 侧边栏默认展开（2026-09-23）：设置里可改，默认收起。
+        // 放在 Loaded 而不是构造函数 —— 展开要走宽度动画，窗口还没渲染时触发会停在 Width=0 的中间态。
+        Loaded += (_, _) => { if (_settings.ChatSidebarDefaultExpanded) OpenDrawer(true); };
+        // 侧边栏（2026-09-23 取代历史抽屉）。与旧抽屉同一条纪律：控件只抛事件，业务一律宿主执行。
+        // 注意批量操作（多选）随旧抽屉一起退场了 —— 新侧边栏的会话菜单是单条操作。
+        Sidebar.SessionSelected += item => Dispatcher.BeginInvoke(new Action(() => LoadHistorySession(item.FilePath)));
+        Sidebar.SessionAction += (item, action, context) => Dispatcher.BeginInvoke(new Action(() => HandleItemAction(item, action, context)));
+        Sidebar.GroupSelected += group => Dispatcher.BeginInvoke(new Action(() => HandleGroupSelected(group)));
+        Sidebar.GroupAction += (group, action) => Dispatcher.BeginInvoke(new Action(() => HandleGroupAction(group, action)));
+        Sidebar.NewChatRequested += () => Dispatcher.BeginInvoke(new Action(() => { CloseGroupView(); StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote); }));
+        Sidebar.NewGroupRequested += () => Dispatcher.BeginInvoke(new Action(HandleNewGroup));
+        Sidebar.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
+        // 批量操作（2026-09-24 找回）：入口在会话三点菜单，动作在侧边栏底部操作条（用户拍板的形态）
+        Sidebar.BatchModeRequested += () => Dispatcher.BeginInvoke(new Action(() => Sidebar.EnterBatchMode()));
+        Sidebar.BatchDeleteRequested += items => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            DeleteSessions(items);
+            RefreshDrawer();
+        }));
+        Sidebar.BatchGroupRequested += (items, groupId) => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            foreach (var item in items)
+                ApplySessionMeta(item, s => s.GroupId = groupId);
+            RefreshDrawer();
+        }));
         Deactivated += (_, _) => _preview.HoverLeave();   // 窗口失焦时鼠标可能已不在卡片上，预览要跟着收
         Closed += OnWindowClosed;
 
@@ -315,14 +350,18 @@ public partial class AIDialogWindow : Window
     }
 
     /// <summary>新建会话：建一个新 runtime 并切为活跃。**不中断当前活跃会话的后台回答**（多会话并行）。
-    /// 当前活跃会话若仍空（未对话）且模式/目标笔记一致 → 复用，避免空 runtime 堆积。</summary>
-    private void StartNewSession(ExplainMode mode, NoteEntry? targetNote)
+    /// 当前活跃会话若仍空（未对话）且模式/目标笔记/**分组归属**一致 → 复用，避免空 runtime 堆积。
+    /// <paramref name="groupId"/> 非空 = 直接建在该分组里（2026-09-24 修：此前根本不传，
+    /// "在分组里发消息"建的会话全是未分组 —— 用户报的"分组里创建的会话没有归类"就是这个）。</summary>
+    private void StartNewSession(ExplainMode mode, NoteEntry? targetNote, string groupId = "")
     {
-        // 复用仍空的当前会话：模式与目标笔记一致时直接接管，不另造一个空 runtime
+        // 复用仍空的当前会话：模式、目标笔记、**分组归属**全一致才接管 ——
+        // 少了归属这一条，在分组里新建会话会错误复用一个未分组的空会话，归组再次落空
         if (_active != null
             && !HasConversation(_active)
             && _active.Mode == mode
-            && SameTargetNote(_active.TargetNote, targetNote))
+            && SameTargetNote(_active.TargetNote, targetNote)
+            && string.Equals(_active.Session.GroupId, groupId, StringComparison.Ordinal))
         {
             _active.AgentRulesAdded = false;
             Activate(_active);
@@ -337,7 +376,12 @@ public partial class AIDialogWindow : Window
             noteContent = targetNote.Content;
         }
 
-        var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit);
+        var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit)
+        {
+            GroupId = groupId,   // 空 = 未分组（原行为不变）
+            // 2026-09-24 任务5：新建会话即写入当时全局默认模型 —— 会话从第一句起固定，之后改全局不影响它
+            ModelKey = _settings.ActiveModelKey ?? "",
+        };
         var runtime = new ConversationRuntime(session, mode, targetNote);
         _runtimes[session.SessionId] = runtime;
         Activate(runtime);
@@ -356,6 +400,62 @@ public partial class AIDialogWindow : Window
         RefreshHandleChips();     // 牌号卡片跟会话走（2026-09-21）：切到哪个会话就摆哪个会话选的文件
         RestoreDraft(runtime);   // 回填目标 runtime 的草稿
         FocusInput();
+        UpdateSessionModelButton();   // 会话级模型下拉显示跟会话走（2026-09-24 任务5）
+    }
+
+    // ── 会话级模型下拉（2026-09-24 任务5）──
+    // 新建会话已写入当时全局默认 ModelKey（见 StartNewSession），这里给用户改本会话模型的入口：
+    // 点开弹所有可用模型（供应商 × 模型）+「跟随全局默认」；选中只改本会话 ModelKey，不动全局。
+    private void BtnSessionModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active == null) return;
+        // 刻意用 new ContextMenu() 不用初始化器：自带 Style 会顶掉 App.xaml 深色模板出白条（项目已踩过）
+        var menu = new ContextMenu();
+        var follow = new MenuItem { Header = "跟随全局默认", IsChecked = string.IsNullOrWhiteSpace(_active.Session.ModelKey) };
+        follow.Click += (_, _) => ApplySessionModel("");
+        menu.Items.Add(follow);
+
+        foreach (var p in _settings.AiModelProviders)
+        {
+            foreach (var m in p.Models)
+            {
+                var key = p.Id + "/" + m.Id;
+                var label = (string.IsNullOrWhiteSpace(p.Name) ? "" : p.Name + " · ") +
+                            (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
+                var item = new MenuItem { Header = label, IsChecked = _active.Session.ModelKey == key };
+                var captured = key;
+                item.Click += (_, _) => ApplySessionModel(captured);
+                menu.Items.Add(item);
+            }
+        }
+        menu.PlacementTarget = BtnSessionModel;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>切换当前会话的模型：改本会话 ModelKey + 清 provider 缓存（key 变了旧缓存失效）+ 刷新下拉</summary>
+    private void ApplySessionModel(string key)
+    {
+        if (_active == null) return;
+        _active.Session.ModelKey = key;
+        _sessionProviders.Clear();
+        UpdateSessionModelButton();
+    }
+
+    /// <summary>下拉按钮显示：空 = 「模型 ▾」，非空 = 解析出的 DisplayLabel</summary>
+    private void UpdateSessionModelButton()
+    {
+        if (_active == null || BtnSessionModel == null) return;
+        var key = _active.Session.ModelKey ?? "";
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            BtnSessionModel.Content = "模型 ▾";
+            BtnSessionModel.ToolTip = "跟随全局默认（点开切换本会话模型）";
+            return;
+        }
+        var resolved = AiModelResolver.Resolve(_settings, key);
+        BtnSessionModel.Content = (resolved?.DisplayLabel ?? "模型") + " ▾";
+        BtnSessionModel.ToolTip = "本会话使用：" + (resolved?.DisplayLabel ?? key) + "（点开切换）";
     }
 
     /// <summary>把当前输入框的纯文本草稿存到活跃会话（切会话/关窗前调用）。</summary>
@@ -512,12 +612,68 @@ public partial class AIDialogWindow : Window
         UpdatePlaceholder();
     }
 
-    /// <summary>占位提示只在"既没文字也没附件"时显示</summary>
+    /// <summary>占位提示只在"既没文字也没附件"时显示。
+    /// 顺带同步「输入区居中 / 沉底」与欢迎语 —— 发消息、切会话、切分组都会经过这里，
+    /// 挂在它上面就不必去十几个调用点各插一次。</summary>
     private void UpdatePlaceholder()
     {
         var text = new TextRange(InputBox.Document.ContentStart, InputBox.Document.ContentEnd).Text;
         var empty = string.IsNullOrWhiteSpace(text) && AttachmentCountInInput() == 0;
         InputPlaceholder.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        RefreshPickGroupLabel();   // 「选择分组」文案跟着状态走（发送/切会话/进退分组都经过这里）
+        RefreshComposerLayout();
+    }
+
+    /// <summary>按当前会话状态决定输入区在中间还是底部。
+    /// 分组视图也沉底 —— 它不是起手页（空态提示由分组视图自己的"说第一句"承担）。</summary>
+    private void RefreshComposerLayout()
+        => ApplyComposerLayout(atBottom: _active is { Bubbles.Count: > 0 } || _activeGroupId.Length > 0);
+
+    /// <summary>
+    /// 输入区布局（2026-09-23，用户要求）：
+    /// - **起手态**（空会话且不在分组视图里）：输入框垂直居中，上方显示欢迎语
+    /// - **对话态**：沉到底部，但**留 16px 空隙**（原话"不要完全触底"）
+    ///
+    /// 位置切换本身没法做动画（改的是 Grid.Row / VerticalAlignment），所以靠 Transparency 感的
+    /// 短淡入让跳变不刺眼 —— 不做位移补间是因为那要引入 Canvas 定位，把整个布局关系搞脆。
+    /// </summary>
+    private void ApplyComposerLayout(bool atBottom)
+    {
+        var showingWelcome = !atBottom && _activeGroupId.Length == 0;
+
+        WelcomePanel.Visibility = showingWelcome ? Visibility.Visible : Visibility.Collapsed;
+        if (showingWelcome) UpdateWelcomeContent();
+
+        if (atBottom)
+        {
+            Grid.SetRow(InputArea, 1);
+            InputArea.VerticalAlignment = VerticalAlignment.Bottom;
+            InputArea.Margin = new Thickness(0, 0, 0, 16);
+            // 沉底时左下角要不要切平，取决于侧边栏开合（沿用原有规则，别改出分叉）
+            InputArea.CornerRadius = _drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6);
+        }
+        else
+        {
+            Grid.SetRow(InputArea, 0);
+            InputArea.VerticalAlignment = VerticalAlignment.Center;
+            InputArea.Margin = new Thickness(28, 0, 28, 0);
+            InputArea.CornerRadius = new CornerRadius(6);   // 居中态四角都是圆的
+        }
+
+        // 短淡入：位置跳变时给一帧过渡（快照/无动画环境下 BeginAnimation 不影响终值）
+        var fade = new DoubleAnimation(0.55, 1.0, TimeSpan.FromMilliseconds(140));
+        InputArea.BeginAnimation(OpacityProperty, fade);
+    }
+
+    /// <summary>欢迎语内容：图标（用户上传的，没设就不显示图标）+「{昵称}，今天干点啥？」</summary>
+    private void UpdateWelcomeContent()
+    {
+        var icon = ChatAssetsService.LoadWelcomeIcon();
+        WelcomeIcon.Source = icon;
+        WelcomeIcon.Visibility = icon != null ? Visibility.Visible : Visibility.Collapsed;
+
+        var nickname = (_settings.ChatUserNickname ?? "").Trim();
+        WelcomeText.Text = nickname.Length > 0 ? $"{nickname}，今天干点啥？" : "今天干点啥？";
     }
 
     /// <summary>把键盘焦点落到输入框。窗口是非模态弹出的，WPF 不会自动聚焦任何控件，必须显式调</summary>
@@ -873,6 +1029,23 @@ public partial class AIDialogWindow : Window
         var (text, attachments) = ExtractInput();
         if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
 
+        // 分组视图下输入 = 在该分组里开一个**新会话**（用户 2026-09-23 定："开对话之前先选好分组"）。
+        // 不切走的话消息会发进 _active（多半是别的会话），归组落空 —— 这正是 2026-09-24 修的根因之一。
+        // 发送即退出分组视图并收起侧边栏（用户 2026-09-24 拍板），回到正常对话界面。
+        if (_activeGroupId.Length > 0)
+        {
+            var groupId = _activeGroupId;
+            CloseGroupView();
+            if (_drawerOpen) OpenDrawer(false);
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, groupId);
+        }
+        // 起手态选了「选择分组」→ 第一句话就会话建在该分组（WorkBuddy"选择工作空间"语义）
+        else if (_pendingGroupId.Length > 0)
+        {
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, _pendingGroupId);
+            _pendingGroupId = "";
+        }
+
         // 双保险：设置里关了图片发送时，即使图片已贴在输入区也不上行。
         // 提示后保留输入区内容，不擅自丢弃用户已经准备好的东西。
         if (!_settings.AiVisionEnabled && attachments.Any(a => a.Kind == ChatAttachmentKind.Image))
@@ -888,7 +1061,33 @@ public partial class AIDialogWindow : Window
 
     // ── 附件添加入口：加号 / 粘贴 / 拖拽 三处共用 ──
 
+    /// <summary>
+    /// 输入区左侧那个唯一的加号（2026-09-23）：点开弹两项 —— 用户要求"打开时只出现一个加号"，
+    /// 原来并排的第二个按钮（引用文件）收进这里。
+    ///
+    /// 两项语义仍然严格区分，不要合并实现：
+    /// · 添加附件 = 把文件内容发给模型看（占上下文）
+    /// · 引用文件 = 只给 AI 一个可操作的牌号，文件本身不发模型（红线：本机路径永不进模型）
+    /// </summary>
     private void BtnAttach_Click(object sender, RoutedEventArgs e)
+    {
+        // 刻意用 new ContextMenu() 而不是对象初始化器：自带 Style 会顶掉 App.xaml 的深色模板、弹出层变白条
+        var menu = new ContextMenu();
+
+        var attach = new MenuItem { Header = "添加附件" };
+        attach.Click += (_, _) => PickAttachments();
+        menu.Items.Add(attach);
+
+        var reference = new MenuItem { Header = "引用文件" };
+        reference.Click += (_, _) => PickFileForHandle();
+        menu.Items.Add(reference);
+
+        menu.PlacementTarget = BtnAttach;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void PickAttachments()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
@@ -907,7 +1106,7 @@ public partial class AIDialogWindow : Window
     /// 与旁边的「+」是两种语义：「+」是把文件当附件发给模型看，这里是让模型能对它动手（存网盘等）。
     /// 由于牌号只在本机生成、模型无法编造，AI 的可达范围就被严格限定在用户亲手点过的文件上。
     /// </summary>
-    private void BtnPickFile_Click(object sender, RoutedEventArgs e)
+    private void PickFileForHandle()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
@@ -1593,7 +1792,7 @@ public partial class AIDialogWindow : Window
             // 上下文裁剪是隐形的（设计稿 §6 坑⑤）：本轮真丢了消息就如实告诉用户。
             // 只写进气泡的**显示内容**，不进会话历史 —— 这是我们给的提示，不是模型说的话。
             // 放在两条路径的共同收尾处而不是各路径内部：写两处必然漏一处。
-            var trimHint = _provider.LastTrimHint;
+            var trimHint = ResolveProviderForSession(runtime).LastTrimHint;
             if (!string.IsNullOrWhiteSpace(trimHint))
                 current.Content = (current.Content ?? "") + "\n\n（" + trimHint + "）";
         }
@@ -1624,6 +1823,43 @@ public partial class AIDialogWindow : Window
         }
     }
 
+    /// <summary>分组指令的注入文本（现读 + 带来源与从属标注）。
+    /// 实现搬到 <see cref="ChatGroupService.BuildInstructionContext"/> —— 放服务层才守得住
+    /// 「必须显式标注从属关系，不得覆盖系统红线」这条安全要求（窗口的私有方法测不到）。</summary>
+    private static string BuildGroupInstructionContext(ChatSessionService session)
+        => ChatGroupService.BuildInstructionContext(session.GroupId);
+
+    /// <summary>
+    /// 普通问答路径的请求消息 = 会话历史 +（可选）一条**临时附加**的分组指令 system 消息。
+    ///
+    /// 为什么不复用 Agent 路径的 ExtraSystemContext：那条通道挂在 AgentRunService 上，
+    /// 不开 Agent 工具时根本不走。这里手动加一份不写回会话历史的副本，让两条路径行为一致。
+    /// </summary>
+    private static List<ChatMessage> BuildPlainRequestMessages(ConversationRuntime runtime)
+    {
+        var groupInstruction = BuildGroupInstructionContext(runtime.Session);
+        var messages = runtime.Session.Messages.ToList();
+        if (groupInstruction.Length > 0)
+            messages.Add(new ChatMessage(ChatRoles.System, groupInstruction));
+        return messages;
+    }
+
+    /// <summary>按会话级 ModelKey 解析 provider（2026-09-24 任务5）。
+    /// 会话 ModelKey 空 = 跟随全局 _provider；非空则按 key 调 AiModelResolver.Resolve 解析，失效回退全局。
+    /// 同 key 复用缓存实例 —— LastTrimHint 等 provider 侧状态才能跨发送/取提示正确传递。</summary>
+    private OpenAICompatibleProvider ResolveProviderForSession(ConversationRuntime runtime)
+    {
+        var key = runtime.Session.ModelKey ?? "";
+        if (string.IsNullOrWhiteSpace(key)) return _provider;
+        if (_sessionProviders.TryGetValue(key, out var cached)) return cached;
+        var resolved = AiModelResolver.Resolve(_settings, key);
+        var p = resolved != null
+            ? new OpenAICompatibleProvider(resolved.BaseUrl, resolved.ApiKey, resolved.ModelId, resolved.MaxOutputTokens, resolved.ContextWindow)
+            : _provider;
+        _sessionProviders[key] = p;
+        return p;
+    }
+
     /// <summary>普通问答路径：消费 StreamChatWithToolsAsync 事件流（无 tools），正文打字机 + 思考过程展示。
     /// 用户停止时已生成的部分内容照常写入会话历史。</summary>
     private async Task StreamPlainReplyAsync(ConversationRuntime runtime, ChatBubbleViewModel current, CancellationTokenSource cts)
@@ -1631,7 +1867,7 @@ public partial class AIDialogWindow : Window
         var sb = new StringBuilder();
         try
         {
-            await foreach (var ev in _provider.StreamChatWithToolsAsync(runtime.Session.Messages, tools: null, cts.Token))
+            await foreach (var ev in ResolveProviderForSession(runtime).StreamChatWithToolsAsync(BuildPlainRequestMessages(runtime), tools: null, cts.Token))
             {
                 // 多会话并行：不再因切会话丢弃旧流；取消由 cts.Token 触发 OperationCanceledException
                 switch (ev)
@@ -1678,7 +1914,7 @@ public partial class AIDialogWindow : Window
     {
         EnsureAgentRegistry();
         AppendAgentRulesOnce(runtime);
-        var agent = new AgentRunService(_provider, _registry!, runtime.Session, _settings.AgentMaxToolRounds)
+        var agent = new AgentRunService(ResolveProviderForSession(runtime), _registry!, runtime.Session, _settings.AgentMaxToolRounds)
         {
             // 必须经 UiThread 封送：工具跑在线程池线程上，直接 MessageBox.Show(this, …) 会因
             // 跨线程访问窗口对象而抛「调用线程无法访问此对象」（2026-09-20 实测，详见 UiThread 注释）。
@@ -1707,6 +1943,12 @@ public partial class AIDialogWindow : Window
                 var skills = _skillCatalog?.GetSkills();
                 if (skills is { Count: > 0 })
                     sb.Append('\n').Append(SkillManifest.Build(skills, _skillRuntime?.IsPresent ?? false));
+
+                // 分组指令（2026-09-23）：与「当前时间」「文件牌号」同类的短期状态 —— 现读、随时可变、不进历史。
+                // 刻意走这条通道而不是 AppendSystemRules：那条会把文本写进会话文件，
+                // 于是用户改了指令之后，旧会话里存的还是上一版，而模型每轮又都看得见它（对不上账）。
+                var groupInstruction = BuildGroupInstructionContext(runtime.Session);
+                if (groupInstruction.Length > 0) sb.Append('\n').Append(groupInstruction);
 
                 return sb.ToString();
             },
@@ -1794,14 +2036,16 @@ public partial class AIDialogWindow : Window
         if (_closed) return;   // 窗口已关闭不刷按钮（关窗后后台 runtime 完成的回调不应再动 UI）
         if (busy)
         {
-            BtnSend.Content = "■ 停止";
+            SendIcon.Visibility = Visibility.Collapsed;
+            StopIcon.Visibility = Visibility.Visible;
             BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
             BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
             BtnSend.ToolTip = "停止生成";
         }
         else
         {
-            BtnSend.Content = "发送";
+            SendIcon.Visibility = Visibility.Visible;
+            StopIcon.Visibility = Visibility.Collapsed;
             BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             BtnSend.ToolTip = null;
@@ -1810,12 +2054,61 @@ public partial class AIDialogWindow : Window
         // 输入框回答期间保持可用（可预输入下一条），发送动作由 _active.IsStreaming 守卫拦截
     }
 
-    /// <summary>历史抽屉开关：展开时刷新会话列表；宽度动画滑出/收起</summary>
-    private void BtnHistory_Click(object sender, RoutedEventArgs e)
+    /// <summary>主区左上角：展开/收起侧边栏（2026-09-24，取代标题栏「历史」按钮）。
+    /// 开关逻辑与旧 BtnHistory_Click 一致：收起态先刷新再展开，展开态直接收起。</summary>
+    private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
     {
         if (!_drawerOpen)
             RefreshDrawer();
         OpenDrawer(!_drawerOpen);
+    }
+
+    /// <summary>主区左上角：打开全局搜索窗（跨所有会话搜消息正文，点结果跳转会话）。
+    /// 搜索底层走 ChatSearchService.Search(query, null)（null = 搜全部会话含已分组），
+    /// 防抖与结果展示在 ChatSearchWindow 内；点结果回调本窗 OpenSessionFromSearch 打开会话。</summary>
+    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new ChatSearchWindow(this) { Owner = this };
+        win.Show();
+    }
+
+    /// <summary>搜索结果点击 → 打开会话并定位命中处（由 ChatSearchWindow 回调）。
+    /// 复用侧边栏点击会话的 LoadHistorySession 打开会话；会话内 query 定位 + 命中气泡短暂高亮见 HighlightSearchTerm。</summary>
+    internal void OpenSessionFromSearch(string filePath, string query)
+    {
+        LoadHistorySession(filePath);
+        HighlightSearchTerm(query);
+    }
+
+    // ── 4c：会话内搜 query 定位 + 命中气泡短暂高亮 ──
+    // 气泡正文是只读 TextBox（不支持词级高亮），用「命中气泡整体短暂高亮」替代词级：
+    // 滚到首条命中消息 + 该气泡 SearchHighlight=true（气泡 DataTemplate 的 DataTrigger 改背景），2.5s 后清除。
+    private async void HighlightSearchTerm(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return;
+        // 等消息渲染到 MessagesList（LoadHistorySession 同步填充源，但渲染需一帧）
+        await Dispatcher.BeginInvoke(new Action(() => { }), DispatcherPriority.Loaded);
+
+        await Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var needle = query;
+            for (int i = 0; i < MessagesList.Items.Count; i++)
+            {
+                if (MessagesList.Items[i] is not ChatBubbleViewModel vm) continue;
+                if (string.IsNullOrEmpty(vm.Content) || vm.Content.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                vm.SearchHighlight = true;
+                if (MessagesList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+                    fe.BringIntoView();
+                _ = ClearHighlightAsync(vm);
+                return;
+            }
+        }), DispatcherPriority.Background);
+    }
+
+    private static async Task ClearHighlightAsync(ChatBubbleViewModel vm)
+    {
+        await Task.Delay(2500);
+        vm.SearchHighlight = false;
     }
 
     // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
@@ -1824,20 +2117,23 @@ public partial class AIDialogWindow : Window
     private const double DrawerMaxWidth = 480;
 
     /// <summary>展开/收起抽屉（"历史"按钮与抽屉内收起按钮共用）。
-    /// 动画仍作用于 HistoryPanel.Width（铁律：不动 ColumnDefinition）；展开宽度 = 设置记忆宽度（240 参数化）。
+    /// 动画仍作用于 Sidebar.Width（铁律：不动 ColumnDefinition）；展开宽度 = 设置记忆宽度（240 参数化）。
     /// 收起状态不记忆——下次展开仍用记忆宽度。</summary>
     private void OpenDrawer(bool open)
     {
         _drawerOpen = open;
+        // 同步主区左上角开关按钮的文案（2026-09-24，取代标题栏「历史」按钮）
+        BtnToggleSidebar.Content = open ? "‹" : "≡";
+        BtnToggleSidebar.ToolTip = open ? "收起侧边栏" : "展开侧边栏";
         DrawerSplitter.IsEnabled = false; // 动画期间禁用拖拽，避免与动画打架（铁律 2）
         if (open)
         {
-            HistoryPanel.MinWidth = 0;   // 动画从 0 长到目标，MinWidth 边界动画结束后恢复
+            Sidebar.MinWidth = 0;   // 动画从 0 长到目标，MinWidth 边界动画结束后恢复
             RefreshDrawer();
         }
         else
         {
-            HistoryPanel.MinWidth = 0;   // 收到 0 需先解除 MinWidth 顶住
+            Sidebar.MinWidth = 0;   // 收到 0 需先解除 MinWidth 顶住
         }
 
         var target = open ? Math.Clamp(_settings.AiDrawerWidth, DrawerMinWidth, DrawerMaxWidth) : 0;
@@ -1850,27 +2146,27 @@ public partial class AIDialogWindow : Window
             // 2026-09-21 修复"抽屉拖不动"：BeginAnimation 默认 HoldEnd —— 动画播完后仍占着 Width 属性，
             // 之后 DragDelta 对 Width 的赋值全被它覆盖，拖拽形同虚设（用户反馈：有双箭头但拖不动）。
             // 先落一个本地值再解除占用，属性不会回落。收起后输入区左下圆角恢复（抽屉不在了，窗口角归它）。
-            HistoryPanel.Width = target;
-            HistoryPanel.BeginAnimation(WidthProperty, null);
+            Sidebar.Width = target;
+            Sidebar.BeginAnimation(WidthProperty, null);
             InputArea.CornerRadius = _drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6);
-            if (_drawerOpen) HistoryPanel.MinWidth = DrawerMinWidth;
+            if (_drawerOpen) Sidebar.MinWidth = DrawerMinWidth;
             DrawerSplitter.IsEnabled = true;
         };
-        HistoryPanel.BeginAnimation(WidthProperty, anim);
+        Sidebar.BeginAnimation(WidthProperty, anim);
     }
 
-    /// <summary>抽屉宽度拖拽：直接改 HistoryPanel.Width（不改 ColumnDefinition，铁律 2），有边界。</summary>
+    /// <summary>抽屉宽度拖拽：直接改 Sidebar.Width（不改 ColumnDefinition，铁律 2），有边界。</summary>
     private void DrawerSplitter_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
     {
         if (!_drawerOpen) return;
-        HistoryPanel.Width = Math.Clamp(HistoryPanel.ActualWidth + e.HorizontalChange, DrawerMinWidth, DrawerMaxWidth);
+        Sidebar.Width = Math.Clamp(Sidebar.ActualWidth + e.HorizontalChange, DrawerMinWidth, DrawerMaxWidth);
     }
 
     /// <summary>拖拽结束：宽度记忆（收起状态不记忆）</summary>
     private void DrawerSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
     {
-        if (!_drawerOpen || HistoryPanel.Width <= 0) return;
-        _settings.AiDrawerWidth = HistoryPanel.Width;
+        if (!_drawerOpen || Sidebar.Width <= 0) return;
+        _settings.AiDrawerWidth = Sidebar.Width;
         _settings.Save();
     }
 
@@ -1878,7 +2174,11 @@ public partial class AIDialogWindow : Window
     private void RefreshDrawer()
     {
         if (!_drawerOpen) return;
-        HistoryPanel.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
+        Sidebar.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
+        // 昵称与头像跟着设置走：在设置里改完，下次刷新侧边栏就同步（不必重开窗口）
+        Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
+        // 分组视图开着的话一并刷（在组里新建会话、删会话之后要立刻反映出来）
+        RefreshGroupView();
     }
 
     /// <summary>同步周期完成后的外部刷新入口（MainWindow 经 AIDialogHelper 调用，拉到新会话立即上列表）</summary>
@@ -1892,13 +2192,14 @@ public partial class AIDialogWindow : Window
     {
         switch (action)
         {
-            case ChatItemAction.BatchStart:
-                HistoryPanel.EnterBatchMode();
-                break;
+            // 批量操作（多选）入口随旧抽屉一起退场：新侧边栏是单条操作。
+            // 枚举值 ChatItemAction.BatchStart 保留 —— 不为一个不再发出的动作去动公共枚举。
 
             case ChatItemAction.Rename:
             {
-                var name = PromptDialog.Show(this, "重命名会话", "会话标题（留空恢复默认预览）：");
+                // 初始值带当前标题（2026-09-24 用户要求：保留原名并全选，可整体替换也可局部改，
+                // 而不是让用户看着空框从零打）。留空确认 = 恢复默认预览的语义保留。
+                var name = PromptDialog.Show(this, "重命名会话", "会话标题（留空恢复默认预览）：", item.Title);
                 if (name == null) return;
                 ApplySessionMeta(item, s => s.Title = name);
                 RefreshDrawer();
@@ -1915,6 +2216,16 @@ public partial class AIDialogWindow : Window
                 RefreshDrawer();
                 break;
 
+            // 收藏与分组共用 GroupId 一个字段 —— 收藏就是内置保留分区。
+            // 所以「收藏」= 把归属改成收藏；「取消收藏」= 回到未分组。
+            // 归属互斥是用户定的语义：一条会话要么在某分组、要么在收藏，不会同时在两边。
+            case ChatItemAction.Favorite:
+                ApplySessionMeta(item, s => s.GroupId = ChatGroupStore.IsFavorite(s.GroupId)
+                    ? ""
+                    : ChatGroupStore.FavoriteId);
+                RefreshDrawer();
+                break;
+
             case ChatItemAction.Export:
                 if (Enum.TryParse<ExportFormat>(context, out var fmt))
                     ExportOne(item, fmt);
@@ -1926,37 +2237,418 @@ public partial class AIDialogWindow : Window
         }
     }
 
-    /// <summary>批量操作（多选操作条）。结束统一退出多选模式并刷新。</summary>
-    private void HandleBatchAction(ChatBatchAction action, IReadOnlyList<HistoryItemViewModel> items, string? context)
+    // HandleBatchAction 已删除（2026-09-23）：批量操作入口随旧抽屉退场，新侧边栏是单条操作。
+    // 它用到的 DeleteSessions / ExportMany 都还在（单条删除与单条导出走它们），功能没丢。
+
+    /// <summary>新建分组（侧边栏「新分组」）。查重与落盘统一走 ChatGroupService，与其它入口行为一致。</summary>
+    private void HandleNewGroup()
     {
-        if (items.Count == 0) return;
-        switch (action)
+        var name = PromptDialog.Show(this, "新建分组", "分组名称：");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        ChatGroupService.Create(name, out var result);
+        if (result == ChatGroupService.CreateResult.NameExists)
         {
-            case ChatBatchAction.Delete:
-                DeleteSessions(items);
-                HistoryPanel.ExitBatchMode();
-                RefreshDrawer();
-                break;
-
-            case ChatBatchAction.Group:
-                foreach (var item in items)
-                    ApplySessionMeta(item, s => s.GroupId = context ?? "");
-                HistoryPanel.ExitBatchMode();
-                RefreshDrawer();
-                break;
-
-            case ChatBatchAction.Export:
-                if (!Enum.TryParse<ExportFormat>(context, out var fmt)) return;
-                ExportMany(items, fmt);
-                HistoryPanel.ExitBatchMode();
-                break;
+            MessageBox.Show(this, "已存在同名分组", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
         }
+        RefreshDrawer();
     }
 
-    private void HandleGroupsManage()
+    /// <summary>点侧边栏里的某个分组（收藏也走这里）→ 主区切到分组视图。
+    /// 同时收起侧边栏（用户 2026-09-24 拍板：进了分组视图就该让内容区最大化）。</summary>
+    private void HandleGroupSelected(SidebarGroupHeader group)
     {
-        new ChatGroupsWindow { Owner = this }.ShowDialog();
+        OpenGroupView(group.GroupId, group.Name);
+        if (_drawerOpen) OpenDrawer(false);
+    }
+
+    /// <summary>分组三点菜单：重命名 / 置顶此分组 / 删除此分组</summary>
+    private void HandleGroupAction(SidebarGroupHeader group, GroupMenuAction action)
+    {
+        switch (action)
+        {
+            case GroupMenuAction.Rename:
+            {
+                var name = PromptDialog.Show(this, "重命名分组", "新名称：", group.Name);
+                if (string.IsNullOrWhiteSpace(name) || name == group.Name) return;
+                if (!ChatGroupService.Rename(group.GroupId, name, out var error) && error.Length > 0)
+                    MessageBox.Show(this, error, "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                break;
+            }
+
+            // 「置顶此分组」= **分组本身**浮到分组列表最前（ChatGroup.Pinned，2026-09-24 改语义）。
+            // 旧实现（组内会话全部置顶）在空分组上零反馈，用户实测"点了没反应"；
+            // 且分组行不动，有会话也看不出效果。菜单文案按 group.IsPinned 动态（侧边栏生成）。
+            case GroupMenuAction.Pin:
+                ChatGroupService.SetPinned(group.GroupId, !group.IsPinned);
+                break;
+
+            case GroupMenuAction.Delete:
+            {
+                if (MessageBox.Show(this,
+                        $"删除分组「{group.Name}」？组内会话将回到未分组（会话本身不删除）。",
+                        "删除分组", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+                    return;
+                ChatGroupService.DeleteGroup(group.GroupId, out _);
+                break;
+            }
+        }
         RefreshDrawer();
+    }
+
+    // ── 分组视图（2026-09-23）：点侧边栏里的分组进来 ──
+
+    private string _activeGroupId = "";   // 当前打开的分组（空 = 不在分组视图里）
+
+    /// <summary>
+    /// 打开分组视图：主区切成该分组的会话列表。
+    /// 输入区**不动** —— 在分组视图里输入就是在该分组下新建会话，
+    /// 这正是用户要的"开对话之前先选好分组"，而不是对话完了再归类。
+    /// </summary>
+    private void OpenGroupView(string groupId, string groupName)
+    {
+        _activeGroupId = groupId;
+
+        var isFavorite = ChatGroupStore.IsFavorite(groupId);
+        GroupViewTitle.Text = isFavorite ? "★  " + groupName : groupName;
+
+        var instruction = ChatGroupService.GetInstruction(groupId);
+        GroupInstructionText.Text = instruction.Length > 0 ? "分组指令：" + instruction : "";
+        GroupInstructionText.Visibility = instruction.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        // 收藏是**视图**不是真分组：不能改名 / 删除 / 加指令。按钮直接隐藏，不给"点了没反应"的假入口。
+        var editable = isFavorite ? Visibility.Collapsed : Visibility.Visible;
+        BtnGroupInstruction.Visibility = editable;
+        BtnGroupRename.Visibility = editable;
+        BtnGroupDelete.Visibility = editable;
+
+        GroupViewPanel.Visibility = Visibility.Visible;
+        MessagesScroll.Visibility = Visibility.Collapsed;
+
+        RefreshGroupView();
+        RefreshComposerLayout();   // 快照实测抓到：进分组视图后欢迎语还挂着、输入框还居中 ——
+                                   // 分组视图的欢迎语语义不成立（它的空态提示是"说第一句"那行字），布局必须重算
+        InputBox.Focus();
+    }
+
+    /// <summary>退出分组视图，回到普通对话。退出分组靠侧边栏切换或发消息（2026-09-24 已去掉「返回对话」按钮）</summary>
+    private void CloseGroupView()
+    {
+        if (_activeGroupId.Length == 0) return;
+        _activeGroupId = "";
+        ExitGroupSearch();                      // 搜索态是分组视图的一部分，一起清掉
+        GroupViewPanel.Visibility = Visibility.Collapsed;
+        MessagesScroll.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>刷新分组视图的会话列表（只列本分组；顺序由 ListSessions 保证 = 置顶优先 → 时间倒序）</summary>
+    private void RefreshGroupView()
+    {
+        if (_activeGroupId.Length == 0) return;
+
+        var items = ChatSessionService.ListSessions()
+            .Where(s => string.Equals(s.GroupId, _activeGroupId, StringComparison.Ordinal))
+            .Select(s => new HistoryItemViewModel(
+                s.Id, s.FilePath, s.SavedAt, AiModeText.Get(s.Mode),
+                string.IsNullOrWhiteSpace(s.Title) ? s.Preview : s.Title,
+                s.Pinned, s.GroupId, "", s.Preview))
+            .ToList();
+
+        GroupSessionList.ItemsSource = items;
+        // 文案一并恢复 —— 搜索态会把这条提示改成"没有匹配…"，不清回去的话
+        // 清空搜索框后空分组会显示上一轮的搜索提示
+        GroupSessionEmptyHint.Text = "这个分组还没有会话 —— 在下面输入框里说第一句，就会开始一个属于它的话题。";
+        GroupSessionEmptyHint.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── 选择分组（2026-09-24 补做，对标 WorkBuddy 的「选择工作空间」）──
+    // 起手态：选中的分组存 _pendingGroupId，发第一句时会话直接建在该分组；
+    // 对话态：显示当前会话的分组，点击可移动归属。
+
+    private string _pendingGroupId = "";   // 起手态选定的目标分组（空 = 未分组）
+
+    private void BtnPickGroup_Click(object sender, RoutedEventArgs e)
+    {
+        // 刻意用 new ContextMenu()：对象初始化器自带的 Style 会顶掉深色模板（弹出层变白条，踩过）
+        var menu = new ContextMenu();
+
+        var currentId = ResolveCurrentGroupId();
+        var none = new MenuItem { Header = "未分组", IsChecked = currentId.Length == 0 };
+        none.Click += (_, _) => ApplyPickGroup("");
+        menu.Items.Add(none);
+
+        foreach (var g in ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)))
+        {
+            var targetId = g.Id;
+            var item = new MenuItem { Header = g.Name, IsChecked = g.Id == currentId };
+            item.Click += (_, _) => ApplyPickGroup(targetId);
+            menu.Items.Add(item);
+        }
+
+        menu.PlacementTarget = BtnPickGroup;
+        menu.Placement = PlacementMode.Top;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>当前"该显示哪个分组"：对话态取活跃会话的归属；起手态取起手选择</summary>
+    private string ResolveCurrentGroupId()
+    {
+        if (_active is { Bubbles.Count: > 0 }) return _active.Session.GroupId;
+        return _pendingGroupId;
+    }
+
+    private void ApplyPickGroup(string groupId)
+    {
+        // 对话态 = 移动当前会话归属（立即生效并落盘）；起手态 = 记住，第一句话时归组
+        if (_active is { Bubbles.Count: > 0 })
+        {
+            _active.Session.GroupId = groupId;
+            _active.Session.Save();
+            RefreshDrawer();
+        }
+        else
+        {
+            _pendingGroupId = groupId;
+        }
+        RefreshPickGroupLabel();
+    }
+
+    /// <summary>刷新「选择分组」按钮的文案。挂在发送/切换会话/退出分组视图等状态变化点上。</summary>
+    private void RefreshPickGroupLabel()
+    {
+        var id = ResolveCurrentGroupId();
+        PickGroupLabel.Text = id.Length == 0
+            ? "选择分组"
+            : ChatGroupService.GetGroupName(id) is { Length: > 0 } name ? name : "选择分组";
+    }
+
+    // ── 分组内搜索（2026-09-24 补做：用户指出漏了；范围=本分组，含消息正文全文）──
+    // 底层走 ChatSearchService（快层 13 条 + 慢层检查点已守），这里只做 UI 接线：
+    // 输入防抖 280ms → 后台线程搜索 → 回 UI 线程渲染。单轮搜索全量读盘，严禁每次按键都同步跑。
+
+    private CancellationTokenSource? _groupSearchCts;
+
+    private void BtnGroupSearch_Click(object sender, RoutedEventArgs e)
+    {
+        GroupToolbar.Visibility = Visibility.Collapsed;
+        GroupSearchBar.Visibility = Visibility.Visible;
+        GroupSearchBox.Focus();
+    }
+
+    private void BtnGroupSearchClose_Click(object sender, RoutedEventArgs e)
+    {
+        ExitGroupSearch();
+        RefreshGroupView();
+    }
+
+    /// <summary>退出搜索态：清框、恢复工具行（CloseGroupView 与搜索关闭按钮共用）</summary>
+    private void ExitGroupSearch()
+    {
+        _groupSearchCts?.Cancel();
+        GroupSearchBox.Text = "";
+        GroupSearchPlaceholder.Visibility = Visibility.Visible;
+        GroupSearchBar.Visibility = Visibility.Collapsed;
+        GroupToolbar.Visibility = Visibility.Visible;
+    }
+
+    private void GroupSearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        GroupSearchPlaceholder.Visibility = string.IsNullOrEmpty(GroupSearchBox.Text)
+            ? Visibility.Visible : Visibility.Collapsed;
+        _ = RunGroupSearchAsync(GroupSearchBox.Text);
+    }
+
+    private async Task RunGroupSearchAsync(string query)
+    {
+        var groupId = _activeGroupId;
+        if (groupId.Length == 0) return;
+
+        _groupSearchCts?.Cancel();
+        var cts = _groupSearchCts = new CancellationTokenSource();
+        var token = cts.Token;
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            RefreshGroupView();   // 清空搜索框 = 回到该分组的完整列表
+            return;
+        }
+
+        try { await Task.Delay(280, token).ConfigureAwait(true); }
+        catch (OperationCanceledException) { return; }
+
+        IReadOnlyList<ChatSearchHit> hits;
+        try
+        {
+            hits = await Task.Run(() => ChatSearchService.Search(query, groupId), token);
+        }
+        catch (OperationCanceledException) { return; }
+
+        if (token.IsCancellationRequested || _activeGroupId != groupId) return;
+        // 丢弃返回值（DispatcherOperation 可等待，不丢弃会吃 CS4014 警告）；结果不需要等待
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_activeGroupId != groupId) return;
+            RenderGroupSearchResults(hits, groupId, query);
+        }));
+    }
+
+    /// <summary>渲染分组搜索命中。**异步接线（RunGroupSearchAsync）与快照 Seeder 共用同一口径** ——
+    /// 改这里两处同时生效：命中渲染成与正常列表同标准的条目（展示规格一致）；
+    /// 片段放在预览位（悬停可见），标题仍是会话标题。</summary>
+    private void RenderGroupSearchResults(IReadOnlyList<ChatSearchHit> hits, string groupId, string query)
+    {
+        GroupSessionList.ItemsSource = hits.Select(h => new HistoryItemViewModel(
+            h.SessionId, h.FilePath, h.SavedAt, "",
+            string.IsNullOrWhiteSpace(h.Title) ? h.Preview : h.Title,
+            false, groupId, h.Snippet, h.Snippet)).ToList();
+        GroupSessionEmptyHint.Text = hits.Count == 0
+            ? $"没有匹配「{query.Trim()}」的会话。"
+            : "";
+        GroupSessionEmptyHint.Visibility = hits.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void GroupSessionRow_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
+        CloseGroupView();                       // 打开某条会话 = 退出分组视图，回到对话
+        LoadHistorySession(item.FilePath);
+    }
+
+    /// <summary>添加 / 修改分组指令（多行输入）</summary>
+    private void BtnGroupInstruction_Click(object sender, RoutedEventArgs e)
+    {
+        var current = ChatGroupService.GetInstruction(_activeGroupId);
+        var text = PromptDialog.Show(this, "添加指令",
+            "在这个分组里，你说的话默认是对谁说的？\n" +
+            "例：我的一切指令默认对象都是得到大脑（于是你说「上传笔记」即可，不必每次带「到得到大脑」）。\n" +
+            "注意：它每次发消息都会附给模型，但**不能覆盖**系统规则，两者冲突时以系统规则为准。",
+            current, multiline: true);
+        if (text == null) return;               // 取消
+
+        ChatGroupService.SetInstruction(_activeGroupId, text);
+        RefreshDrawer();
+        OpenGroupView(_activeGroupId, ChatGroupService.GetGroupName(_activeGroupId));   // 重刷标题与指令展示
+    }
+
+    private void BtnGroupRename_Click(object sender, RoutedEventArgs e)
+    {
+        var current = ChatGroupService.GetGroupName(_activeGroupId);
+        var name = PromptDialog.Show(this, "编辑分组名", "新名称：", current);
+        if (string.IsNullOrWhiteSpace(name) || name == current) return;
+
+        if (!ChatGroupService.Rename(_activeGroupId, name, out var error))
+        {
+            if (error.Length > 0)
+                MessageBox.Show(this, error, "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        RefreshDrawer();
+        OpenGroupView(_activeGroupId, name);
+    }
+
+    private void BtnGroupDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var groupId = _activeGroupId;
+        var name = ChatGroupService.GetGroupName(groupId);
+        if (name.Length == 0) { CloseGroupView(); return; }
+
+        if (MessageBox.Show(this,
+                $"删除分组「{name}」？组内会话将回到未分组（会话本身不删除）。",
+                "删除分组", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+            return;
+
+        ChatGroupService.DeleteGroup(groupId, out _);
+        CloseGroupView();
+        RefreshDrawer();
+    }
+
+    // ── 快照专用（只在 --snapshot 分支调用，正常启动不受影响；与其它 Seed*ForSnapshot 同套做法）──
+
+    private string _snapshotGroupId = "";   // 快照造出来的分组 Id（分组视图那张图要用）
+
+    /// <summary>
+    /// 快照：造几条会话与分组并展开侧边栏。
+    /// 沙箱里一个会话都没有 —— 不塞数据这张图只有"新对话 / 新分组"两个按钮，等于没验。
+    /// 刻意不走 OpenDrawer（180ms 动画）：快照要的是稳定终态，不是动画中间帧。
+    /// </summary>
+    internal void SeedSidebarForSnapshot()
+    {
+        // 每个快照场景都 new 一个窗口，但**沙箱是同一个** —— 不清掉上一个场景造的数据，
+        // 第二张图里就会出现两套一模一样的会话（实测踩过：10c 的侧边栏里每条都重复了一遍，
+        // 而且"得到大脑"撞名建不出来 → 分组视图压根没打开，图上看不出这个错）。
+        // 只在沙箱里清：快照工具启动时把 RootOverride 指向临时目录，这里再加一道判断兜底。
+        if (!string.IsNullOrEmpty(FocusCapturePaths.RootOverride))
+        {
+            var chatDir = FocusCapturePaths.Combine("chat_history");
+            if (Directory.Exists(chatDir))
+                foreach (var file in Directory.EnumerateFiles(chatDir, "*.json")) File.Delete(file);
+
+            var groupsFile = FocusCapturePaths.Combine("chat_groups.json");
+            if (File.Exists(groupsFile)) File.Delete(groupsFile);
+        }
+
+        var devGroup = ChatGroupService.Create("项目开发", out _);
+        var brainGroup = ChatGroupService.Create("得到大脑", out _);
+        if (brainGroup != null)
+        {
+            ChatGroupService.SetInstruction(brainGroup.Id, "我的一切指令默认对象都是得到大脑");
+            _snapshotGroupId = brainGroup.Id;
+        }
+
+        void MakeSession(string text, bool pinned, string? groupId)
+        {
+            var svc = new ChatSessionService(ExplainMode.Ask);
+            svc.AddUser(text);
+            svc.AddAssistant("好的，记下了。");
+            if (!string.IsNullOrEmpty(groupId)) svc.GroupId = groupId;
+            svc.Pinned = pinned;
+            svc.Save();
+        }
+
+        // 覆盖三个分区：最近（未分组）/ 置顶（跨分组）/ 分组内
+        MakeSession("帮我整理一下这周的待办", false, null);
+        MakeSession("灵感：银发经济的专题要不要做", false, null);
+        MakeSession("把这份资料归档到项目里", true, devGroup?.Id);
+        MakeSession("上传笔记", false, brainGroup?.Id);
+
+        _settings.ChatUserNickname = "彭杰";
+
+        _drawerOpen = true;
+        Sidebar.Width = 220;
+        Sidebar.MinWidth = DrawerMinWidth;
+        RefreshDrawer();
+    }
+
+    /// <summary>快照：在侧边栏数据之上再点进某个分组（验分组视图的排版）</summary>
+    internal void SeedGroupViewForSnapshot()
+    {
+        SeedSidebarForSnapshot();
+        if (_snapshotGroupId.Length > 0) OpenGroupView(_snapshotGroupId, "得到大脑");
+    }
+
+    /// <summary>快照：批量多选态 —— 底部操作条 + ✓ 选中高亮 + 计数文案，
+    /// 三处都只有进入多选才出现，10b/10c 的默认布局永远覆盖不到。</summary>
+    internal void SeedBatchModeForSnapshot()
+    {
+        SeedSidebarForSnapshot();
+        Sidebar.EnterBatchMode();
+        Sidebar.SelectBatchForSnapshot(
+            Sidebar.Items.OfType<HistoryItemViewModel>().Take(2).Select(vm => vm.Id).ToList());
+    }
+
+    /// <summary>快照：分组视图的搜索态（搜索框覆盖工具行）+ 真实命中结果。
+    /// 不走 280ms 防抖的异步链（快照截图流程等不到它，结果必然缺席），改为同步跑同一底层
+    /// ChatSearchService、按同一渲染口径（RenderGroupSearchResults）落图 —— 布局与结果都真实。</summary>
+    internal void SeedGroupSearchForSnapshot()
+    {
+        SeedGroupViewForSnapshot();
+        if (_snapshotGroupId.Length == 0) return;
+        BtnGroupSearch_Click(this, new RoutedEventArgs());   // 复用真实入口：收工具行、显示搜索行
+        GroupSearchBox.Text = "上传";
+        GroupSearchPlaceholder.Visibility = Visibility.Collapsed;
+        _groupSearchCts?.Cancel();                          // TextChanged 启动的异步链到此作废（下面同步渲染）
+        RenderGroupSearchResults(ChatSearchService.Search("上传", _snapshotGroupId), _snapshotGroupId, "上传");
     }
 
     private void HandleRecycleBin()
@@ -2106,11 +2798,8 @@ public partial class AIDialogWindow : Window
         Activate(runtime);
     }
 
-    private void BtnNewSession_Click(object sender, RoutedEventArgs e)
-    {
-        // 新会话保留当前模式与目标笔记；StartNewSession 内部已处理复用空会话，空会话不落盘
-        StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote);
-    }
+    // 2026-09-24：BtnNewSession_Click 已删 —— 标题栏「+ 新会话」按钮随标题栏精简移除，
+    // 新会话入口交给侧边栏「新对话」（Sidebar.NewChatRequested → CloseGroupView + StartNewSession）。
 
     /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
     private void AppendAgentRulesOnce(ConversationRuntime runtime)

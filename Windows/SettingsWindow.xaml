@@ -437,12 +437,58 @@
 
                     <TextBlock x:Name="AiActiveModelText" Text=""
                                Foreground="#CCCCCC" FontSize="12" TextWrapping="Wrap" Margin="0,18,0,0"/>
-                    <TextBlock Text="上面是 AI 问答当前使用的模型。切换模型的入口后续加在 AI 问答那边 —— 本期只落了数据字段与解析通路，切换时只需改一个值。"
+                    <TextBlock Text="上面是「新建会话的初始模型」—— 新会话从第一句话起固定用它；之后在某个会话内切换模型只影响该会话本身（会话级模型）。"
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                 </StackPanel>
 
                 <!-- ── 板块 2：AI 功能（原「AI 模型」板块里除供应商/模型之外的设置，2026-09-23 拆出） ── -->
                 <StackPanel x:Name="PanelAi" Margin="24,18" Visibility="Collapsed">
+                    <!-- ── AI 问答界面（2026-09-24）：侧边栏 / 昵称 / 欢迎语图标 / 用户头像 ── -->
+                    <TextBlock Text="AI 问答界面" Foreground="#E0E0E0" FontSize="13" FontWeight="SemiBold" Margin="0,4"/>
+                    <CheckBox x:Name="SidebarDefaultExpandedCheck"
+                              Foreground="#E0E0E0" Margin="0,8,0,0"
+                              Checked="SidebarDefaultExpanded_Changed" Unchecked="SidebarDefaultExpanded_Changed">
+                        <TextBlock Text="默认展开侧边栏（关 = 打开 AI 问答时侧边栏收起，主区更大；开 = 直接展开会话列表）" TextWrapping="Wrap"/>
+                    </CheckBox>
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="用户昵称" Width="130" VerticalAlignment="Center"/>
+                        <TextBox x:Name="ChatNicknameInput" Style="{StaticResource DarkTextBox}"
+                                 TextChanged="ChatNickname_TextChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="驱动起手页欢迎语（{昵称}，今天干点啥？）与侧边栏底部用户名；留空则取 Windows 登录名"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="欢迎语图标" Width="130" VerticalAlignment="Center"/>
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="BtnWelcomeIconPick" Content="选择图片" Width="96" Height="30"
+                                        Click="BtnWelcomeIconPick_Click"/>
+                                <Button x:Name="BtnWelcomeIconReset" Content="恢复默认" Width="96" Height="30"
+                                        Margin="8,0,0,0" Click="BtnWelcomeIconReset_Click"/>
+                            </StackPanel>
+                            <TextBlock x:Name="WelcomeIconStatus" Text="" Foreground="#888888" FontSize="11"
+                                       Margin="0,4,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBlock Text="起手页欢迎语前面那张图（图片 / 表情包均可）；不设时只显示文字、不借用应用图标。GIF 只取第一帧静态图"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="用户头像" Width="130" VerticalAlignment="Center"/>
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="BtnAvatarPick" Content="选择图片" Width="96" Height="30"
+                                        Click="BtnAvatarPick_Click"/>
+                                <Button x:Name="BtnAvatarReset" Content="恢复默认" Width="96" Height="30"
+                                        Margin="8,0,0,0" Click="BtnAvatarReset_Click"/>
+                            </StackPanel>
+                            <TextBlock x:Name="AvatarStatus" Text="" Foreground="#888888" FontSize="11"
+                                       Margin="0,4,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBlock Text="侧边栏底部圆形头像；不设时用昵称首字色块。与欢迎语图标、应用图标各存各的文件，互不影响"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+                    <Separator Margin="0,12,0,12" Background="#3A3A3A"/>
+
                     <!-- ── 附件（图片/文档）相关（2026-09-14） ── -->
                     <DockPanel Margin="0,12">
                         <TextBlock Text="图片清晰度" Width="130" VerticalAlignment="Center"/>

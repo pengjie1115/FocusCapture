@@ -145,6 +145,94 @@
                     </Setter.Value>
                 </Setter>
             </Style>
+
+            <!-- 2026-09-24：全局深色 MenuItem 模板。
+                 背景：Aero2 默认模板里「子菜单弹出层」的 Border 背景写死浅色主题资源（非 TemplateBinding），
+                 覆盖 Background/Foreground 治不了它 —— AI 问答会话菜单实测：顶层菜单是深色的（ContextMenu 模板生效），
+                 点开「分组到… / 导出」的子菜单却是白底，菜单项文字又是深色主题的浅色 → 白底白字看不清。
+                 本项目所有菜单都是 ContextMenu（无 Menu 顶栏控件，2026-09-24 全库扫描确认），
+                 所以模板只处理 SubmenuItem / SubmenuHeader 两种角色，未处理 TopLevelItem / TopLevelHeader ——
+                 若未来引入 Menu 顶栏控件，此模板会把它渲染错乱，届时必须补全角色。 -->
+            <Style TargetType="MenuItem">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="#E6E6E2"/>
+                <Setter Property="Padding" Value="10,6"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="MenuItem">
+                            <!-- Grid 是唯一模板根：Border（本项）与 Popup（子菜单）都要挂在它下面，
+                                 ControlTemplate 不允许两个并列子级（MC3089 实测） -->
+                            <Grid>
+                                <Border x:Name="Bd"
+                                        Background="{TemplateBinding Background}"
+                                        CornerRadius="4"
+                                        Padding="{TemplateBinding Padding}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="MenuItemIcon"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <!-- 勾选标记（分组到…里标当前归属用）-->
+                                        <Path x:Name="Check" Grid.Column="0"
+                                              Data="M0,4 L3.2,7.2 L9,1"
+                                              Stroke="#7A9E7A" StrokeThickness="1.6"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              Margin="0,0,6,0" VerticalAlignment="Center"
+                                              Visibility="Collapsed"/>
+                                        <ContentPresenter Grid.Column="1" ContentSource="Header"
+                                                          VerticalAlignment="Center"
+                                                          RecognizesAccessKey="True"/>
+                                        <!-- 子菜单箭头（有下一级才显示）-->
+                                        <Path x:Name="Arrow" Grid.Column="2"
+                                              Data="M0,0 L4,4 L0,8"
+                                              Fill="#9A9A96"
+                                              Margin="10,0,2,0" VerticalAlignment="Center"
+                                              Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+                                <!-- 子菜单弹出层：背景/边框与 ContextMenu 同一套深色，Margin 给投影留空隙 -->
+                                <Popup x:Name="PART_Popup"
+                                       Placement="Right"
+                                       VerticalOffset="-6"
+                                       IsOpen="{TemplateBinding IsSubmenuOpen}"
+                                       Focusable="False"
+                                       PopupAnimation="Fade"
+                                       AllowsTransparency="True">
+                                    <Border Background="#2B2B28"
+                                            BorderBrush="#3A3A37"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="4"
+                                            Margin="0,0,8,8">
+                                        <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto">
+                                            <StackPanel IsItemsHost="True"
+                                                        KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <!-- TargetName 只在模板触发器里合法，所以这两条放这里而不是 Style.Triggers -->
+                                <Trigger Property="Role" Value="SubmenuHeader">
+                                    <Setter TargetName="Arrow" Property="Visibility" Value="Visible"/>
+                                </Trigger>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+                <Style.Triggers>
+                    <Trigger Property="IsHighlighted" Value="True">
+                        <Setter Property="Background" Value="#3A3A37"/>
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Foreground" Value="#6A6A66"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

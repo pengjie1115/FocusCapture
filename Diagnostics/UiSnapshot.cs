@@ -166,6 +166,49 @@ internal static class UiSnapshot
             Capture("09-语音输入", () => new VoiceInputWindow(settings), outDir, log);
             Capture("10-AI 对话", () => new AIDialogWindow(notes, settings), outDir, log);
 
+            // 侧边栏与分组视图（2026-09-23 重构）：默认收起的侧边栏在场景 10 里根本不在图上，
+            // 这两张就是它们唯一的回归守护 —— 分区顺序对不对、置顶是不是两处都在、
+            // 分组视图的工具行有没有被挤出去，都只有出图才看得见。
+            Capture("10b-AI 对话-侧边栏", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedSidebarForSnapshot();
+                return w;
+            }, outDir, log);
+
+            Capture("10c-AI 对话-分组视图", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedGroupViewForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 起手页（2026-09-23）：空会话 → 欢迎语 + 输入框垂直居中。这是批 3 最直观的变化，
+            // 也是「欢迎语会不会与输入框叠在一起」这种错唯一能看出来的地方。
+            Capture("10d-AI 对话-起手页", () =>
+            {
+                settings.ChatUserNickname = "彭杰";
+                return new AIDialogWindow(notes, settings);
+            }, outDir, log);
+
+            // 批量多选态（2026-09-24）：底部操作条 + ✓ 选中高亮 + 计数文案 ——
+            // 三处只有进入多选才出现，默认布局的 10b/10c 永远覆盖不到。
+            Capture("10e-AI 对话-批量操作", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedBatchModeForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 分组搜索态（2026-09-24）：搜索框覆盖分组工具行 ——
+            // 覆盖态会不会把分组名/按钮挤出可视区，只有出图才看得见（同批量态一个道理）。
+            Capture("10f-AI 对话-分组搜索", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedGroupSearchForSnapshot();
+                return w;
+            }, outDir, log);
+
             // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
             // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
             // 这类错误静态代码看不出来，只能靠渲染结果判定。

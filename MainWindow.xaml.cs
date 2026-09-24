@@ -814,6 +814,10 @@ public partial class MainWindow : Window
     /// 静态事件订阅以 -=/+= 防引擎重建后重复触发。</summary>
     private void OnChatSessionChanged() => _chatSyncEngine?.NotifyLocalChange();
 
+    /// <summary>分组清单落盘（ChatGroupStore.GroupsChanged）→ 会话上传防抖：新建的空分组借道上传，换机器不用等下次同步周期。
+    /// 实例方法 + 读字段，与 OnChatSessionChanged 同风格：引擎重建后自动指向新实例；静态事件 -=/+= 防重复订阅。</summary>
+    private void OnChatGroupsChanged() => _chatSyncEngine?.NotifyLocalChange();
+
     /// <summary>按当前配置创建引擎；配置不完整（无 Provider/无授权码）返回 null（本地功能不受影响）。
     /// ChatSyncEngine 随之一并创建：共享笔记引擎并发闸、订阅 CycleCompleted 搭车 hook，互不影响笔记同步。</summary>
     private SyncEngine? CreateSyncEngine()
@@ -839,6 +843,8 @@ public partial class MainWindow : Window
         _chatSyncEngine.ConflictResolutionRequested += OnChatConflictResolution;  // 阶段二：Rev 冲突弹窗裁决（true=本地覆盖上传）
         ChatSessionService.SessionChanged -= OnChatSessionChanged;
         ChatSessionService.SessionChanged += OnChatSessionChanged;
+        ChatGroupStore.GroupsChanged -= OnChatGroupsChanged;    // 批 0 分组落盘钩子接线：订阅只许在唯一创建点，
+        ChatGroupStore.GroupsChanged += OnChatGroupsChanged;    // 与 RebuildSyncEngine/退出路径的 Dispose 成对（构造函数禁止订阅）
         return engine;
     }
 
@@ -867,6 +873,7 @@ public partial class MainWindow : Window
     private void RebuildSyncEngine()
     {
         _syncEngine?.StopAutoSync();
+        _chatSyncEngine?.Dispose();   // 旧会话引擎先停用（停防抖 timer）：重建后旧实例绝不被 GroupsChanged 唤醒写真实目录
         _syncEngine = CreateSyncEngine();
         if (_syncEngine != null && _syncEngine.TryUnlockWithStoredToken())
         {
@@ -947,6 +954,7 @@ public partial class MainWindow : Window
         catch { /* flush 流程自身异常不阻塞退出 */ }
 
         _reminderService?.Stop();   // v3.5（Phase 3）：退出前停掉提醒定时器与弹窗调度
+        _chatSyncEngine?.Dispose();   // 会话引擎停用（幂等）：flush 已完成，停防抖 timer，退出后不再写任何目录
         _clipboardHook?.Dispose();
         _hotkeyService?.Dispose();
         if (_floatBall != null) { var (l, t) = _floatBall.GetPosition(); _settings.BallLeft = l; _settings.BallTop = t; _settings.Save(); }
@@ -976,5 +984,5 @@ public partial class MainWindow : Window
         }
     }
 
-    protected override void OnClosed(EventArgs e) { _hotkeyService?.Dispose(); _notifyIcon?.Dispose(); _trayIconHandle?.Dispose(); base.OnClosed(e); }
+    protected override void OnClosed(EventArgs e) { _chatSyncEngine?.Dispose(); _hotkeyService?.Dispose(); _notifyIcon?.Dispose(); _trayIconHandle?.Dispose(); base.OnClosed(e); }
 }

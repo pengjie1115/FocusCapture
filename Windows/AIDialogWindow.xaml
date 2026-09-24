@@ -64,44 +64,39 @@
                                Foreground="#CCCCCC"
                                FontSize="14" FontWeight="SemiBold"
                                VerticalAlignment="Center"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <Button x:Name="BtnHistory"
-                                Content="历史"
-                                FontSize="12"
-                                Height="26"
-                                Padding="10,0"
-                                Margin="0,0,6,0"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                BorderThickness="0"
-                                Click="BtnHistory_Click"/>
-                        <Button x:Name="BtnNewSession"
-                                Content="+ 新会话"
-                                FontSize="12"
-                                Height="26"
-                                Padding="10,0"
-                                Margin="0,0,6,0"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                BorderThickness="0"
-                                Click="BtnNewSession_Click"/>
-                        <!-- 2026-09-21：窗口内关闭按钮已删 —— 全局按钮样式的 Padding(12,5) 把 28×28 按钮里的
-                             "×"字形裁成一条竖缝，看着像两个点（用户反馈）。关窗走原生标题栏 ×。 -->
-                    </StackPanel>
+                    <!-- 2026-09-24：标题栏「历史」「+ 新会话」按钮已删 —— 开关侧边栏交给主区左上角
+                         BtnToggleSidebar，新会话交给侧边栏「新对话」（用户拍板：标题栏只留标题）。
+                         关窗走原生标题栏 ×（旧窗口内关闭按钮的字形裁切问题见下）。 -->
                 </Grid>
             </Border>
 
-            <!-- 消息列表 + 历史抽屉（抽屉列 Auto 跟随 HistoryPanel.Width，宽度动画/拖拽都作用于 HistoryPanel.Width——
+            <!-- 消息列表 + 侧边栏（列 Auto 跟随 Sidebar.Width，宽度动画/拖拽都作用于 Sidebar.Width——
                  WPF GridLength 无 DoubleAnimation，铁律：不动画/拖拽 ColumnDefinition）。
                  拖拽用 Thumb（GridSplitter 基类，样式照搬 SettingsWindow 的 splitter）：其自动 resize 只能改列宽，
-                 与"只改 HistoryPanel.Width"铁律冲突，故 DragDelta 手动改控件宽度。 -->
+                 与"只改 Sidebar.Width"铁律冲突，故 DragDelta 手动改控件宽度。 -->
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <controls:HistoryDrawer x:Name="HistoryPanel" Grid.Column="0" Width="0"/>
+                <!-- 主区左上角：展开/收起侧边栏 + 全局搜索（2026-09-24，取代标题栏「历史」按钮）。
+                 两按钮在主区列(Grid.Column="2")顶部，不随侧边栏宽度裁剪；BtnToggleSidebar 文案按抽屉状态切换。 -->
+            <StackPanel Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Top"
+                        Margin="6,6,0,0" Orientation="Horizontal" Panel.ZIndex="50">
+                <Button x:Name="BtnToggleSidebar" Click="BtnToggleSidebar_Click"
+                        Width="28" Height="28" Padding="0" FontSize="15"
+                        Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                        ToolTip="展开侧边栏">≡</Button>
+                <Button x:Name="BtnGlobalSearch" Click="BtnGlobalSearch_Click"
+                        Width="28" Height="28" Padding="0" Margin="4,0,0,0"
+                        Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                        ToolTip="搜索会话（跨所有会话搜消息正文）">
+                    <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                          Stroke="#B8B8B8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                </Button>
+            </StackPanel>
+            <controls:ChatSidebar x:Name="Sidebar" Grid.Column="0" Width="0"/>
                 <Thumb x:Name="DrawerSplitter" Grid.Column="1" Width="5" Margin="0,0"
                        Cursor="SizeWE" DragDelta="DrawerSplitter_DragDelta" DragCompleted="DrawerSplitter_DragCompleted">
                     <Thumb.Template>
@@ -121,6 +116,129 @@
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
+                    <!-- 分组视图（2026-09-23）：点侧边栏的分组进来。与消息区同占 Row 0，用 Visibility 互斥 ——
+                         不新增行，输入区原地不动（在分组里输入 = 在该分组下新建会话）。 -->
+                    <Grid x:Name="GroupViewPanel" Grid.Row="0" Visibility="Collapsed" Background="#1E1E1E">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 工具行两态（2026-09-24 用户要求）：
+                             默认态 = 分组名 + 添加指令 + 搜索/编辑名/删除（后两个用图标）；
+                             搜索态 = 搜索框覆盖整行（× 退出）。
+                             没有「返回对话」按钮 —— 退出分组靠发消息（自动回到正常对话）
+                             或点侧边栏的任意项（用户 2026-09-24 拍板）。 -->
+                        <Grid Grid.Row="0" Margin="14,12,14,4">
+                            <WrapPanel x:Name="GroupToolbar" VerticalAlignment="Center">
+                                <TextBlock x:Name="GroupViewTitle" FontSize="15" Foreground="#E8E8E8"
+                                           VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <Button x:Name="BtnGroupInstruction" Content="添加指令" Click="BtnGroupInstruction_Click"
+                                        Padding="8,3" Margin="0,0,6,0" FontSize="12" Cursor="Hand"
+                                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                                <Button x:Name="BtnGroupSearch" Click="BtnGroupSearch_Click"
+                                        Width="26" Height="24" Padding="0" Margin="0,0,6,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="搜索本分组内的会话（含消息正文）">
+                                    <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                                          Stroke="#A8A8A8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                                <Button x:Name="BtnGroupRename" Click="BtnGroupRename_Click"
+                                        Width="26" Height="24" Padding="0" Margin="0,0,6,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="编辑分组名">
+                                    <Path Data="M1.5,10.5 L1.5,13 L4,13 L12.5,4.5 L10,2 Z M9,3 L11.5,5.5"
+                                          Stroke="#A8A8A8" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                                <Button x:Name="BtnGroupDelete" Click="BtnGroupDelete_Click"
+                                        Width="26" Height="24" Padding="0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="删除分组（组内会话回到未分组）">
+                                    <Path Data="M2,4 H12 M5.5,4 V2.5 H8.5 V4 M3.8,4 L4.5,13.5 H9.5 L10.2,4 M6.3,6.5 V11 M7.7,6.5 V11"
+                                          Stroke="#C08080" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                            </WrapPanel>
+                            <!-- 搜索态：覆盖工具行（展开/收起由 code-behind 切 Visibility）-->
+                            <Grid x:Name="GroupSearchBar" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Background="#1A1A1A" BorderBrush="#3A3A3A"
+                                        BorderThickness="1" CornerRadius="6" Padding="8,4">
+                                    <Grid>
+                                        <TextBox x:Name="GroupSearchBox" Background="Transparent"
+                                                 Foreground="#E0E0E0" CaretBrush="#E0E0E0"
+                                                 BorderThickness="0" FontSize="12"
+                                                 VerticalAlignment="Center"
+                                                 TextChanged="GroupSearchBox_TextChanged"/>
+                                        <TextBlock x:Name="GroupSearchPlaceholder"
+                                                   Text="搜索本分组内的消息内容…"
+                                                   Foreground="#6A6A6A" FontSize="12"
+                                                   VerticalAlignment="Center" IsHitTestVisible="False"/>
+                                    </Grid>
+                                </Border>
+                                <Button x:Name="BtnGroupSearchClose" Grid.Column="1" Click="BtnGroupSearchClose_Click"
+                                        Width="26" Height="24" Padding="0" Margin="6,0,0,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="退出搜索">
+                                    <Path Data="M3,3 L11,11 M11,3 L3,11"
+                                          Stroke="#A8A8A8" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+                                </Button>
+                            </Grid>
+                        </Grid>
+
+                        <!-- 该分组当前的指令（只读展示；改要点上面的「添加指令」）-->
+                        <TextBlock x:Name="GroupInstructionText" Grid.Row="1" Margin="14,0,14,8"
+                                   Foreground="#8A8A8A" FontSize="11" TextWrapping="Wrap" Visibility="Collapsed"/>
+
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Padding="8,0,8,8">
+                            <StackPanel>
+                                <ItemsControl x:Name="GroupSessionList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Transparent" CornerRadius="4" Padding="8,6" Margin="0,1"
+                                                    Cursor="Hand" MouseLeftButtonUp="GroupSessionRow_Click" Tag="{Binding}"
+                                                    ToolTip="{Binding Preview}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding Title}" Foreground="#C8C8C8"
+                                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding TimeText}" Foreground="#6E6E6E"
+                                                               FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="GroupSessionEmptyHint"
+                                           Text="这个分组还没有会话 —— 在下面输入框里说第一句，就会开始一个属于它的话题。"
+                                           Foreground="#7A7A7A" FontSize="12" Margin="8,6,8,0"
+                                           TextWrapping="Wrap" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
+                    <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（图标 + 文字），
+                         此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。 -->
+                    <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
+                        <!-- 底部 180 的留白是刻意的：输入区居中时中心也在 Row 0 的中心，
+                             欢迎语靠这个偏移让出它头顶的位置，两者不会叠在一起。 -->
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,180">
+                            <Image x:Name="WelcomeIcon" Width="56" Height="56" Stretch="Uniform"
+                                   HorizontalAlignment="Center" Visibility="Collapsed"/>
+                            <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="#D8D8D8"
+                                       HorizontalAlignment="Center" TextWrapping="Wrap"
+                                       TextAlignment="Center" MaxWidth="420" Margin="0,14,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
                                   VerticalScrollBarVisibility="Auto"
                                   Padding="14,10">
@@ -140,6 +258,9 @@
                                                     <DataTrigger Binding="{Binding IsUser}" Value="True">
                                                         <Setter Property="Background" Value="#2A3A2A"/>
                                                         <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding SearchHighlight}" Value="True">
+                                                        <Setter Property="Background" Value="#3A4A2A"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -416,110 +537,142 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
 
+                <!-- 输入区（2026-09-24 按 WorkBuddy 重排）：加号与发送按钮收进输入框内部
+                     （原先分居两侧各占约 40px，把输入框夹窄 —— 用户反馈"输入框太窄"）；
+                     发送按钮改圆形 + 向上箭头（用户："怎么是向右的箭头，做成和 Workbuddy 一样的"）；
+                     框下加「选择分组」入口（对标 WorkBuddy 的"选择工作空间"：开对话前先选好分组）。
+                     HandleChips（本机文件牌号卡）留在外层 Grid 的 Row0 —— 它只在这里定义一次，
+                     重复定义 x:Name 会直接编译错（CS0102 实测）。 -->
                 <Grid Grid.Row="1">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,0" VerticalAlignment="Bottom">
-                    <!-- 加号：打开文件选择框。Padding=0 必须显式设置——全局 Button 样式是 8,4，会挤偏图标。
-                         图标用矢量 Path 而非 "+" 字符：字体里的加号字形在行框内本身不居中，
-                         无论怎么调字号/内边距都消不掉那点偏差，矢量图形才能真居中。 -->
-                    <Button x:Name="BtnAttach"
-                            Width="30" Height="36"
-                            Padding="0"
-                            Background="#1E1E1E"
-                            Foreground="#AAAAAA"
-                            BorderBrush="#555555"
-                            ToolTip="添加图片或文档（也可直接 Ctrl+V 粘贴、或把文件拖进来）"
-                            Click="BtnAttach_Click">
-                        <Path Data="M0,6 H12 M6,0 V12"
-                              Stroke="#BBBBBB"
-                              StrokeThickness="1.6"
-                              StrokeStartLineCap="Round"
-                              StrokeEndLineCap="Round"
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Center"/>
-                    </Button>
-
-                    <!-- 选择文件（2026-09-16）：只签发一个牌号让 AI 能引用，文件本身不发给模型、不复制。
-                         与「+」的区别：+ 是把文件当附件发给 AI 看，这里是让 AI 能对它动手（存到网盘）。 -->
-                    <Button x:Name="BtnPickFile"
-                            Width="30" Height="36"
-                            Padding="0"
-                            Margin="6,0,0,0"
-                            Background="#1E1E1E"
-                            Foreground="#AAAAAA"
-                            BorderBrush="#555555"
-                            ToolTip="选择本机文件交给 AI 操作（如「把这个文件存到网盘」）。AI 只能操作你选过的文件"
-                            Click="BtnPickFile_Click">
-                        <Grid>
-                            <Path Data="M3.5,1.5 H8.5 L12,5 V14 H3.5 Z"
-                                  Stroke="#BBBBBB"
-                                  StrokeThickness="1.3"
-                                  StrokeLineJoin="Round"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"/>
-                            <Path Data="M8.5,1.5 V5 H12"
-                                  Stroke="#BBBBBB"
-                                  StrokeThickness="1.3"
-                                  StrokeLineJoin="Round"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"/>
-                        </Grid>
-                    </Button>
-                    </StackPanel>
-
-                    <!-- 富文本输入区：文字与附件块混排。
-                         MaxHeight 放在外框上，内部 ScrollViewer 管滚动 —— 输入区随内容长高，到上限后内部滚动。
-                         2026-09-21：MinHeight 压到 22（外框约 36px = 原来的 2/3，用户拍板），
-                         两侧按钮与外框等高；圆角 4→8。 -->
-                    <Border Grid.Column="1"
+                    <!-- 输入框容器：文字区在上、按钮行在下（WorkBuddy 式）。AllowDrop 拖文件即附件 -->
+                    <Border Grid.Row="0"
                             Background="#1E1E1E"
                             BorderBrush="#555555"
                             BorderThickness="1"
-                            CornerRadius="8"
-                            Padding="8,6"
-                            MaxHeight="160">
+                            CornerRadius="10"
+                            Padding="10,8"
+                            MaxHeight="180"
+                            AllowDrop="True" DragOver="InputArea_DragOver" Drop="InputArea_Drop">
                         <Grid>
-                            <ScrollViewer x:Name="InputScroll" VerticalScrollBarVisibility="Auto">
-                                <RichTextBox x:Name="InputBox"
-                                             MinHeight="22"
-                                             Background="Transparent"
-                                             Foreground="#E0E0E0"
-                                             CaretBrush="#E0E0E0"
-                                             SelectionBrush="#3A5A8A"
-                                             BorderThickness="0"
-                                             Padding="0"
-                                             FontSize="13"
-                                             AcceptsReturn="True"
-                                             IsDocumentEnabled="True"
-                                             AllowDrop="True"
-                                             VerticalScrollBarVisibility="Disabled"
-                                             PreviewKeyDown="InputBox_PreviewKeyDown"/>
-                            </ScrollViewer>
-                            <!-- 占位提示：输入区加高后空白区域需要一句引导，否则像个坏掉的框 -->
-                            <TextBlock x:Name="InputPlaceholder"
-                                       Text="输入问题，Ctrl+V 可粘贴图片，或把文件拖进来"
-                                       Foreground="#7A7A7A"
-                                       FontSize="13"
-                                       VerticalAlignment="Top"
-                                       IsHitTestVisible="False"/>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- 富文本输入区：文字与附件块混排。MinHeight 压到 22（2026-09-21 拍板）；
+                                 内部 ScrollViewer 管滚动 —— 随内容长高，到 MaxHeight 后内部滚动 -->
+                            <Grid Grid.Row="0">
+                                <ScrollViewer x:Name="InputScroll" VerticalScrollBarVisibility="Auto">
+                                    <RichTextBox x:Name="InputBox"
+                                                 MinHeight="22"
+                                                 Background="Transparent"
+                                                 Foreground="#E0E0E0"
+                                                 CaretBrush="#E0E0E0"
+                                                 SelectionBrush="#3A5A8A"
+                                                 BorderThickness="0"
+                                                 Padding="0"
+                                                 FontSize="13"
+                                                 AcceptsReturn="True"
+                                                 IsDocumentEnabled="True"
+                                                 AllowDrop="True"
+                                                 VerticalScrollBarVisibility="Disabled"
+                                                 PreviewKeyDown="InputBox_PreviewKeyDown"/>
+                                </ScrollViewer>
+                                <!-- 占位提示：输入区加高后空白区域需要一句引导，否则像个坏掉的框 -->
+                                <TextBlock x:Name="InputPlaceholder"
+                                           Text="输入问题，Ctrl+V 可粘贴图片，或把文件拖进来"
+                                           Foreground="#7A7A7A"
+                                           FontSize="13"
+                                           VerticalAlignment="Top"
+                                           IsHitTestVisible="False"/>
+                            </Grid>
+
+                            <!-- 按钮行：加号（附件+引用文件菜单）在左，发送在右 -->
+                            <Grid Grid.Row="1" Margin="0,6,0,0">
+                                <!-- 加号：点开弹两项（语义严格区分，不合并实现）：
+                                     添加附件 = 文件发给模型看（占上下文）；引用文件 = 只给牌号，路径不进模型 -->
+                                <Button x:Name="BtnAttach"
+                                        Width="28" Height="28"
+                                        Padding="0"
+                                        HorizontalAlignment="Left"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        ToolTip="添加附件或引用文件。也可直接 Ctrl+V 粘贴、或把文件拖进来"
+                                        Click="BtnAttach_Click">
+                                    <Path Data="M0,6 H12 M6,0 V12"
+                                          Stroke="#BBBBBB"
+                                          StrokeThickness="1.6"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                                </Button>
+
+                                <!-- 会话级模型切换（2026-09-24 任务5）：点开弹所有可用模型，选中只改本会话 ModelKey。
+                                     空 = 跟随全局默认；新建会话已写入当时全局默认，这里可改。 -->
+                                <Button x:Name="BtnSessionModel" Click="BtnSessionModel_Click"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,38,2"
+                                        Padding="6,2" FontSize="11" Cursor="Hand"
+                                        Background="Transparent" Foreground="#9A9A9A" BorderThickness="0"
+                                        ToolTip="切换本会话使用的模型（只影响本会话）">模型 ▾</Button>
+
+                                <!-- 发送（2026-09-24）：圆形 + 向上箭头（WorkBuddy 式）。
+                                     局部模板只是"去外壳"（全局样式的方形底/悬停变色对圆形按钮是灾难），
+                                     圆形底和图标都放内容里 —— code-behind 按 x:Name 直接换图标，
+                                     元素必须在 NameScope 里（放模板里就得改用 Template.FindName）。 -->
+                                <Button x:Name="BtnSend"
+                                        Width="30" Height="30"
+                                        Padding="0"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Cursor="Hand"
+                                        ToolTip="发送（Enter）"
+                                        Click="BtnSend_Click">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <ContentPresenter/>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </Button.Style>
+                                    <Grid>
+                                        <Border x:Name="SendCircle" Background="#4CAF50" CornerRadius="15"/>
+                                        <Path x:Name="SendIcon" Data="M7,12.5 L7,1.5 M2.5,6 L7,1.5 L11.5,6"
+                                              Stroke="#FFFFFF" StrokeThickness="1.8"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                                        <Path x:Name="StopIcon" Data="M4.5,4.5 H10.5 V10.5 H4.5 Z" Fill="#E57373" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Button>
+                            </Grid>
                         </Grid>
                     </Border>
 
-                    <Button x:Name="BtnSend"
-                            Grid.Column="2"
-                            Content="发送"
-                            Width="72" Height="36"
-                            Margin="8,0,0,0"
-                            VerticalAlignment="Bottom"
-                            Background="#3A3A3A"
-                            Foreground="#4CAF50"
-                            BorderBrush="#4CAF50"
-                            Click="BtnSend_Click"/>
+                    <!-- 选择分组（2026-09-24 补做，对标 WorkBuddy 的「选择工作空间」）：
+                         起手态点它选目标分组，发第一句时会话直接建在该分组；
+                         对话态显示当前会话所属分组，点击可移动归属 -->
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="2,6,0,0">
+                        <Button x:Name="BtnPickGroup" Click="BtnPickGroup_Click"
+                                Padding="6,2" FontSize="12" Cursor="Hand"
+                                Background="Transparent" Foreground="#8A9E8A" BorderThickness="0">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="M1,1 H13 V13 H1 Z M1,5 H13"
+                                      Stroke="#8A9E8A" StrokeThickness="1.2" Margin="0,0,5,0"
+                                      VerticalAlignment="Center"/>
+                                <TextBlock x:Name="PickGroupLabel" Text="选择分组" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
                 </Grid>
                 </Grid>
             </Border>

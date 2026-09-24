@@ -1255,6 +1255,65 @@ Check(marginPlan.ShouldTrim,
       "内容 9000 < 窗口 10000，但超过「窗口 − 20% 余量」→ 必须裁",
       "不留余量的话，估算误差（没有 tokenizer，误差可达 20%+）会偶发把请求顶出窗口");
 
+// ── [16] 全文搜索匹配 ChatSearchMatcher（2026-09-23）──
+// 守的核心是一个隐形坑：片段里的换行会被压成空格 —— 替换会改变字符串长度，
+// 若拿替换前的下标去高亮，高亮位置会整体偏移（界面上只是"高亮歪了一点"，不报任何错）。
+Console.WriteLine("[16] 全文搜索匹配 ChatSearchMatcher");
+
+Check(ChatSearchMatcher.ExtractSnippet("", "abc") == null && ChatSearchMatcher.ExtractSnippet("abc", "") == null,
+      "空正文 / 空关键词 → 不返回片段",
+      "用户在搜索框里每敲一个字都会调它，抛异常就是搜索框直接崩");
+
+Check(ChatSearchMatcher.ExtractSnippet("abc", "   ") == null,
+      "纯空白关键词等同没输入 —— 不能把空格当成搜索词");
+
+Check(ChatSearchMatcher.ExtractSnippet("hello world", "xyz") == null,
+      "未命中 → null（调用方据此跳过这条会话）");
+
+var searchHit1 = ChatSearchMatcher.ExtractSnippet("hello world", "world");
+Check(searchHit1 != null && searchHit1.Value.Start == 6 && searchHit1.Value.Length == 5,
+      "下标必须是「命中词在返回片段内」的位置，长度 = 关键词长度",
+      "这个下标是给界面做高亮用的，差一位就是高亮错位");
+
+Check(ChatSearchMatcher.ExtractSnippet("Hello World", "world") != null,
+      "英文大小写不敏感",
+      "区分大小写会让用户搜 world 找不到 World，且他不知道为什么找不到");
+
+Check(ChatSearchMatcher.CountMatches("a ba ba", "ba") == 2,
+      "命中计数：多次出现要数全");
+
+Check(ChatSearchMatcher.CountMatches("aaa", "aa") == 1,
+      "不重叠计数（aaa 里 aa 只算 1 次）",
+      "重叠计数会让「命中 N 处」这个提示数字虚高");
+
+var searchMulti = "第一行\n第二行有目标词\n第三行";
+var searchHit2 = ChatSearchMatcher.ExtractSnippet(searchMulti, "目标词");
+Check(searchHit2 != null && searchHit2.Value.Snippet.Contains("目标词"),
+      "跨行命中：命中词必须完整落在片段里");
+
+Check(searchHit2 != null && !searchHit2.Value.Snippet.Contains('\n'),
+      "片段里不允许出现换行（界面按一行展示，带换行会撑成多行破坏排版）");
+
+Check(searchHit2 != null
+      && searchHit2.Value.Start >= 0
+      && searchHit2.Value.Start + searchHit2.Value.Length <= searchHit2.Value.Snippet.Length,
+      "压平换行之后，高亮下标仍必须落在片段范围内",
+      "换行替换改变了长度 —— 沿用替换前的下标就会越界或错位，这正是本组要守的坑");
+
+var searchLong = new string('x', 100) + "目标" + new string('y', 100);
+var searchHit3 = ChatSearchMatcher.ExtractSnippet(searchLong, "目标");
+Check(searchHit3 != null && searchHit3.Value.Snippet.Length == 20 + 2 + 20,
+      "命中两侧各带 20 字上下文（默认值）",
+      "上下文太短看不出命中在说什么，太长则把列表撑乱");
+
+var searchHit4 = ChatSearchMatcher.ExtractSnippet("目标在开头后面还有很长很长的一段", "目标");
+Check(searchHit4 != null && searchHit4.Value.Start == 0,
+      "命中在正文开头：不越界，下标为 0");
+
+Check(ChatSearchMatcher.CountMatches(null!, "a") == 0 && ChatSearchMatcher.ExtractSnippet(null!, "a") == null,
+      "null 正文必须安全返回（不抛）",
+      "会话正文可能为 null（附件消息），搜索不能因此整体失败");
+
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
 return fail == 0 ? 0 : 1;

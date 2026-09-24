@@ -21,6 +21,7 @@ public class ChatSessionService
     private string _title = "";      // 重命名标题（阶段二 UI 写入；空 = 用首条用户消息预览）
     private bool _pinned;            // 置顶
     private string _groupId = "";    // 所属分组 ID（空 = 未分组）
+    private string _modelKey = "";   // 本会话使用的模型（空 = 跟随全局 ActiveModelKey）
 
     /// <summary>任意会话本地保存成功后触发（ChatSyncEngine 借此接 NotifyLocalChange 触发上传合并窗口）。
     /// 阶段二的重命名/置顶/分组本质是"改字段 → Save"，自动走这条管道，无需额外接线。</summary>
@@ -54,6 +55,11 @@ public class ChatSessionService
     public bool Pinned { get => _pinned; set => _pinned = value; }
     /// <summary>所属分组 ID（空 = 未分组）</summary>
     public string GroupId { get => _groupId; set => _groupId = value ?? ""; }
+
+    /// <summary>本会话使用的模型（<c>&lt;providerId&gt;/&lt;modelId&gt;</c>；空 = 跟随全局 ActiveModelKey）。
+    /// 2026-09-23 新增：模型选择是**会话级**的 —— 一个窗口里切会话不该互相改模型，
+    /// 也不该因为改了全局默认就把历史会话回看时的模型也一起改掉。</summary>
+    public string ModelKey { get => _modelKey; set => _modelKey = value ?? ""; }
 
     /// <summary>向首条 system 消息追加规则文本（Agent 模式防幻觉红线用）</summary>
     public void AppendSystemRules(string rules)
@@ -159,6 +165,7 @@ public class ChatSessionService
                 Title = _title,
                 Pinned = _pinned,
                 GroupId = _groupId,
+                ModelKey = _modelKey,
                 Mode = _mode.ToString(),
                 SystemPrompt = _systemPrompt,
                 Messages = _messages.ToList(),
@@ -197,6 +204,7 @@ public class ChatSessionService
             svc._title = payload.Title ?? "";
             svc._pinned = payload.Pinned;
             svc._groupId = payload.GroupId ?? "";
+            svc._modelKey = payload.ModelKey ?? "";
             svc._messages.Clear();
             svc._messages.AddRange(payload.Messages ?? new List<ChatMessage>());
             svc._hasConversation = payload.Messages?.Any(m => m.Role != ChatRoles.System) ?? false;
@@ -390,6 +398,10 @@ public class SessionFile
     public string Title { get; set; } = "";    // 重命名标题（空 = 未重命名）
     public bool Pinned { get; set; }           // 置顶
     public string GroupId { get; set; } = "";  // 所属分组 ID（空 = 未分组）
+    /// <summary>本会话使用的模型（<c>&lt;providerId&gt;/&lt;modelId&gt;</c>）。空 = 跟随全局 AppSettings.ActiveModelKey
+    /// —— 空值兜底让**老会话零迁移**（旧文件缺该字段，反序列化得空串，自动落到全局默认）。
+    /// 非空时解析走 AiModelResolver 的三级回退，Key 指向的供应商被删了也不会崩。</summary>
+    public string ModelKey { get; set; } = "";
     public string Mode { get; set; } = "";
     public string SystemPrompt { get; set; } = "";
     public List<ChatMessage> Messages { get; set; } = new();

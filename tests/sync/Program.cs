@@ -21,6 +21,7 @@ using FocusCapture.Services.Files;
 using FocusCapture.Services.Skills;
 using FocusCapture.Services.Sync;
 using FocusCapture.Windows;
+using FocusCapture.Windows.Controls;
 
 /// <summary>
 /// FocusCapture 同步验收测试（单机双设备模拟，验收 B/C/D/E/F）。
@@ -87,6 +88,8 @@ internal static class Program
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
             Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）
+            Run("会话分组", TestChatGroups);                 // 收藏保留分区 / 查重 / 改名时间戳 / 删除顺序 / 跨端合并裁决 / 全文搜索（2026-09-23）
+            await RunAsync("会话同步生命周期", TestChatSyncLifecycle);   // 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用（2026-09-24）
             Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
@@ -1230,6 +1233,385 @@ print(json.dumps({
     //
     // 全部在**内存对象**上跑，不读写任何真实数据目录（硬规则 0）：
     // 迁移与解析都不调用 Save()，JSON 往返也是纯内存。
+    /// <summary>
+    /// 会话分组 + 全文搜索（2026-09-23 新增）。
+    ///
+    /// 为什么值得单独一组：这套代码在此之前**一个检查点都没有**，而它错了的后果全是静默的 ——
+    /// 分组凭空消失、跨端改名被回滚、删组后冒出一个「（未知分组）」幽灵分区、搜索结果全是噪声，
+    /// 用户一样都收不到提示。这一组把 2026-09-23 修掉的那批缺陷逐条钉住。
+    /// </summary>
+    private static void TestChatGroups()
+    {
+        // 本组再开一层子沙箱：造出来的分组/会话不干扰后面那些跑同步的组。
+        // 收尾必须回落到**外层沙箱**而不是 null —— null = 真实用户目录，
+        // 那正是 2026-09-23 上午「慢层测试写穿真实 settings.json」事故的成因。
+        var savedRoot = FocusCapturePaths.RootOverride;
+        var groupSandbox = Path.Combine(_sandbox, "chatgroups-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(groupSandbox);
+        FocusCapturePaths.RootOverride = groupSandbox;
+        try
+        {
+            // ══ 收藏保留分区 ══
+            Check(ChatGroupStore.Load().Any(g => ChatGroupStore.IsFavorite(g.Id)),
+                  "分组文件还不存在时，Load 也必须给出收藏保留分区",
+                  "否则界面上的「收藏」入口会凭空消失，且没有任何解释");
+            Check(ChatGroupStore.NewFavorite().CreatedAt == DateTime.MinValue,
+                  "收藏分区的 CreatedAt 必须是 MinValue（跨端同名合并规则下它才永远胜出）",
+                  "给普通时间戳的话，另一端建个同名分组就能把收藏顶掉");
+            Check(!ChatGroupService.Rename(ChatGroupStore.FavoriteId, "我的收藏", out _),
+                  "收藏分区不可重命名");
+            Check(!ChatGroupService.DeleteGroup(ChatGroupStore.FavoriteId, out _),
+                  "收藏分区不可删除");
+            Check(!ChatGroupService.SetInstruction(ChatGroupStore.FavoriteId, "随便写"),
+                  "收藏分区不可设置指令");
+
+            // ══ 新建 + 查重（统一为「拒绝」）══
+            var work = ChatGroupService.Create("工作", out var createOk);
+            Check(createOk == ChatGroupService.CreateResult.Created && work != null && work.Id.Length > 0,
+                  "新建分组成功并返回带 Id 的对象");
+            Check(work != null && work.NameUpdatedAt != default,
+                  "新建时就要写 NameUpdatedAt",
+                  "它是跨端 LWW 判方向的前提，缺了改名照样会被另一端回滚");
+
+            var dup = ChatGroupService.Create("工作", out var createDup);
+            Check(createDup == ChatGroupService.CreateResult.NameExists && dup == null,
+                  "同名分组必须**拒绝**（返回 null + NameExists）",
+                  "旧实现是静默复用已有分组：用户以为新建了，实际把会话塞进了老组，全程无提示");
+
+            Check(ChatGroupService.Create("   ", out var createEmpty) == null
+                  && createEmpty == ChatGroupService.CreateResult.EmptyName,
+                  "空名字（含纯空白）必须拒绝");
+
+            // ══ 重命名 + 时间戳 ══
+            var renameTarget = ChatGroupService.Create("临时组", out _)!;
+            var stampBefore = renameTarget.NameUpdatedAt;
+            Thread.Sleep(5);   // 让时间戳能分辨（DateTime.Now 精度约 1ms）
+            Check(ChatGroupService.Rename(renameTarget.Id, "改过的名字", out _), "重命名成功");
+
+            var afterRename = ChatGroupStore.Load().FirstOrDefault(g => g.Id == renameTarget.Id);
+            Check(afterRename != null && afterRename.Name == "改过的名字" && afterRename.NameUpdatedAt > stampBefore,
+                  "改名必须刷新 NameUpdatedAt",
+                  "不刷新的话，另一端只要时间戳更大就会把这次改名覆盖回去");
+
+            Check(!ChatGroupService.Rename(renameTarget.Id, "工作", out var renameErr) && renameErr.Length > 0,
+                  "改名撞上已有名字必须失败并给出原因");
+
+            // ══ 分组指令 ══
+            Check(ChatGroupService.SetInstruction(work!.Id, "我的一切指令默认对象都是得到大脑"),
+                  "写入分组指令成功");
+            var withInstruction = ChatGroupStore.Load().FirstOrDefault(g => g.Id == work.Id);
+            Check(withInstruction != null
+                  && withInstruction.Instruction == "我的一切指令默认对象都是得到大脑"
+                  && withInstruction.InstructionUpdatedAt != default,
+                  "指令内容与它的时间戳都要落盘");
+
+            ChatGroupService.SetInstruction(work.Id, new string('字', ChatGroupService.MaxInstructionChars + 500));
+            var truncated = ChatGroupStore.Load().FirstOrDefault(g => g.Id == work.Id);
+            Check(truncated != null && truncated.Instruction.Length == ChatGroupService.MaxInstructionChars,
+                  $"超长指令必须截断到 {ChatGroupService.MaxInstructionChars} 字",
+                  "不截断的话，用户贴一篇文档进去，之后每轮请求的上下文都会被撑爆");
+
+            // ══ 删分组：会话必须先回到未分组（顺序不可颠倒）══
+            var grouped = new ChatSessionService(ExplainMode.Ask);
+            grouped.AddUser("这是一条会被删组影响到的会话");
+            grouped.GroupId = work.Id;
+            grouped.Save();
+            var groupedId = grouped.SessionId;
+
+            Check(ChatGroupService.DeleteGroup(work.Id, out _), "删除分组成功");
+
+            var groupedPath = ChatSessionService.LoadByAnyId(groupedId);
+            var reloaded = groupedPath == null ? null : ChatSessionService.Load(groupedPath);
+            Check(reloaded != null && reloaded.GroupId.Length == 0,
+                  "删组后组内会话必须回到未分组",
+                  "否则会话挂着一个失效的分组 Id，界面表现为冒出一个「（未知分组）」幽灵分区");
+            Check(!ChatGroupStore.Load().Any(g => g.Id == work.Id), "被删的分组必须从清单里消失");
+
+            // ══ 并发安全（2026-09-23 修的读写竞态的回归防线）══
+            var concurrentTasks = Enumerable.Range(0, 8)
+                .Select(i => Task.Run(() => ChatGroupStore.Mutate(g =>
+                {
+                    g.Add(new ChatGroup { Id = "concurrent-" + i, Name = "并发" + i, CreatedAt = DateTime.Now });
+                    return true;
+                })))
+                .ToArray();
+            Task.WaitAll(concurrentTasks);
+            Check(ChatGroupStore.Load().Count(g => g.Id.StartsWith("concurrent-", StringComparison.Ordinal)) == 8,
+                  "8 个线程并发新建分组，一个都不许丢",
+                  "这正是旧实现的死法：读-改-写无锁，后保存的把先保存的整份清单覆盖掉");
+
+            // ══ 变更通知（同步引擎的接线点）══
+            var notifyCount = 0;
+            Action onGroupsChanged = () => Interlocked.Increment(ref notifyCount);
+            ChatGroupStore.GroupsChanged += onGroupsChanged;
+            try
+            {
+                ChatGroupStore.Mutate(_ => false);
+                Check(notifyCount == 0,
+                      "Mutate：回调说「没改动」→ 不落盘、也不发变更通知",
+                      "无条件通知会让同步引擎空转：同步→通知→再同步，白烧坚果云 600 请求/30min 的额度");
+
+                ChatGroupStore.Mutate(g =>
+                {
+                    g.Add(new ChatGroup { Id = "notify-probe", Name = "通知测试", CreatedAt = DateTime.Now });
+                    return true;
+                });
+                Check(notifyCount == 1, "Mutate：确实有改动 → 落盘并发通知恰好一次");
+            }
+            finally
+            {
+                ChatGroupStore.GroupsChanged -= onGroupsChanged;
+            }
+
+            // ══ 跨端合并裁决（ChatGroupMerge）══
+            var cloudOlder = new ChatGroup { Id = "g1", Name = "云端旧名", CreatedAt = new DateTime(2026, 1, 1), NameUpdatedAt = new DateTime(2026, 1, 1) };
+            var localNewer = new ChatGroup { Id = "g1", Name = "本地新名", CreatedAt = new DateTime(2026, 1, 1), NameUpdatedAt = new DateTime(2026, 6, 1) };
+            Check(ChatGroupMerge.MergeSameId(cloudOlder, localNewer).Name == "本地新名",
+                  "同 Id 合并：本地时间戳更新 → 取本地名");
+
+            var cloudNewer = new ChatGroup { Id = "g1", Name = "云端新名", CreatedAt = new DateTime(2026, 1, 1), NameUpdatedAt = new DateTime(2026, 9, 1) };
+            Check(ChatGroupMerge.MergeSameId(cloudNewer, localNewer).Name == "云端新名",
+                  "同 Id 合并：云端时间戳更新 → 取云端名",
+                  "这条就是「跨端改名被回滚」的修复核心：旧实现无条件取本地，A 端改的名会被 B 端推回去");
+
+            var cloudLegacy = new ChatGroup { Id = "g1", Name = "云端旧数据名", CreatedAt = new DateTime(2026, 1, 1) };
+            var localLegacy = new ChatGroup { Id = "g1", Name = "本地旧数据名", CreatedAt = new DateTime(2026, 1, 1) };
+            Check(ChatGroupMerge.MergeSameId(cloudLegacy, localLegacy).Name == "本地旧数据名",
+                  "两端都没有时间戳（旧清单升级上来）→ 保持「本地 wins」的旧行为",
+                  "升级本身不该改变用户看到的任何东西");
+
+            var cloudMixed = new ChatGroup
+            {
+                Id = "g1", Name = "同一个名字", CreatedAt = new DateTime(2026, 1, 1),
+                NameUpdatedAt = new DateTime(2026, 1, 1),
+                Instruction = "云端的新指令", InstructionUpdatedAt = new DateTime(2026, 9, 1),
+            };
+            var localMixed = new ChatGroup
+            {
+                Id = "g1", Name = "同一个名字", CreatedAt = new DateTime(2026, 1, 1),
+                NameUpdatedAt = new DateTime(2026, 6, 1),
+                Instruction = "本地的旧指令", InstructionUpdatedAt = new DateTime(2026, 2, 1),
+            };
+            var fieldMerged = ChatGroupMerge.MergeSameId(cloudMixed, localMixed);
+            Check(fieldMerged.NameUpdatedAt == new DateTime(2026, 6, 1)
+                  && fieldMerged.Instruction == "云端的新指令",
+                  "名称与指令**各自独立**裁决（不整体跟随某一端）",
+                  "整体跟随的话，一端改名字会连带把另一端刚写好的指令一起吞掉");
+
+            var winner = new ChatGroup { Id = "w", Name = "同名组", InstructionUpdatedAt = new DateTime(2026, 1, 1) };
+            var loser = new ChatGroup
+            {
+                Id = "l", Name = "同名组", Instruction = "败者写的指令",
+                InstructionUpdatedAt = new DateTime(2026, 9, 1),
+            };
+            ChatGroupMerge.MergeLoserIntoWinner(winner, loser);
+            Check(winner.Instruction == "败者写的指令",
+                  "同名合并：败者更新的指令要并进胜者",
+                  "不并的话，先建的那个空分组会把后来认真写好的指令一起吞掉");
+
+            var sameA = new ChatGroup { Id = "a", Name = "n", CreatedAt = new DateTime(2026, 1, 1), NameUpdatedAt = new DateTime(2026, 5, 1) };
+            var sameB = new ChatGroup { Id = "a", Name = "n", CreatedAt = new DateTime(2027, 1, 1), NameUpdatedAt = new DateTime(2026, 5, 1) };
+            Check(ChatGroupMerge.IsSameGroup(sameA, sameB),
+                  "只有 CreatedAt 不同时必须判为「没变化」",
+                  "判成变化 → 每轮同步都落盘 → 又触发下一轮同步，空转");
+
+            // ══ 全文搜索 ══
+            var searchable = new ChatSessionService(ExplainMode.Ask);
+            searchable.AddUser("帮我查一下独角兽公司的资料");
+            searchable.AddAssistant("独角兽公司通常指估值超过十亿美元的初创企业");
+            searchable.Save();
+
+            var searchablePath = ChatSessionService.LoadByAnyId(searchable.SessionId)!;
+            var searchText = ChatSearchService.BuildSearchText(ChatSessionService.LoadFile(searchablePath)!);
+            Check(searchText.Contains("独角兽") && !searchText.Contains("你是用户的 AI 助手"),
+                  "可搜索正文含用户与 AI 的话，但**不含 system 提示词**",
+                  "把 system 提示词搜进去，每条会话都会命中同一堆词，结果全废");
+
+            var searchHits = ChatSearchService.Search("独角兽", null);
+            Check(searchHits.Count == 1 && searchHits[0].SessionId == searchable.SessionId,
+                  "全文搜索能按**消息正文**命中会话",
+                  "只搜标题的话，用户记得内容但忘了标题就永远搜不到");
+            Check(searchHits.Count > 0 && searchHits[0].Snippet.Contains("独角兽"),
+                  "命中条目要带上下文片段（界面靠它说明「这条为什么被搜出来」）");
+            Check(searchHits.Count > 0 && searchHits[0].HitCount > 0,
+                  "命中次数要如实统计（多条消息都提到时用户需要知道）");
+
+            Check(ChatSearchService.Search("", null).Count == 0 && ChatSearchService.Search("   ", null).Count == 0,
+                  "空关键词不搜（返回空列表，而不是返回全部会话）");
+
+            Check(ChatSearchService.Search("独角兽", ChatGroupStore.FavoriteId).Count == 0,
+                  "分组过滤生效：这条会话不在收藏里，搜收藏不该命中它");
+
+            // tool 消息不参与搜索
+            var toolSession = new ChatSessionService(ExplainMode.Ask);
+            toolSession.AddUser("顺手记一下这件事");
+            toolSession.AddAssistantToolCall(null, "[{\"id\":\"call-1\",\"type\":\"function\"}]");
+            toolSession.AddToolResult("call-1", "工具返回的原始内容里有茄子烧肉这四个字");
+            toolSession.Save();
+            Check(ChatSearchService.Search("茄子", null).Count == 0,
+                  "tool 角色的消息不参与搜索",
+                  "工具返回是给模型看的机器数据（JSON 大文本），收录它会让真正的用户内容被淹没");
+
+            // ══ 会话级模型 + 分组指令注入（批 1，2026-09-23）══
+            var modelSession = new ChatSessionService(ExplainMode.Ask);
+            modelSession.AddUser("会话级模型往返测试");
+            modelSession.ModelKey = "prov-1/model-x";
+            modelSession.Save();
+
+            var modelPath = ChatSessionService.LoadByAnyId(modelSession.SessionId)!;
+            Check(ChatSessionService.LoadFile(modelPath)?.ModelKey == "prov-1/model-x",
+                  "会话级模型（ModelKey）必须能落盘并原样读回",
+                  "读不回来 = 下次打开会话又悄悄用回全局模型，用户完全看不出来");
+
+            var chatDir = FocusCapturePaths.Combine("chat_history");
+            Directory.CreateDirectory(chatDir);
+            var legacyPath = Path.Combine(chatDir, "legacy-no-modelkey.json");
+            File.WriteAllText(legacyPath,
+                "{\"Id\":\"legacy-no-modelkey\",\"Mode\":\"Ask\",\"Messages\":[{\"Role\":\"user\",\"Content\":\"老会话\"}]}",
+                Encoding.UTF8);
+            var legacySession = ChatSessionService.Load(legacyPath);
+            Check(legacySession != null && legacySession.ModelKey.Length == 0,
+                  "旧会话文件没有 ModelKey 字段 → 读出空串（= 跟随全局默认，零迁移）",
+                  "若这里抛异常，用户升级后所有历史会话都打不开");
+
+            var instructionGroup = ChatGroupService.Create("得到大脑", out _)!;
+            ChatGroupService.SetInstruction(instructionGroup.Id, "我的一切指令默认对象都是得到大脑");
+
+            Check(ChatGroupService.GetInstruction(instructionGroup.Id) == "我的一切指令默认对象都是得到大脑",
+                  "GetInstruction 能取到分组指令（现读语义）");
+            Check(ChatGroupService.GetInstruction("") == ""
+                  && ChatGroupService.GetInstruction(ChatGroupStore.FavoriteId) == "",
+                  "未分组 / 收藏分区取不到指令（返回空串，不是 null）");
+            Check(ChatGroupService.GetGroupName(instructionGroup.Id) == "得到大脑", "GetGroupName 能取到分组名");
+
+            var instructionContext = ChatGroupService.BuildInstructionContext(instructionGroup.Id);
+            Check(instructionContext.Contains("分组指令") && instructionContext.Contains("得到大脑")
+                  && instructionContext.Contains("不能覆盖") && instructionContext.Contains("系统规则"),
+                  "分组指令的注入文本必须标出来源与从属关系",
+                  "不标从属 = 模型会把用户写的分组指令当成最高命令，等于开了一条绕过系统红线的后门");
+            Check(instructionContext.Contains("我的一切指令默认对象都是得到大脑"),
+                  "注入文本必须原样带上用户的指令正文");
+
+            Check(ChatGroupService.BuildInstructionContext("") == ""
+                  && ChatGroupService.BuildInstructionContext(ChatGroupStore.FavoriteId) == "",
+                  "没有指令时不构造注入文本（不往上下文里塞一个空标题）");
+
+            // ══ 侧边栏分区（ChatSidebar.BuildSections，纯逻辑；批 2，2026-09-23）══
+            SessionSummary MakeSummary(string id, bool pinned, string groupId) => new(
+                "path-" + id, id, DateTime.Now, "Ask", "标题" + id, pinned, groupId, "预览" + id, 3);
+
+            var sectionFavorite = ChatGroupStore.NewFavorite();
+            var sectionGroup = new ChatGroup { Id = "sec-g1", Name = "项目开发", CreatedAt = DateTime.Now };
+
+            var sectionSessions = new List<SessionSummary>
+            {
+                MakeSummary("plain", false, ""),                 // 未分组未置顶 → 最近
+                MakeSummary("pinnedOnly", true, ""),             // 置顶未分组 → 只在置顶区
+                MakeSummary("groupedInGroup", false, "sec-g1"),  // 已分组未置顶 → 只在分组视图里
+                MakeSummary("groupedPinned", true, "sec-g1"),    // 已分组且置顶 → 置顶区（分组里也有一份）
+            };
+
+            var sections = ChatSidebar.BuildSections(
+                sectionSessions, new List<ChatGroup> { sectionFavorite, sectionGroup });
+            var sectionIds = sections.OfType<HistoryItemViewModel>().Select(v => v.Id).ToList();
+            var groupHeaders = sections.OfType<SidebarGroupHeader>().ToList();
+            var sectionNames = sections.OfType<SidebarSectionHeader>().Select(h => h.Name).ToList();
+
+            Check(groupHeaders.Count == 2 && groupHeaders[0].IsFavorite,
+                  "侧边栏第一行永远是收藏（系统保留分区），用户分组排在它后面",
+                  "收藏排到后面的话，用户建一个恰好叫「收藏」的分组就会把它顶掉位置");
+            Check(groupHeaders.Count == 2 && groupHeaders[1].GroupId == "sec-g1",
+                  "用户分组按清单顺序排布");
+
+            Check(sectionIds.Contains("pinnedOnly") && sectionIds.Contains("groupedPinned"),
+                  "置顶会话必须出现在「置顶」区（不管它有没有分组）");
+            Check(!sectionIds.Contains("groupedInGroup"),
+                  "已分组、未置顶的会话**不得**出现在侧边栏列表里（只在分组视图里可见）",
+                  "这正是「最近」列表的意义：不把分组里的会话再平铺一遍");
+            Check(sectionIds.Contains("plain") && sectionNames.Contains("最近"),
+                  "未分组未置顶的会话出现在「最近」区");
+            Check(sectionIds.Count(id => id == "groupedPinned") == 1,
+                  "同一条置顶会话在侧边栏里只出现一次（不因它属于分组就再列一遍）");
+            Check(sectionIds.Count == 3,
+                  "完整性：该出现的会话一条都不能少、也不能多",
+                  "分区规则漏一条的后果是「某条会话在侧边栏凭空消失」，且不报任何错");
+
+            // ══ 分组置顶（2026-09-24：点「置顶此分组」= 分组行本身浮到最前。
+            //    旧语义"组内会话全部置顶"在空分组上零反馈，用户实测"点了没反应"）══
+            var pinnedGroup = new ChatGroup { Id = "sec-pin", Name = "置顶组", CreatedAt = DateTime.Now, Pinned = true };
+            var pinnedSections = ChatSidebar.BuildSections(
+                new List<SessionSummary>(),
+                new List<ChatGroup> { sectionFavorite, sectionGroup, pinnedGroup });
+            var pinnedHeaders = pinnedSections.OfType<SidebarGroupHeader>().ToList();
+            Check(pinnedHeaders.Count == 3
+                  && pinnedHeaders[0].IsFavorite
+                  && pinnedHeaders[1].GroupId == "sec-pin" && pinnedHeaders[1].IsPinned,
+                  "置顶分组排在收藏之后、普通分组之前，并带 IsPinned 标记",
+                  "顺序不对 = 用户点「置顶此分组」看不到任何位置变化");
+
+            var pinTarget = ChatGroupService.Create("置顶测试组", out _);
+            Check(pinTarget != null && ChatGroupService.SetPinned(pinTarget!.Id, true) && ChatGroupService.IsPinned(pinTarget.Id),
+                  "SetPinned(true) 置顶生效");
+            Check(ChatGroupService.SetPinned(pinTarget.Id, false) && !ChatGroupService.IsPinned(pinTarget.Id),
+                  "SetPinned(false) 取消置顶生效");
+            Check(!ChatGroupService.SetPinned(ChatGroupStore.FavoriteId, true),
+                  "收藏分区不可置顶（它本来就恒在最前）");
+
+            // 跨端合并：置顶按时间戳取新；**取消置顶**（时间戳更新）不得被云端旧的 true 顶回 ——
+            // 取消动作被回滚 = 用户这边取消了、换台机器又变回置顶
+            var pinMine = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = DateTime.Now, Pinned = false, PinnedUpdatedAt = DateTime.Now };
+            var pinCloudStale = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = pinMine.CreatedAt, Pinned = true, PinnedUpdatedAt = DateTime.Now.AddHours(-1) };
+            Check(!ChatGroupMerge.MergeSameId(pinCloudStale, pinMine).Pinned,
+                  "本地刚取消的置顶不被云端旧置顶顶回（bool 字段的时间戳裁决）");
+            var pinCloudNew = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = pinMine.CreatedAt, Pinned = true, PinnedUpdatedAt = DateTime.Now.AddHours(1) };
+            Check(ChatGroupMerge.MergeSameId(pinCloudNew, pinMine).Pinned,
+                  "云端更新的置顶按时间戳赢过本地旧状态（另一端置顶要能同步过来）");
+
+            // ══ 分组删除墓碑（2026-09-24：修"删除分组后一会又复活"）══
+            // 根因：合并是并集，并集表达不了删除 —— 真删的话云端那份下一轮就并回来。
+            var tombVictim = ChatGroupService.Create("要删的分组", out _);
+            Check(tombVictim != null && ChatGroupService.DeleteGroup(tombVictim!.Id, out _),
+                  "DeleteGroup 删除分组成功");
+            Check(!ChatGroupStore.Load().Any(g => g.Id == tombVictim.Id),
+                  "删除后 Load()（UI 口径）看不到该分组");
+            var tombRecord = ChatGroupStore.LoadAll().FirstOrDefault(g => g.Id == tombVictim.Id);
+            Check(tombRecord != null && tombRecord.IsTombstone,
+                  "删除后 LoadAll()（同步口径）保留墓碑 —— 它是压制云端残留的唯一手段");
+
+            // 墓碑在后续业务写入后不得丢失（Mutate 会把墓碑原样并回落盘）
+            ChatGroupService.SetPinned(pinTarget!.Id, true);
+            Check(ChatGroupStore.LoadAll().Any(g => g.Id == tombVictim.Id && g.IsTombstone),
+                  "其它分组变更（Mutate）后墓碑仍在清单里（被 Mutate 抹掉 = 下轮复活）");
+
+            // 核心场景：本机是墓碑、云端还是活分组（删除还没传到他端）→ 合并结果必须是墓碑
+            var tombLocal = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = DateTime.Now, DeletedAt = DateTime.Now };
+            var tombCloudStale = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = tombLocal.CreatedAt, NameUpdatedAt = DateTime.Now.AddMinutes(1) };
+            Check(ChatGroupMerge.MergeSameId(tombCloudStale, tombLocal).IsTombstone,
+                  "本机墓碑 ∪ 云端活分组 → 结果仍是墓碑（删除即终态，云端更新的修改也救不活它）");
+            var tombCloudClean = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = tombLocal.CreatedAt };
+            Check(ChatGroupMerge.MergeSameId(tombCloudClean, tombLocal).IsTombstone,
+                  "本机墓碑 ∪ 云端完全没动过的同名分组 → 仍是墓碑（最基本的复活场景）");
+            Check(ChatGroupMerge.MergeSameId(tombLocal, tombCloudClean).IsTombstone,
+                  "参数顺序对调（云端墓碑 ∪ 本地活分组）→ 同样是墓碑（两个方向都要压住）");
+
+            // 归组通路（2026-09-24：用户报"分组到…/分组里新建的会话，点进分组找不到"）：
+            // 会话带上 GroupId 落盘后，ListSessions 按 GroupId 过滤必须能查到 ——
+            // 这条守住数据层；UI 层（StartNewSession 传参）由 code-behind 的调用点保证
+            var groupMe = new ChatSessionService(ExplainMode.Ask);
+            groupMe.AddUser("归组通路的测试消息");
+            groupMe.GroupId = "sec-g1";
+            groupMe.Save();
+            Check(ChatSessionService.ListSessions().Any(s => s.Id == groupMe.SessionId
+                  && string.Equals(s.GroupId, "sec-g1", StringComparison.Ordinal)),
+                  "会话带 GroupId 落盘后，分组视图的过滤条件能查到它（归组通路）",
+                  "查不到 = 用户看到的「分组里找不到」，且不报任何错");
+        }
+        finally
+        {
+            FocusCapturePaths.RootOverride = savedRoot;
+        }
+    }
+
     private static void TestAiModelConfig()
     {
         // ── 迁移：真配过的老配置 → 恰好一条供应商 ──
@@ -3326,6 +3708,111 @@ print(json.dumps({
             g.FillRectangle(brush, 20, 20, width - 40, 60);
         }
         bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+
+    // ══ 会话同步生命周期（ChatSyncEngine Dispose + GroupsChanged 钩子，2026-09-24） ══
+    //
+    // 守两条真实事故的防线：
+    // ① 构造函数订阅静态事件 → 慢层 new 几百个引擎各挂一个订阅者，事件唤醒一切历史实例
+    //    （2026-09-23 上午「慢层测试写穿真实 settings.json」事故的成因之一）；
+    // ② 已停用引擎的防抖 timer 被事件唤醒 → RunOnceAsync 写真实目录（同事故的另一半）。
+    // 接线约定（与 ChatGroupStore.GroupsChanged 注释同步维护）：订阅只在 MainWindow.CreateSyncEngine
+    //（唯一创建点），RebuildSyncEngine 重建前与退出路径（ExitApp / OnClosed）成对调用 Dispose。
+
+    private static async Task TestChatSyncLifecycle()
+    {
+        Console.WriteLine("[会话同步生命周期] 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用");
+
+        const System.Reflection.BindingFlags Inst =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var groupsEvent = typeof(ChatGroupStore).GetField("GroupsChanged",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        var disposedField = typeof(ChatSyncEngine).GetField("_disposed", Inst);
+        var dirtyField = typeof(ChatSyncEngine).GetField("_dirty", Inst);
+        Check(groupsEvent != null && disposedField != null && dirtyField != null,
+            "反射拿到 GroupsChanged / _disposed / _dirty 私有字段",
+            "字段改名会让本组红——红了改检查点，不许删检查点（红线 6）");
+
+        var sem = new SemaphoreSlim(1);
+
+        // ── ① 构造不订阅（事故①防线）──
+        var e1 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        var e2 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        var e3 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        Check(groupsEvent!.GetValue(null) == null,
+            "new 3 个引擎后 GroupsChanged 订阅者仍为 0（构造函数不订阅静态事件）",
+            "构造函数挂静态事件 = 测试每 new 一个引擎永久多一个订阅者（2026-09-23 事故同款）");
+
+        // ── ② 分组落盘钩子仍会发射（MainWindow 接线的收益依赖它）──
+        var fired = 0;
+        Action h = () => fired++;
+        ChatGroupStore.GroupsChanged += h;
+        try
+        {
+            ChatGroupStore.Mutate(gs =>
+            {
+                gs.Add(new ChatGroup
+                {
+                    Id = "g-lifecycle-" + Guid.NewGuid().ToString("N"),
+                    Name = "生命周期检查点分组",
+                    CreatedAt = DateTime.Now,
+                });
+                return true;
+            });
+        }
+        finally { ChatGroupStore.GroupsChanged -= h; }   // 检查点自己退订：绝不给后续用例留订阅者
+        Check(fired == 1, "ChatGroupStore 落盘 → GroupsChanged 触发恰好 1 次（钩子未被删）");
+        Check(groupsEvent.GetValue(null) == null, "检查点退订后订阅者回到 0（不泄漏给后续用例）");
+
+        // ── ③ Dispose 幂等 + 停用标志 ──
+        e1.Dispose();
+        e1.Dispose();   // 幂等：二次 Dispose 不许抛
+        e2.Dispose();
+        e3.Dispose();
+        Check((bool)disposedField!.GetValue(e1)!, "Dispose 幂等不抛，且 _disposed = true");
+
+        // ── ④ 停用后 RunOnceAsync 零副作用（事故②防线）──
+        var s4 = new AppSettings { Sync = { ChatSyncEnabled = true } };
+        var dead4 = new ChatSyncEngine(s4, null!, sem);
+        dead4.Dispose();
+        s4.Sync.ChatSyncResult = "";   // 观察窗清空：停用引擎若再写状态，这里必然非空
+        await dead4.RunOnceAsync();
+        Check(string.IsNullOrEmpty(s4.Sync.ChatSyncResult),
+            "Dispose 后 RunOnceAsync 直接返回（不写状态、不写真实目录）",
+            "已停用引擎还能走到 EnsureDekCurrent / SetChatStatus 就是防线失守");
+
+        // 对照：未 Dispose 的引擎确实会留痕 —— 证明上一条不是「反正什么都不发生」的空断言
+        var s5 = new AppSettings { Sync = { ChatSyncEnabled = true } };
+        var live5 = new ChatSyncEngine(s5, null!, sem);
+        await live5.RunOnceAsync();
+        var wroteStatus = !string.IsNullOrEmpty(s5.Sync.ChatSyncResult);
+        live5.Dispose();
+        Check(wroteStatus, "对照：未 Dispose 的引擎 RunOnceAsync 会写状态留痕（上一条断言有区分度）");
+
+        // ── ⑤ 停用后 NotifyLocalChange 不再点火防抖 timer ──
+        // 盐 + 授权码配齐（DPAPI 本机可逆）才有区分度：否则 EnsureDekCurrent 提前置 false，脏标记恒为 false。
+        var s6 = new AppSettings
+        {
+            Sync =
+            {
+                ChatSyncEnabled = true,
+                E2eeSalt = Convert.ToBase64String(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+                WebDavToken = SyncSettings.ProtectToken("lifecycle-checkpoint-token"),
+            },
+        };
+        var dead6 = new ChatSyncEngine(s6, null!, sem);
+        dead6.Dispose();
+        dead6.NotifyLocalChange();
+        Check(!(bool)dirtyField!.GetValue(dead6)!,
+            "Dispose 后 NotifyLocalChange 不置脏（防抖 timer 不可能再被点火）");
+
+        // 对照：活引擎 + 盐就绪 → 置脏（防抖正常启动）。必须立刻 Dispose 收尾：
+        // timer 已被点火，30s 后到期 —— 不停掉它会在测试结束后跨沙箱写真实目录（事故②镜像）。
+        var live6 = new ChatSyncEngine(s6, null!, sem);
+        live6.NotifyLocalChange();
+        var dirtyLive = (bool)dirtyField.GetValue(live6)!;
+        live6.Dispose();
+        Check(dirtyLive, "对照：活引擎 NotifyLocalChange 置脏（防抖窗口正常启动）");
     }
 
     private static readonly int[] Backoff = { 1, 1, 1 };   // 测试注入小退避（SyncEngine 构造参数）
