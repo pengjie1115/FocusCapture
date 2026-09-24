@@ -92,10 +92,16 @@ public partial class ChatSidebar : UserControl
     /// <summary>刷新侧边栏（分区构造见 <see cref="BuildSections"/>）</summary>
     public void Load(IEnumerable<SessionSummary> sessions, IReadOnlyList<ChatGroup> groups)
     {
+        _lastSessions = sessions.ToList();   // 批量模式重刷要复用同一份会话集
         var sections = BuildSections(sessions, groups);
 
         Items.Clear();
-        foreach (var entry in sections) Items.Add(entry);
+        foreach (var entry in sections)
+        {
+            if (entry is HistoryItemViewModel vm)
+                vm.IsSelected = _batchMode && _batchSelected.Contains(vm.Id);
+            Items.Add(entry);
+        }
     }
 
     /// <summary>
@@ -179,10 +185,102 @@ public partial class ChatSidebar : UserControl
 
     private void BtnRecycleBin_Click(object sender, RoutedEventArgs e) => RecycleBinRequested?.Invoke();
 
+    // ── 批量操作（2026-09-24 找回：旧抽屉的"批量操作"入口在换侧边栏时被弄丢，用户点名要回）──
+    // 交互（用户拍板）：会话三点菜单里点「批量操作」进入多选；此后点会话 = 选中/取消（不再打开）；
+    // 底部操作条做 删除 / 移入分组 / 取消。选中态用标题前缀"✓"标记 —— HistoryItemViewModel
+    // 没有变更通知，与其给它加 INPC（牵动旧抽屉与分组视图两处使用方），不如整表重刷（几十条，毫秒级）。
+
+    private bool _batchMode;
+    private readonly HashSet<string> _batchSelected = new(StringComparer.Ordinal);
+    private List<SessionSummary> _lastSessions = new();
+
+    /// <summary>会话三点菜单里点「批量操作」</summary>
+    public event Action? BatchModeRequested;
+    /// <summary>批量删除（宿主执行，参数 = 选中的会话）</summary>
+    public event Action<IReadOnlyList<HistoryItemViewModel>>? BatchDeleteRequested;
+    /// <summary>批量移入分组（context = 目标分组 Id）</summary>
+    public event Action<IReadOnlyList<HistoryItemViewModel>, string>? BatchGroupRequested;
+
+    /// <summary>进入多选模式。数据沿用最近一次 Load 的会话集（宿主进入前会先刷新）。</summary>
+    public void EnterBatchMode()
+    {
+        _batchMode = true;
+        _batchSelected.Clear();
+        BatchBar.Visibility = Visibility.Visible;
+        UpdateBatchCount();
+    }
+
+    /// <summary>退出多选模式并重刷列表（去掉"✓"前缀）</summary>
+    public void ExitBatchMode()
+    {
+        _batchMode = false;
+        _batchSelected.Clear();
+        BatchBar.Visibility = Visibility.Collapsed;
+        ReloadLastSessions();
+    }
+
+    private void UpdateBatchCount() =>
+        BatchCount.Text = _batchSelected.Count == 0 ? "点会话选中，再选下面的操作" : $"已选 {_batchSelected.Count} 项";
+
+    /// <summary>用最近一次的会话集重刷（批量模式进出 / 选择变化时用）。
+    /// HistoryItemViewModel 自带 IsSelected（INPC，旧抽屉批量模式的遗留基础设施），直接用它驱动选中高亮。</summary>
+    private void ReloadLastSessions()
+    {
+        Items.Clear();
+        foreach (var entry in BuildSections(_lastSessions, ChatGroupStore.Load()))
+        {
+            if (entry is HistoryItemViewModel vm)
+                vm.IsSelected = _batchSelected.Contains(vm.Id);
+            Items.Add(entry);
+        }
+    }
+
+    /// <summary>把选中的 Id 翻译回条目视图（宿主动作需要 FilePath 等字段，Summary 没有）</summary>
+    private List<HistoryItemViewModel> PickedItems() =>
+        Items.OfType<HistoryItemViewModel>().Where(vm => _batchSelected.Contains(vm.Id)).ToList();
+
+    private void BtnBatchDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var picked = PickedItems();
+        if (picked.Count == 0) return;
+        BatchDeleteRequested?.Invoke(picked);
+        ExitBatchMode();
+    }
+
+    private void BtnBatchGroup_Click(object sender, RoutedEventArgs e)
+    {
+        var picked = PickedItems();
+        if (picked.Count == 0) return;
+
+        var menu = new ContextMenu();
+        foreach (var g in ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)))
+        {
+            var targetId = g.Id;
+            var item = new MenuItem { Header = g.Name };
+            item.Click += (_, _) => BatchGroupRequested?.Invoke(picked, targetId);
+            menu.Items.Add(item);
+        }
+        menu.PlacementTarget = BtnBatchGroup;
+        menu.Placement = PlacementMode.Top;
+        menu.Closed += (_, _) => ExitBatchMode();
+        menu.IsOpen = true;
+    }
+
+    private void BtnBatchCancel_Click(object sender, RoutedEventArgs e) => ExitBatchMode();
+
     private void SessionRow_Click(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: HistoryItemViewModel item })
-            SessionSelected?.Invoke(item);
+        if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
+
+        // 批量模式下点会话 = 选中/取消（不再打开会话）
+        if (_batchMode)
+        {
+            if (!_batchSelected.Remove(item.Id)) _batchSelected.Add(item.Id);
+            UpdateBatchCount();
+            ReloadLastSessions();
+            return;
+        }
+        SessionSelected?.Invoke(item);
     }
 
     private void GroupRow_Click(object sender, MouseButtonEventArgs e)
@@ -270,9 +368,19 @@ public partial class ChatSidebar : UserControl
 
         menu.Items.Add(MakeSessionMenuItem(item, ChatItemAction.Delete, "删除会话"));
 
+        // 批量操作入口（2026-09-24 找回）：进入多选，操作在底部操作条
+        menu.Items.Add(MakeBatchMenuItem());
+
         menu.PlacementTarget = btn;
         menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;
+    }
+
+    private MenuItem MakeBatchMenuItem()
+    {
+        var item = new MenuItem { Header = "批量操作" };
+        item.Click += (_, _) => BatchModeRequested?.Invoke();
+        return item;
     }
 
     /// <summary>子菜单父项：只当容器，**不绑任何事件**。绑了就会在宿主那里被当成 context=null 的动作。</summary>

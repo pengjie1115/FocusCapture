@@ -13,6 +13,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- ── 顶部两个入口 ── -->
@@ -133,14 +134,42 @@
                                 <Setter TargetName="SessionRow" Property="Background" Value="#2E2E2E"/>
                                 <Setter TargetName="SessionMore" Property="Visibility" Value="Visible"/>
                             </Trigger>
+                            <!-- 批量选中的高亮（带品牌绿的底色，与普通悬停区分） -->
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="SessionRow" Property="Background" Value="#33422E"/>
+                            </DataTrigger>
                         </DataTemplate.Triggers>
                     </DataTemplate>
                 </ItemsControl.Resources>
             </ItemsControl>
         </ScrollViewer>
 
+        <!-- ── 批量操作条（2026-09-24 找回：旧抽屉有多选批量，换侧边栏时被我弄丢了 —— 用户点名要回）── -->
+        <Border x:Name="BatchBar" Grid.Row="2" BorderBrush="#2E2E2E" BorderThickness="0,1,0,0"
+                Padding="10,6" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="BatchCount" Grid.Column="0" Foreground="#9A9A9A" FontSize="11"
+                           VerticalAlignment="Center"/>
+                <Button x:Name="BtnBatchDelete" Grid.Column="1" Content="删除" Click="BtnBatchDelete_Click"
+                        Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                        Background="#2A2A2A" Foreground="#D08080" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                <Button x:Name="BtnBatchGroup" Grid.Column="2" Content="移入分组" Click="BtnBatchGroup_Click"
+                        Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                <Button x:Name="BtnBatchCancel" Grid.Column="3" Content="取消" Click="BtnBatchCancel_Click"
+                        Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                        Background="Transparent" Foreground="#8A8A8A" BorderThickness="0"/>
+            </Grid>
+        </Border>
+
         <!-- ── 底部用户区（头像 + 昵称）── -->
-        <Border Grid.Row="2" BorderBrush="#2E2E2E" BorderThickness="0,1,0,0" Padding="10,8">
+        <Border Grid.Row="3" BorderBrush="#2E2E2E" BorderThickness="0,1,0,0" Padding="10,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>

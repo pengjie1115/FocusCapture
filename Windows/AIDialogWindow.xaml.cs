@@ -274,6 +274,19 @@ public partial class AIDialogWindow : Window
         Sidebar.NewChatRequested += () => Dispatcher.BeginInvoke(new Action(() => { CloseGroupView(); StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote); }));
         Sidebar.NewGroupRequested += () => Dispatcher.BeginInvoke(new Action(HandleNewGroup));
         Sidebar.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
+        // 批量操作（2026-09-24 找回）：入口在会话三点菜单，动作在侧边栏底部操作条（用户拍板的形态）
+        Sidebar.BatchModeRequested += () => Dispatcher.BeginInvoke(new Action(() => Sidebar.EnterBatchMode()));
+        Sidebar.BatchDeleteRequested += items => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            DeleteSessions(items);
+            RefreshDrawer();
+        }));
+        Sidebar.BatchGroupRequested += (items, groupId) => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            foreach (var item in items)
+                ApplySessionMeta(item, s => s.GroupId = groupId);
+            RefreshDrawer();
+        }));
         Deactivated += (_, _) => _preview.HoverLeave();   // 窗口失焦时鼠标可能已不在卡片上，预览要跟着收
         Closed += OnWindowClosed;
 
@@ -533,12 +546,14 @@ public partial class AIDialogWindow : Window
         var text = new TextRange(InputBox.Document.ContentStart, InputBox.Document.ContentEnd).Text;
         var empty = string.IsNullOrWhiteSpace(text) && AttachmentCountInInput() == 0;
         InputPlaceholder.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        RefreshPickGroupLabel();   // 「选择分组」文案跟着状态走（发送/切会话/进退分组都经过这里）
         RefreshComposerLayout();
     }
 
-    /// <summary>按当前会话状态决定输入区在中间还是底部</summary>
+    /// <summary>按当前会话状态决定输入区在中间还是底部。
+    /// 分组视图也沉底 —— 它不是起手页（空态提示由分组视图自己的"说第一句"承担）。</summary>
     private void RefreshComposerLayout()
-        => ApplyComposerLayout(atBottom: _active is { Bubbles.Count: > 0 });
+        => ApplyComposerLayout(atBottom: _active is { Bubbles.Count: > 0 } || _activeGroupId.Length > 0);
 
     /// <summary>
     /// 输入区布局（2026-09-23，用户要求）：
@@ -950,6 +965,12 @@ public partial class AIDialogWindow : Window
             if (_drawerOpen) OpenDrawer(false);
             StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, groupId);
         }
+        // 起手态选了「选择分组」→ 第一句话就会话建在该分组（WorkBuddy"选择工作空间"语义）
+        else if (_pendingGroupId.Length > 0)
+        {
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, _pendingGroupId);
+            _pendingGroupId = "";
+        }
 
         // 双保险：设置里关了图片发送时，即使图片已贴在输入区也不上行。
         // 提示后保留输入区内容，不擅自丢弃用户已经准备好的东西。
@@ -979,11 +1000,11 @@ public partial class AIDialogWindow : Window
         // 刻意用 new ContextMenu() 而不是对象初始化器：自带 Style 会顶掉 App.xaml 的深色模板、弹出层变白条
         var menu = new ContextMenu();
 
-        var attach = new MenuItem { Header = "添加附件（发给 AI 看）" };
+        var attach = new MenuItem { Header = "添加附件" };
         attach.Click += (_, _) => PickAttachments();
         menu.Items.Add(attach);
 
-        var reference = new MenuItem { Header = "引用文件（让 AI 操作）" };
+        var reference = new MenuItem { Header = "引用文件" };
         reference.Click += (_, _) => PickFileForHandle();
         menu.Items.Add(reference);
 
@@ -2164,6 +2185,8 @@ public partial class AIDialogWindow : Window
         MessagesScroll.Visibility = Visibility.Collapsed;
 
         RefreshGroupView();
+        RefreshComposerLayout();   // 快照实测抓到：进分组视图后欢迎语还挂着、输入框还居中 ——
+                                   // 分组视图的欢迎语语义不成立（它的空态提示是"说第一句"那行字），布局必须重算
         InputBox.Focus();
     }
 
@@ -2195,6 +2218,67 @@ public partial class AIDialogWindow : Window
         // 清空搜索框后空分组会显示上一轮的搜索提示
         GroupSessionEmptyHint.Text = "这个分组还没有会话 —— 在下面输入框里说第一句，就会开始一个属于它的话题。";
         GroupSessionEmptyHint.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── 选择分组（2026-09-24 补做，对标 WorkBuddy 的「选择工作空间」）──
+    // 起手态：选中的分组存 _pendingGroupId，发第一句时会话直接建在该分组；
+    // 对话态：显示当前会话的分组，点击可移动归属。
+
+    private string _pendingGroupId = "";   // 起手态选定的目标分组（空 = 未分组）
+
+    private void BtnPickGroup_Click(object sender, RoutedEventArgs e)
+    {
+        // 刻意用 new ContextMenu()：对象初始化器自带的 Style 会顶掉深色模板（弹出层变白条，踩过）
+        var menu = new ContextMenu();
+
+        var currentId = ResolveCurrentGroupId();
+        var none = new MenuItem { Header = "未分组", IsChecked = currentId.Length == 0 };
+        none.Click += (_, _) => ApplyPickGroup("");
+        menu.Items.Add(none);
+
+        foreach (var g in ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)))
+        {
+            var targetId = g.Id;
+            var item = new MenuItem { Header = g.Name, IsChecked = g.Id == currentId };
+            item.Click += (_, _) => ApplyPickGroup(targetId);
+            menu.Items.Add(item);
+        }
+
+        menu.PlacementTarget = BtnPickGroup;
+        menu.Placement = PlacementMode.Top;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>当前"该显示哪个分组"：对话态取活跃会话的归属；起手态取起手选择</summary>
+    private string ResolveCurrentGroupId()
+    {
+        if (_active is { Bubbles.Count: > 0 }) return _active.Session.GroupId;
+        return _pendingGroupId;
+    }
+
+    private void ApplyPickGroup(string groupId)
+    {
+        // 对话态 = 移动当前会话归属（立即生效并落盘）；起手态 = 记住，第一句话时归组
+        if (_active is { Bubbles.Count: > 0 })
+        {
+            _active.Session.GroupId = groupId;
+            _active.Session.Save();
+            RefreshDrawer();
+        }
+        else
+        {
+            _pendingGroupId = groupId;
+        }
+        RefreshPickGroupLabel();
+    }
+
+    /// <summary>刷新「选择分组」按钮的文案。挂在发送/切换会话/退出分组视图等状态变化点上。</summary>
+    private void RefreshPickGroupLabel()
+    {
+        var id = ResolveCurrentGroupId();
+        PickGroupLabel.Text = id.Length == 0
+            ? "选择分组"
+            : ChatGroupService.GetGroupName(id) is { Length: > 0 } name ? name : "选择分组";
     }
 
     // ── 分组内搜索（2026-09-24 补做：用户指出漏了；范围=本分组，含消息正文全文）──
