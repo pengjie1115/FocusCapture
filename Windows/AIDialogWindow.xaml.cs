@@ -292,11 +292,18 @@ public partial class AIDialogWindow : Window
         Sidebar.NewChatRequested += () => Dispatcher.BeginInvoke(new Action(() => { CloseGroupView(); StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote); }));
         Sidebar.NewGroupRequested += () => Dispatcher.BeginInvoke(new Action(HandleNewGroup));
         Sidebar.RecycleBinRequested += () => Dispatcher.BeginInvoke(new Action(HandleRecycleBin));
-        // 批量操作（2026-09-24 找回）：入口在会话三点菜单，动作在侧边栏底部操作条（用户拍板的形态）
-        Sidebar.BatchModeRequested += () => Dispatcher.BeginInvoke(new Action(() => Sidebar.EnterBatchMode()));
+        // 批量管理（2026-09-24 找回；2026-09-26 文案从「批量操作」统一为「批量管理」）：
+        // 入口在会话三点菜单，动作在侧边栏底部操作条。与分组视图的批量多选互斥（两个多选态同屏没意义）。
+        Sidebar.BatchModeRequested += () => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ExitGroupBatchMode();
+            Sidebar.EnterBatchMode();
+        }));
         Sidebar.BatchDeleteRequested += items => Dispatcher.BeginInvoke(new Action(() =>
         {
-            DeleteSessions(items);
+            // 确认框点「否」→ 不删也不退批量（勾选保留）；真删了才退出多选并刷新
+            if (!DeleteSessions(items)) return;
+            Sidebar.ExitBatchMode();
             RefreshDrawer();
         }));
         Sidebar.BatchGroupRequested += (items, groupId) => Dispatcher.BeginInvoke(new Action(() =>
@@ -1076,12 +1083,13 @@ public partial class AIDialogWindow : Window
 
         // 分组视图下输入 = 在该分组里开一个**新会话**（用户 2026-09-23 定："开对话之前先选好分组"）。
         // 不切走的话消息会发进 _active（多半是别的会话），归组落空 —— 这正是 2026-09-24 修的根因之一。
-        // 发送即退出分组视图并收起侧边栏（用户 2026-09-24 拍板），回到正常对话界面。
+        // 发送即退出分组视图，回到正常对话界面（2026-09-24 拍板）；
+        // 2026-09-26 改版：**不再顺手收起侧边栏** —— 进分组默认不收起的新规一并管到发消息这一刻
+        //（用户拍板：退出分组视图，但侧边栏保持展开）。
         if (_activeGroupId.Length > 0)
         {
             var groupId = _activeGroupId;
             CloseGroupView();
-            if (_drawerOpen) OpenDrawer(false);
             StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, groupId);
         }
         // 起手态选了「选择分组」→ 第一句话就会话建在该分组（WorkBuddy"选择工作空间"语义）
@@ -2309,7 +2317,7 @@ public partial class AIDialogWindow : Window
                 break;
 
             case ChatItemAction.Delete:
-                DeleteSessions([item]);
+                if (DeleteSessions([item])) RefreshDrawer();   // 确认删除才刷（取消时列表纹丝不动）
                 break;
         }
     }
@@ -2333,11 +2341,11 @@ public partial class AIDialogWindow : Window
     }
 
     /// <summary>点侧边栏里的某个分组（收藏也走这里）→ 主区切到分组视图。
-    /// 同时收起侧边栏（用户 2026-09-24 拍板：进了分组视图就该让内容区最大化）。</summary>
+    /// 2026-09-26 用户改版：进分组**不再收起侧边栏** —— 分组详情直接在原对话区展示（对标千问布局），
+    /// 侧边栏保持展开，随时可点别的分组/会话（2026-09-24「进分组就让内容区最大化」的旧拍板被本条推翻）。</summary>
     private void HandleGroupSelected(SidebarGroupHeader group)
     {
         OpenGroupView(group.GroupId, group.Name);
-        if (_drawerOpen) OpenDrawer(false);
     }
 
     /// <summary>分组三点菜单：重命名 / 置顶此分组 / 删除此分组</summary>
@@ -2385,6 +2393,7 @@ public partial class AIDialogWindow : Window
     /// </summary>
     private void OpenGroupView(string groupId, string groupName)
     {
+        ExitGroupBatchMode();   // 切分组 = 换一批条目，旧分组的批量勾选没有保留意义（不在批量态时是 no-op）
         _activeGroupId = groupId;
 
         var isFavorite = ChatGroupStore.IsFavorite(groupId);
@@ -2413,6 +2422,7 @@ public partial class AIDialogWindow : Window
     private void CloseGroupView()
     {
         if (_activeGroupId.Length == 0) return;
+        ExitGroupBatchMode();                      // 批量态是分组视图的一部分，一起清（内部重刷一次，随后整块隐藏）
         _activeGroupId = "";
         ExitGroupSearch();                      // 搜索态是分组视图的一部分，一起清掉
         GroupViewPanel.Visibility = Visibility.Collapsed;
@@ -2431,6 +2441,14 @@ public partial class AIDialogWindow : Window
                 string.IsNullOrWhiteSpace(s.Title) ? s.Preview : s.Title,
                 s.Pinned, s.GroupId, "", s.Preview))
             .ToList();
+
+        // 批量态必须挂回新建的 VM：复选框显隐（IsBatchMode）与勾选（IsSelected）都靠它 ——
+        // 漏了这里，批量中来一次刷新（重命名/置顶/同步拉取都会刷）勾选框就整片消失。
+        foreach (var vm in items)
+        {
+            vm.IsBatchMode = _groupBatchMode;
+            vm.IsSelected = _groupBatchSelected.Contains(vm.Id);
+        }
 
         GroupSessionList.ItemsSource = items;
         // 文案一并恢复 —— 搜索态会把这条提示改成"没有匹配…"，不清回去的话
@@ -2575,10 +2593,17 @@ public partial class AIDialogWindow : Window
     /// 片段放在预览位（悬停可见），标题仍是会话标题。</summary>
     private void RenderGroupSearchResults(IReadOnlyList<ChatSearchHit> hits, string groupId, string query)
     {
-        GroupSessionList.ItemsSource = hits.Select(h => new HistoryItemViewModel(
+        var items = hits.Select(h => new HistoryItemViewModel(
             h.SessionId, h.FilePath, h.SavedAt, "",
             string.IsNullOrWhiteSpace(h.Title) ? h.Preview : h.Title,
             false, groupId, h.Snippet, h.Snippet)).ToList();
+        // 搜索结果也走同一套批量态（搜索中进入/退出批量、勾选都必须显示正确）
+        foreach (var vm in items)
+        {
+            vm.IsBatchMode = _groupBatchMode;
+            vm.IsSelected = _groupBatchSelected.Contains(vm.Id);
+        }
+        GroupSessionList.ItemsSource = items;
         GroupSessionEmptyHint.Text = hits.Count == 0
             ? $"没有匹配「{query.Trim()}」的会话。"
             : "";
@@ -2588,9 +2613,245 @@ public partial class AIDialogWindow : Window
     private void GroupSessionRow_Click(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
+
+        // 点在行首复选框上：放行给它自己处理（勾选状态由 CheckBox 绑定翻转，
+        // 走到这里再翻一次会把状态翻回去 —— 同 ChatSidebar.FromBatchCheck 一条防线）
+        if (ChatSidebar.FromBatchCheck(e.OriginalSource)) return;
+
+        // 批量模式下点会话 = 选中/取消（不再打开会话）；平时点 = 打开该会话
+        if (_groupBatchMode)
+        {
+            item.IsSelected = !item.IsSelected;
+            SyncGroupBatchPick(item);
+            return;
+        }
         CloseGroupView();                       // 打开某条会话 = 退出分组视图，回到对话
         LoadHistorySession(item.FilePath);
     }
+
+    // ── 分组内会话三点菜单（2026-09-26 用户要求对标千问，收藏视图同套）──
+    // 项：重命名 / 置顶此对话 / 批量管理 / 移动到分组▸ / 导出对话▸ / 删除对话。
+    // 除「移动到分组」外全部沿用未分组三点的 HandleItemAction 逻辑 —— 不在这里另起一套业务。
+
+    /// <summary>分组视图会话行的三点按钮</summary>
+    private void GroupSessionMore_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is not FrameworkElement { Tag: HistoryItemViewModel item } btn) return;
+
+        // 刻意用 new ContextMenu() 而不是对象初始化器：自带 Style 会顶掉 App.xaml 深色模板出白条（项目已踩过）
+        var menu = new ContextMenu();
+
+        menu.Items.Add(MakeGroupSessionItem(item, ChatItemAction.Rename, "重命名"));
+        menu.Items.Add(MakeGroupSessionItem(item, ChatItemAction.TogglePin,
+            item.Pinned ? "取消置顶" : "置顶此对话"));
+
+        // 批量管理：进多选（行首出复选框、底部出操作条）
+        var batch = new MenuItem { Header = "批量管理" };
+        batch.Click += (_, _) => EnterGroupBatchMode();
+        menu.Items.Add(batch);
+
+        // 移动到分组 ▸：与批量条的「移动到分组」共用同一构建器（现有分组 + 移出本组/移出收藏 + 新增分组）
+        menu.Items.Add(BuildMoveToGroupMenu([item], item.GroupId));
+
+        // 导出对话 ▸（格式清单与侧边栏共用 ChatSidebar.ExportFormats，别两处各列一套）
+        var exportMenu = new MenuItem { Header = "导出对话" };
+        foreach (var (formatName, format) in ChatSidebar.ExportFormats)
+        {
+            var menuItem = new MenuItem { Header = formatName };
+            var captured = format;
+            menuItem.Click += (_, _) => HandleItemAction(item, ChatItemAction.Export, captured.ToString());
+            exportMenu.Items.Add(menuItem);
+        }
+        menu.Items.Add(exportMenu);
+
+        var deleteItem = new MenuItem
+        {
+            Header = "删除对话",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x80, 0x80)),
+        };
+        deleteItem.Click += (_, _) => HandleItemAction(item, ChatItemAction.Delete, null);
+        menu.Items.Add(deleteItem);
+
+        menu.PlacementTarget = btn;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>分组视图菜单里的普通项：动作统一交回 HandleItemAction（与未分组三点同一条业务链路）</summary>
+    private MenuItem MakeGroupSessionItem(HistoryItemViewModel item, ChatItemAction action, string header, string? context = null)
+    {
+        var menuItem = new MenuItem { Header = header };
+        menuItem.Click += (_, _) => HandleItemAction(item, action, context);
+        return menuItem;
+    }
+
+    /// <summary>
+    /// 「移动到分组」子菜单（2026-09-26 千问对标，单条与批量共用）：
+    /// 现有各分组（含「收藏」，点即移入）→ 分隔线 → 移出本组 / 移出收藏（回未分组）→ ＋ 新增分组。
+    /// currentGroupId 非空时给当前命中项打勾；批量移动不打勾（选中项可能不在同一分组）。
+    /// </summary>
+    private MenuItem BuildMoveToGroupMenu(IReadOnlyList<HistoryItemViewModel> targets, string currentGroupId)
+    {
+        var menu = new MenuItem { Header = "移动到分组" };
+        var groups = ChatGroupStore.Load();
+
+        // 普通分组在前、收藏垫底（千问口径：列表末尾是收藏；我们数据层收藏与分组同字段，一样能列）
+        foreach (var g in groups.Where(g => !ChatGroupStore.IsFavorite(g.Id)))
+        {
+            var targetId = g.Id;
+            var menuItem = new MenuItem { Header = g.Name, IsChecked = g.Id == currentGroupId };
+            menuItem.Click += (_, _) => MoveSessionsTo(targets, targetId);
+            menu.Items.Add(menuItem);
+        }
+        var favorite = groups.FirstOrDefault(g => ChatGroupStore.IsFavorite(g.Id));
+        if (favorite != null)
+        {
+            var favItem = new MenuItem { Header = "收藏", IsChecked = favorite.Id == currentGroupId };
+            var favId = favorite.Id;
+            favItem.Click += (_, _) => MoveSessionsTo(targets, favId);
+            menu.Items.Add(favItem);
+        }
+
+        menu.Items.Add(new Separator());
+
+        // 移出本组 / 移出收藏：回到**未分组**（用户拍板：移出后恢复未分组状态）
+        var current = currentGroupId.Length > 0 ? currentGroupId : targets.FirstOrDefault()?.GroupId ?? "";
+        if (current.Length > 0)
+        {
+            var remove = new MenuItem
+            {
+                Header = ChatGroupStore.IsFavorite(current) ? "移出收藏" : "移出本组",
+            };
+            remove.Click += (_, _) => MoveSessionsTo(targets, "");
+            menu.Items.Add(remove);
+        }
+
+        // 新增分组：想移到一个还不存在的分组时用（建完直接把选中会话移进去）
+        var add = new MenuItem { Header = "＋ 新增分组" };
+        add.Click += (_, _) => CreateGroupAndMove(targets);
+        menu.Items.Add(add);
+
+        return menu;
+    }
+
+    /// <summary>把（些）会话移动到目标分组（""= 未分组），随后重刷并退出批量态</summary>
+    private void MoveSessionsTo(IReadOnlyList<HistoryItemViewModel> targets, string groupId)
+    {
+        foreach (var item in targets)
+            ApplySessionMeta(item, s => s.GroupId = groupId);
+        RefreshDrawer();            // 连带 RefreshGroupView：被移出的条目从当前分组列表消失
+        ExitGroupBatchMode();       // 移动完成 = 本轮批量结束（不在批量态时是 no-op）
+    }
+
+    /// <summary>「＋ 新增分组」：建组并把选中会话移进去。
+    /// 同名只提示、**不**把会话静默塞进老分组 —— 与侧边栏「新建分组」同一条纪律（REGRESSION B-21）。</summary>
+    private void CreateGroupAndMove(IReadOnlyList<HistoryItemViewModel> targets)
+    {
+        var name = PromptDialog.Show(this, "新增分组", "分组名称：");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        var group = ChatGroupService.Create(name, out var result);
+        if (result == ChatGroupService.CreateResult.NameExists)
+        {
+            MessageBox.Show(this, "已存在同名分组", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (group != null) MoveSessionsTo(targets, group.Id);
+    }
+
+    // ── 分组视图批量管理（2026-09-26 用户要求 1:1 复刻千问批量管理）──
+    // 行首复选框 + 底部操作条（全选/已选计数 | 取消 / 移动到分组 / 删除）。
+    // 与侧边栏批量互斥（进这边先退那边，反向亦然）；计数不设上限（用户拍板「已选 n」）。
+
+    private bool _groupBatchMode;
+    private readonly HashSet<string> _groupBatchSelected = new(StringComparer.Ordinal);
+
+    /// <summary>进入分组批量多选（行三点「批量管理」）</summary>
+    private void EnterGroupBatchMode()
+    {
+        if (_activeGroupId.Length == 0) return;
+        Sidebar.ExitBatchMode();               // 两处批量互斥（侧边栏入口进来时也已反向退出）
+        _groupBatchMode = true;
+        _groupBatchSelected.Clear();
+        GroupBatchAll.IsChecked = false;
+        GroupBatchCount.Text = "已选 0";
+        GroupBatchBar.Visibility = Visibility.Visible;
+        RefreshGroupView();                    // 重建 VM 并挂上 IsBatchMode / IsSelected
+    }
+
+    /// <summary>退出分组批量多选（取消按钮 / 移动完成 / 切分组 / 退出分组视图共用）</summary>
+    private void ExitGroupBatchMode()
+    {
+        if (!_groupBatchMode) return;
+        _groupBatchMode = false;
+        _groupBatchSelected.Clear();
+        GroupBatchAll.IsChecked = false;
+        GroupBatchCount.Text = "已选 0";
+        GroupBatchBar.Visibility = Visibility.Collapsed;
+        RefreshGroupView();
+    }
+
+    /// <summary>行首复选框点击：勾选状态已由 IsChecked↔IsSelected 双向绑定翻好，这里只同步集合与计数</summary>
+    private void GroupBatchCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
+        SyncGroupBatchPick(item);
+    }
+
+    /// <summary>按条目当前 IsSelected 同步进集合（行点击与勾选框共用）</summary>
+    private void SyncGroupBatchPick(HistoryItemViewModel item)
+    {
+        if (item.IsSelected) _groupBatchSelected.Add(item.Id);
+        else _groupBatchSelected.Remove(item.Id);
+        GroupBatchCount.Text = $"已选 {_groupBatchSelected.Count}";
+    }
+
+    /// <summary>全选勾选框：全选/清空**当前列表**（搜索态即搜索结果）。Click 在 toggle 后引发，IsChecked 已是新值。</summary>
+    private void GroupBatchAll_Click(object sender, RoutedEventArgs e)
+    {
+        var all = GroupListItems();
+        var pick = GroupBatchAll.IsChecked == true;
+        _groupBatchSelected.Clear();
+        if (pick)
+            foreach (var vm in all) _groupBatchSelected.Add(vm.Id);
+        foreach (var vm in all) vm.IsSelected = pick;
+        GroupBatchCount.Text = $"已选 {_groupBatchSelected.Count}";
+    }
+
+    private void GroupBatchCancel_Click(object sender, RoutedEventArgs e) => ExitGroupBatchMode();
+
+    /// <summary>批量条「移动到分组」：弹与行三点完全一致的子菜单（分组列表 + 移出本组 + 新增分组）</summary>
+    private void GroupBatchMove_Click(object sender, RoutedEventArgs e)
+    {
+        var picked = GroupPickedItems();
+        if (picked.Count == 0) return;
+        if (sender is not FrameworkElement btn) return;
+
+        var menu = new ContextMenu { Items = { BuildMoveToGroupMenu(picked, "") } };
+        menu.PlacementTarget = btn;
+        menu.Placement = PlacementMode.Top;
+        menu.IsOpen = true;
+        // 不挂 Closed 强退：打开菜单又关掉不该丢勾选；真移动由 MoveSessionsTo 收尾
+    }
+
+    /// <summary>批量条「删除」：确认框点「是」才删并退出批量（点「否」勾选保留）</summary>
+    private void GroupBatchDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var picked = GroupPickedItems();
+        if (picked.Count == 0) return;
+        if (!DeleteSessions(picked)) return;
+        ExitGroupBatchMode();
+        RefreshDrawer();
+    }
+
+    /// <summary>当前分组列表里的可见条目（批量操作只对看得见的条目生效）</summary>
+    private List<HistoryItemViewModel> GroupListItems() =>
+        (GroupSessionList.ItemsSource as IEnumerable<HistoryItemViewModel>)?.ToList() ?? [];
+
+    /// <summary>选中且仍在当前列表里的条目</summary>
+    private List<HistoryItemViewModel> GroupPickedItems() =>
+        GroupListItems().Where(vm => _groupBatchSelected.Contains(vm.Id)).ToList();
 
     /// <summary>添加 / 修改分组指令（多行输入）</summary>
     private void BtnGroupInstruction_Click(object sender, RoutedEventArgs e)
@@ -2747,6 +3008,20 @@ public partial class AIDialogWindow : Window
             Sidebar.Items.OfType<HistoryItemViewModel>().Take(2).Select(vm => vm.Id).ToList());
     }
 
+    /// <summary>快照：分组视图的批量管理态（2026-09-26 新增）——
+    /// 行首复选框 + 底部「全选/已选 n | 取消 / 移动到分组 / 删除」操作条，只有进分组再点批量管理才出现。</summary>
+    internal void SeedGroupBatchForSnapshot()
+    {
+        SeedGroupViewForSnapshot();
+        if (_snapshotGroupId.Length == 0) return;
+        EnterGroupBatchMode();
+        foreach (var vm in GroupListItems().Take(2))
+        {
+            vm.IsSelected = true;
+            SyncGroupBatchPick(vm);
+        }
+    }
+
     /// <summary>快照：分组视图的搜索态（搜索框覆盖工具行）+ 真实命中结果。
     /// 不走 280ms 防抖的异步链（快照截图流程等不到它，结果必然缺席），改为同步跑同一底层
     /// ChatSearchService、按同一渲染口径（RenderGroupSearchResults）落图 —— 布局与结果都真实。</summary>
@@ -2805,15 +3080,16 @@ public partial class AIDialogWindow : Window
     }
 
     /// <summary>删除（单项/批量共用）：确认弹窗 → 当前打开的会话先切断内存引用（新会话接管，防后续 Save 复活文件）
-    /// → 经 AIDialogHelper.SessionDeleted 走 MarkDeleted（trash + 删除清单 + Notify，闭环①）。</summary>
-    private void DeleteSessions(IReadOnlyList<HistoryItemViewModel> items)
+    /// → 经 AIDialogHelper.SessionDeleted 走 MarkDeleted（trash + 删除清单 + Notify，闭环①）。
+    /// 返回是否真的删了（用户在确认框点「否」返回 false —— 调用方据此决定要不要退出批量态/刷新列表，2026-09-26）。</summary>
+    private bool DeleteSessions(IReadOnlyList<HistoryItemViewModel> items)
     {
         var tip = items.Count == 1
             ? "删除该会话？会移入会话回收站。"
             : $"删除选中的 {items.Count} 个会话？将移入会话回收站。";
         if (System.Windows.MessageBox.Show(this, tip, "删除会话",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            return;
+            return false;
 
         foreach (var item in items)
         {
@@ -2828,6 +3104,7 @@ public partial class AIDialogWindow : Window
             }
             AIDialogHelper.SessionDeleted?.Invoke(item.Id);
         }
+        return true;
     }
 
     /// <summary>单会话导出：SaveFileDialog 选位置（默认文件名 = 标题/预览）</summary>

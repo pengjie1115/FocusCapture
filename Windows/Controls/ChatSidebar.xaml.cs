@@ -123,7 +123,10 @@ public partial class ChatSidebar : UserControl
         foreach (var entry in sections)
         {
             if (entry is HistoryItemViewModel vm)
+            {
+                vm.IsBatchMode = _batchMode;                          // 批量态必须带上：复选框显隐、三点让位都靠它
                 vm.IsSelected = _batchMode && _batchSelected.Contains(vm.Id);
+            }
             Items.Add(entry);
         }
     }
@@ -210,15 +213,14 @@ public partial class ChatSidebar : UserControl
     private void BtnRecycleBin_Click(object sender, RoutedEventArgs e) => RecycleBinRequested?.Invoke();
 
     // ── 批量操作（2026-09-24 找回：旧抽屉的"批量操作"入口在换侧边栏时被弄丢，用户点名要回）──
-    // 交互（用户拍板）：会话三点菜单里点「批量操作」进入多选；此后点会话 = 选中/取消（不再打开）；
-    // 底部操作条做 删除 / 移入分组 / 取消。选中态用标题前缀"✓"标记 —— HistoryItemViewModel
-    // 没有变更通知，与其给它加 INPC（牵动旧抽屉与分组视图两处使用方），不如整表重刷（几十条，毫秒级）。
+    // 交互（用户拍板，2026-09-26 改版）：会话三点菜单里点「批量管理」进入多选；此后点会话 = 选中/取消（不再打开）；
+    // 行首出**复选框**（不再用标题前缀"✓"），底部操作条 = 全选 + 已选计数 + 取消/移入分组/删除（与分组视图同款）。
 
     private bool _batchMode;
     private readonly HashSet<string> _batchSelected = new(StringComparer.Ordinal);
     private List<SessionSummary> _lastSessions = new();
 
-    /// <summary>会话三点菜单里点「批量操作」</summary>
+    /// <summary>会话三点菜单里点「批量管理」</summary>
     public event Action? BatchModeRequested;
     /// <summary>批量删除（宿主执行，参数 = 选中的会话）</summary>
     public event Action<IReadOnlyList<HistoryItemViewModel>>? BatchDeleteRequested;
@@ -230,15 +232,18 @@ public partial class ChatSidebar : UserControl
     {
         _batchMode = true;
         _batchSelected.Clear();
+        BatchSelectAll.IsChecked = false;
         BatchBar.Visibility = Visibility.Visible;
         UpdateBatchCount();
+        ReloadLastSessions();   // 补挂 IsBatchMode：不重刷的话复选框不出现、三点也不让位
     }
 
-    /// <summary>退出多选模式并重刷列表（去掉"✓"前缀）</summary>
+    /// <summary>退出多选模式并重刷列表（去复选框、恢复三点）</summary>
     public void ExitBatchMode()
     {
         _batchMode = false;
         _batchSelected.Clear();
+        BatchSelectAll.IsChecked = false;
         BatchBar.Visibility = Visibility.Collapsed;
         ReloadLastSessions();
     }
@@ -253,18 +258,56 @@ public partial class ChatSidebar : UserControl
         UpdateBatchCount();
     }
 
+    /// <summary>计数文案（2026-09-26 用户拍板：不设上限，只显示「已选 n」；
+    /// 原「点会话选中，再选下面的操作」提示语按用户要求删除）。</summary>
     private void UpdateBatchCount() =>
-        BatchCount.Text = _batchSelected.Count == 0 ? "点会话选中，再选下面的操作" : $"已选 {_batchSelected.Count} 项";
+        BatchCount.Text = $"已选 {_batchSelected.Count}";
+
+    /// <summary>全选勾选框：点它 = 全选/清空当前列表（图二千问同款行为）。
+    /// Click 在 toggle 之后引发，IsChecked 已是新值，直接按它落状态。</summary>
+    private void BatchSelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        var pick = BatchSelectAll.IsChecked == true;
+        _batchSelected.Clear();
+        if (pick)
+            foreach (var vm in Items.OfType<HistoryItemViewModel>()) _batchSelected.Add(vm.Id);
+        foreach (var vm in Items.OfType<HistoryItemViewModel>()) vm.IsSelected = pick;
+        UpdateBatchCount();
+    }
+
+    /// <summary>行首复选框点击：勾选状态已由 IsChecked↔IsSelected 双向绑定翻好，
+    /// 这里只把 Id 同步进集合（行点击的翻转被 <see cref="FromBatchCheck"/> 拦掉，不会二次翻转）。</summary>
+    private void BatchCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
+        if (item.IsSelected) _batchSelected.Add(item.Id);
+        else _batchSelected.Remove(item.Id);
+        UpdateBatchCount();
+    }
+
+    /// <summary>点击来源是否落在复选框里（CheckBox 内部模板元素不是 Visual 树上的 CheckBox 本体，
+    /// 只能一路向上找）。批量模式下命中即在行点击里放行 —— 否则点一次勾选框会连带触发整行点击，
+    /// 把刚翻好的状态又翻回去（2026-09-26 分组视图与侧边栏共用这条防线）。</summary>
+    internal static bool FromBatchCheck(object? source)
+    {
+        for (var d = source as DependencyObject; d != null;
+             d = d is Visual ? VisualTreeHelper.GetParent(d) : null)
+            if (d is System.Windows.Controls.CheckBox) return true;
+        return false;
+    }
 
     /// <summary>用最近一次的会话集重刷（批量模式进出 / 选择变化时用）。
-    /// HistoryItemViewModel 自带 IsSelected（INPC，旧抽屉批量模式的遗留基础设施），直接用它驱动选中高亮。</summary>
+    /// HistoryItemViewModel 自带 IsSelected / IsBatchMode（INPC），直接用它驱动选中高亮与复选框显隐。</summary>
     private void ReloadLastSessions()
     {
         Items.Clear();
         foreach (var entry in BuildSections(_lastSessions, ChatGroupStore.Load()))
         {
             if (entry is HistoryItemViewModel vm)
+            {
+                vm.IsBatchMode = _batchMode;
                 vm.IsSelected = _batchSelected.Contains(vm.Id);
+            }
             Items.Add(entry);
         }
     }
@@ -277,8 +320,9 @@ public partial class ChatSidebar : UserControl
     {
         var picked = PickedItems();
         if (picked.Count == 0) return;
+        // 只发起、不擅自退出批量态：宿主在**真的删了**之后才调 ExitBatchMode ——
+        // 用户在确认框点「否」时勾选必须还在（2026-09-26，与分组视图批量同一条纪律）
         BatchDeleteRequested?.Invoke(picked);
-        ExitBatchMode();
     }
 
     private void BtnBatchGroup_Click(object sender, RoutedEventArgs e)
@@ -291,12 +335,15 @@ public partial class ChatSidebar : UserControl
         {
             var targetId = g.Id;
             var item = new MenuItem { Header = g.Name };
-            item.Click += (_, _) => BatchGroupRequested?.Invoke(picked, targetId);
+            item.Click += (_, _) =>
+            {
+                BatchGroupRequested?.Invoke(picked, targetId);
+                ExitBatchMode();   // 选了目标才退出；打开菜单又关掉不动勾选（原 menu.Closed 强退已改）
+            };
             menu.Items.Add(item);
         }
         menu.PlacementTarget = BtnBatchGroup;
         menu.Placement = PlacementMode.Top;
-        menu.Closed += (_, _) => ExitBatchMode();
         menu.IsOpen = true;
     }
 
@@ -306,12 +353,18 @@ public partial class ChatSidebar : UserControl
     {
         if (sender is not FrameworkElement { Tag: HistoryItemViewModel item }) return;
 
-        // 批量模式下点会话 = 选中/取消（不再打开会话）
+        // 点在行首复选框上：放行给它自己处理（勾选状态由 CheckBox 的绑定翻转，
+        // 走到这里再翻一次会把状态翻回去 —— 见 FromBatchCheck 注释）
+        if (FromBatchCheck(e.OriginalSource)) return;
+
+        // 批量模式下点会话 = 选中/取消（不再打开会话）。
+        // 改 IsSelected 走 INPC：复选框与高亮一起动，不再整表重建（重建会打断悬停态）。
         if (_batchMode)
         {
-            if (!_batchSelected.Remove(item.Id)) _batchSelected.Add(item.Id);
+            item.IsSelected = !item.IsSelected;
+            if (item.IsSelected) _batchSelected.Add(item.Id);
+            else _batchSelected.Remove(item.Id);
             UpdateBatchCount();
-            ReloadLastSessions();
             return;
         }
         SessionSelected?.Invoke(item);
@@ -349,7 +402,8 @@ public partial class ChatSidebar : UserControl
         return item;
     }
 
-    private static readonly (string Name, ExportFormat Format)[] ExportFormats =
+    /// <summary>导出子菜单的四种格式（分组视图三点菜单复用同一份，别在两处各列一套 —— 2026-09-26）</summary>
+    internal static readonly (string Name, ExportFormat Format)[] ExportFormats =
     [
         ("Markdown", ExportFormat.Markdown),
         ("TXT", ExportFormat.Txt),
@@ -412,7 +466,8 @@ public partial class ChatSidebar : UserControl
 
     private MenuItem MakeBatchMenuItem()
     {
-        var item = new MenuItem { Header = "批量操作" };
+        // 文案 2026-09-26 从「批量操作」统一为「批量管理」（与分组视图、千问对标口径一致）
+        var item = new MenuItem { Header = "批量管理" };
         item.Click += (_, _) => BatchModeRequested?.Invoke();
         return item;
     }

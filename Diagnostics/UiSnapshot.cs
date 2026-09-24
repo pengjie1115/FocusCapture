@@ -210,6 +210,16 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // 分组内批量管理（2026-09-26 用户要求 1:1 复刻千问）：行首复选框 + 底部
+            // 「全选/已选 n | 取消 / 移动到分组 / 删除」—— 侧边栏那张 10e 覆盖不到分组视图的这套条。
+            // 编号用 10j：10h 已被「回答中按钮」占用（同号两图会互相误导判读）。
+            Capture("10j-AI 对话-分组批量管理", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedGroupBatchForSnapshot();
+                return w;
+            }, outDir, log);
+
             // 分组搜索态（2026-09-24）：搜索框覆盖分组工具行 ——
             // 覆盖态会不会把分组名/按钮挤出可视区，只有出图才看得见（同批量态一个道理）。
             Capture("10f-AI 对话-分组搜索", () =>

@@ -87,6 +87,7 @@ internal static class Program
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
+            Run("AI 分组与批量 UI", TestAiChatGroupUi);      // 进分组不收起 / 分组三点 / 批量条 / 标题栏底色 / 默认模型框（2026-09-26）
             Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）
             Run("会话分组", TestChatGroups);                 // 收藏保留分区 / 查重 / 改名时间戳 / 删除顺序 / 跨端合并裁决 / 全文搜索（2026-09-23）
             await RunAsync("会话同步生命周期", TestChatSyncLifecycle);   // 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用（2026-09-24）
@@ -742,6 +743,96 @@ print(json.dumps({
               "App.xaml 不许出现默认模板的浅色图标槽色值（#F1F1F1 / #E2E3E3，出现 = 白条回归）");
         Check(appXaml.Contains("IsSharedSizeScope") && appXaml.Contains("<ItemsPresenter"),
               "ContextMenu 模板必须保留 IsSharedSizeScope 与 ItemsPresenter（前者供 MenuItem 对齐图标列，后者丢了菜单不出内容）");
+    }
+
+    // ══════════════════ AI 分组视图与批量管理 UI（2026-09-26 用户改版） ══════════════════
+    //
+    // 守的是什么：这批全是「改回去也不会编译报错、出图才看得见」的界面结构与交互口径 ——
+    //   ① 进分组 / 发消息不再收起侧边栏（2026-09-24「进分组就收起」的旧拍板已被用户推翻）；
+    //   ② 分组内会话三点菜单六项（重命名 / 置顶此对话 / 批量管理 / 移动到分组 / 导出对话 / 删除对话）
+    //      与「移动到分组」子菜单（现有分组 + 移出本组 / 移出收藏 + 新增分组）；
+    //   ③ 分组内批量管理操作条（全选 + 已选 n + 取消 / 移动到分组 / 删除，1:1 复刻千问）；
+    //   ④ 侧边栏批量条改版（行首复选框 + 全选 + 「已选 n」计数，旧提示语删除、按钮重排）；
+    //   ⑤ 标题栏底色与正文统一 #1E1E1E；
+    //   ⑥ 设置页「默认模型」= 文字 + 模型框（258 与两个提供方按钮等长），「更换」删除；
+    //   ⑦ 分组批量态有出图守护（10h）。
+    private static void TestAiChatGroupUi()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var aiXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AIDialogWindow.xaml"));
+        var aiCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AIDialogWindow.xaml.cs"));
+        var sideXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "Controls", "ChatSidebar.xaml"));
+        var sideCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "Controls", "ChatSidebar.xaml.cs"));
+        var settingsXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml"));
+        var snapshotSrc = File.ReadAllText(Path.Combine(repoRoot, "Diagnostics", "UiSnapshot.cs"));
+
+        // 按钮必须按用户给的顺序落位，且一个都不能少（IndexOf<0 会被下面的顺序判断误放行，先各自断言在场）
+        static bool InOrder(string src, string[] terms, out string missing)
+        {
+            var last = -1;
+            foreach (var t in terms)
+            {
+                var i = src.IndexOf(t, StringComparison.Ordinal);
+                if (i < 0) { missing = t; return false; }
+                if (i <= last) { missing = t; return false; }   // 顺序错了也算失败
+                last = i;
+            }
+            missing = "";
+            return true;
+        }
+
+        // ── 1. 进分组 / 发消息不再收起侧边栏 ──
+        Check(!aiCs.Contains("OpenDrawer(false)"),
+              "进分组与发消息都不得再收起侧边栏（2026-09-26 用户拍板：分组详情在原对话区展示，侧边栏保持展开）",
+              "仍能找到 OpenDrawer(false) —— 2026-09-24「进分组就收起」的旧拍板已被推翻，别加回来");
+
+        // ── 2. 分组内会话三点菜单（千问对标六项 + 移动到分组子菜单） ──
+        foreach (var term in new[] { "重命名", "置顶此对话", "批量管理", "移动到分组", "导出对话", "删除对话" })
+            Check(aiCs.Contains($"\"{term}\""),
+                  $"分组三点菜单必须有「{term}」项（千问对标，2026-09-26）",
+                  $"AIDialogWindow.xaml.cs 里找不到字符串字面量 \"{term}\"");
+        foreach (var term in new[] { "移出本组", "移出收藏", "＋ 新增分组" })
+            Check(aiCs.Contains($"\"{term}\""),
+                  $"「移动到分组」子菜单必须有「{term}」",
+                  $"缺了它就没法把会话移回未分组 / 现场建分组（千问对标项），找不到 \"{term}\"");
+        Check(aiCs.Contains("BuildMoveToGroupMenu") && aiCs.Contains("GroupBatchMove_Click"),
+              "批量条的「移动到分组」必须与行三点共用同一子菜单构建器（两处菜单内容不允许漂移）");
+
+        // ── 3. 分组批量条（全选 → 计数 → 取消 / 移动到分组 / 删除，顺序即用户拍板的顺序） ──
+        Check(aiXaml.Contains("x:Name=\"GroupBatchBar\"") && aiXaml.Contains("x:Name=\"GroupBatchAll\""),
+              "分组视图必须有批量操作条与全选勾选框（GroupBatchBar / GroupBatchAll）");
+        Check(InOrder(aiXaml, ["GroupBatchAll", "GroupBatchCancel_Click", "GroupBatchMove_Click", "GroupBatchDelete_Click"], out var gMissing),
+              "分组批量条按钮必须是「全选 … 取消 / 移动到分组 / 删除」的顺序（1:1 复刻千问）",
+              $"顺序错或缺失于：{gMissing}");
+        Check(InOrder(sideXaml, ["BatchSelectAll", "BtnBatchCancel_Click", "BtnBatchGroup_Click", "BtnBatchDelete_Click"], out var sMissing),
+              "侧边栏批量条按钮必须是「全选 … 取消 / 移入分组 / 删除」的顺序（2026-09-26 用户拍板）",
+              $"顺序错或缺失于：{sMissing}");
+        Check(aiXaml.Contains("x:Name=\"GroupBatchCheck\"") && aiXaml.Contains("x:Name=\"GroupSessionMore\""),
+              "分组会话行必须同时有行首复选框与行尾三点（批量态由 IsBatchMode 让位切换）");
+        Check(sideXaml.Contains("x:Name=\"BatchCheck\""),
+              "侧边栏会话行必须有行首复选框（批量态不再靠标题前缀「✓」，2026-09-26）");
+        Check(sideXaml.Contains("Text=\"已选 0\"") && sideCs.Contains("$\"已选 {_batchSelected.Count}\""),
+              "侧边栏批量计数必须是「已选 n」（不设上限；旧提示语「点会话选中…」按用户要求删除）",
+              "找不到「已选 n」计数写法");
+        Check(sideCs.Contains("\"批量管理\""),
+              "侧边栏三点菜单文案统一为「批量管理」（原「批量操作」退场，与分组视图同口径）");
+
+        // ── 4. 标题栏底色与正文统一 ──
+        Check(aiXaml.Contains("Grid.ColumnSpan=\"3\" Background=\"#1E1E1E\""),
+              "标题栏底色必须是 #1E1E1E（= 正文区底色；2026-09-26 用户要求两块统一）",
+              "标题栏还是更深的底色（原 #252525），标题栏与正文看上去两种材质");
+
+        // ── 5. 设置页「默认模型」框 ──
+        Check(settingsXaml.Contains("x:Name=\"DefaultModelRow\"") && settingsXaml.Contains("DefaultModelRow_Click"),
+              "设置页必须保留可点击的「默认模型」框（点框即弹下拉，点中即生效）");
+        Check(settingsXaml.Contains("Width=\"258\""),
+              "「默认模型」文字+选择框整体必须宽 258（= 添加提供方 110 + 间距 8 + 添加自定义提供方 140，与两个按钮等长）");
+        Check(!settingsXaml.Contains("Text=\"更换\""),
+              "「默认模型」不许再有「更换」字样（2026-09-26 用户拍板删，改为点框直接弹下拉）");
+
+        // ── 6. 分组批量态出图守护 ──
+        Check(snapshotSrc.Contains("10j-AI 对话-分组批量管理"),
+              "快照必须有 10j 分组批量管理场景（复选框 + 操作条只有进批量才出现，出图才看得见；10h 已被「回答中按钮」占用）");
     }
 
     // ══════════════════ 运行时按需下载的配方（2026-09-21，授权闭环步骤 5） ══════════════════

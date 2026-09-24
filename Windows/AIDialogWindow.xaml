@@ -67,8 +67,10 @@
             <!-- 标题栏底色：横贯整窗，**没有底部绿线**。
                  2026-09-26 用户拍板去掉那条 2px 品牌绿 accent 线：它会把窗口横着切成两截，
                  与"竖线贯通到顶、标题栏和正文连成整体"的诉求正面冲突。
-                 代价是配色方案 B 的标记物之一退场，同日的检查点已同步改断言（别再当回归加回来）。 -->
-            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#252525" CornerRadius="6,6,0,0"/>
+                 代价是配色方案 B 的标记物之一退场，同日的检查点已同步改断言（别再当回归加回来）。
+                 底色 2026-09-26 改为 #1E1E1E（= 正文区底色）：原来 #252525 比正文深一截，
+                 标题栏与正文看上去是两种材质 —— 用户要求两块底色统一。 -->
+            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#1E1E1E" CornerRadius="6,6,0,0"/>
 
             <!-- 标题栏左半截（宽度 = 侧边栏宽度，随拖拽实时伸缩）：展开态专用。
                  左 = 助手名（跟随设置里的「AI 助手名称」，用户可自定义）；右 = 搜索 / 收起两个图标，
@@ -165,6 +167,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <!-- 工具行两态（2026-09-24 用户要求）：
@@ -241,21 +244,56 @@
                             <StackPanel>
                                 <ItemsControl x:Name="GroupSessionList">
                                     <ItemsControl.ItemTemplate>
+                                        <!-- 分组内会话行（2026-09-26 用户要求对标千问）：
+                                             行尾补三点菜单（重命名 / 置顶 / 批量管理 / 移动到分组 / 导出 / 删除，
+                                             除「移动到分组」外全部沿用未分组三点的 HandleItemAction 逻辑）；
+                                             批量模式下行首出复选框、三点隐藏（BatchCheckVis / IsBatchMode 驱动）。
+                                             悬停高亮与侧边栏同一套 Trigger SourceName 写法（禁止 RelativeSource AncestorType，
+                                             原因见 ChatSidebar.xaml 分组行注释：会越过条目 Border 绑到共享外壳全员高亮）。 -->
                                         <DataTemplate>
-                                            <Border Background="Transparent" CornerRadius="4" Padding="8,6" Margin="0,1"
+                                            <Border x:Name="GroupSessionRow" Background="Transparent" CornerRadius="4"
+                                                    Padding="8,6" Margin="0,1"
                                                     Cursor="Hand" MouseLeftButtonUp="GroupSessionRow_Click" Tag="{Binding}"
                                                     ToolTip="{Binding Preview}">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="{Binding Title}" Foreground="#C8C8C8"
+                                                    <CheckBox x:Name="GroupBatchCheck" Grid.Column="0"
+                                                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                              Visibility="{Binding BatchCheckVis}"
+                                                              Margin="0,0,8,0" VerticalAlignment="Center"
+                                                              Tag="{Binding}" Click="GroupBatchCheck_Click"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding Title}" Foreground="#C8C8C8"
                                                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding TimeText}" Foreground="#6E6E6E"
+                                                    <TextBlock Grid.Column="2" Text="{Binding TimeText}" Foreground="#6E6E6E"
                                                                FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                                    <Button x:Name="GroupSessionMore" Grid.Column="3" Content="⋮"
+                                                            Width="20" Height="20" Padding="0" Margin="2,0,0,0"
+                                                            Background="Transparent" Foreground="#9A9A9A"
+                                                            BorderThickness="0" Cursor="Hand"
+                                                            Visibility="Collapsed"
+                                                            Tag="{Binding}" Click="GroupSessionMore_Click"
+                                                            ToolTip="重命名 / 置顶 / 批量管理 / 移动到分组 / 导出 / 删除"/>
                                                 </Grid>
                                             </Border>
+                                            <DataTemplate.Triggers>
+                                                <Trigger SourceName="GroupSessionRow" Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="GroupSessionRow" Property="Background" Value="#2E2E2E"/>
+                                                    <Setter TargetName="GroupSessionMore" Property="Visibility" Value="Visible"/>
+                                                </Trigger>
+                                                <!-- 批量选中高亮（带品牌绿底，与普通悬停区分）；放悬停之后 = 选中态优先 -->
+                                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                    <Setter TargetName="GroupSessionRow" Property="Background" Value="#33422E"/>
+                                                </DataTrigger>
+                                                <!-- 批量模式下三点让位给复选框（后定义者覆盖悬停 Trigger 的显隐） -->
+                                                <DataTrigger Binding="{Binding IsBatchMode}" Value="True">
+                                                    <Setter TargetName="GroupSessionMore" Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
@@ -265,6 +303,38 @@
                                            TextWrapping="Wrap" Visibility="Collapsed"/>
                             </StackPanel>
                         </ScrollViewer>
+
+                        <!-- 分组内批量管理操作条（2026-09-26 用户要求 1:1 复刻千问）：
+                             左 = 全选 + 已选计数（不设上限，拍板「已选 n」而非 n/100）；
+                             右 = 取消 / 移动到分组 / 删除（移动到分组弹的菜单与行三点的完全一致：
+                             现有分组 + 移出本组 + 新增分组；删除为红底强调）。默认收起。 -->
+                        <Border x:Name="GroupBatchBar" Grid.Row="3" Visibility="Collapsed"
+                                BorderBrush="#2E2E2E" BorderThickness="0,1,0,0" Padding="14,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <CheckBox x:Name="GroupBatchAll" Grid.Column="0" Content="全选"
+                                          Foreground="#C8C8C8" FontSize="12" VerticalAlignment="Center"
+                                          Cursor="Hand" Click="GroupBatchAll_Click"/>
+                                <TextBlock x:Name="GroupBatchCount" Grid.Column="1" Text="已选 0"
+                                           Foreground="#9A9A9A" FontSize="11" Margin="10,0,0,0"
+                                           VerticalAlignment="Center"/>
+                                <Button Grid.Column="2" Content="取消" Click="GroupBatchCancel_Click"
+                                        Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                                <Button x:Name="GroupBatchMove" Grid.Column="3" Content="移动到分组" Click="GroupBatchMove_Click"
+                                        Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                                <Button Grid.Column="4" Content="删除" Click="GroupBatchDelete_Click"
+                                        Padding="10,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
+                                        Background="#C0392B" Foreground="#FFFFFF" BorderThickness="0"/>
+                            </Grid>
+                        </Border>
                     </Grid>
 
                     <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（**只有文字**），
