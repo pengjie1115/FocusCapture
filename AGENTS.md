@@ -58,7 +58,7 @@
 | 找已放弃的分支(git 已查不到的) | `docs/ARCHIVE-BRANCHES.md` |
 | 版本变更历史 | `git log`;`CHANGELOG.md` 仅在发版时整理 |
 | 想知道脚本为什么这么设计 | `docs/dev-script-plan.md` |
-| **开发记忆（当前状态/决策/坑）** | `.workbuddy/memory/`：**开工先读 `NOW.md`**；决策与坑查 `DECISIONS.md` / `PITFALLS.md`；维护规则见下「三、开发记忆」 |
+| **开发记忆（当前状态/决策/坑）** | `.workbuddy/memory/`：**开工先读 `.workbuddy/memory/NOW.md`**；决策与坑查 `.workbuddy/memory/DECISIONS.md` / `.workbuddy/memory/PITFALLS.md`；维护规则见下「三、开发记忆」 |
 
 退出码 `0` = 检查点全过，`1` = 有失败。检查点跑在临时沙箱，**不触碰真实数据**。
 
@@ -83,15 +83,15 @@
 
 ## 三、开发记忆（跨 Agent 共享，进 git）
 
-> 位置 `.workbuddy/memory/`。**开工先读 `NOW.md`**。记忆要能答三问：进行到哪 / 为什么这么定 / 有什么坑。
+> 位置 `.workbuddy/memory/`。**开工先读 `.workbuddy/memory/NOW.md`**。记忆要能答三问：进行到哪 / 为什么这么定 / 有什么坑。
 > Claude Code 经根目录 `CLAUDE.md`（内容 `@AGENTS.md`）桥接到本文件。
 
 | 文件 | 用途 | 维护规则 |
 |---|---|---|
-| `NOW.md` | 唯一「当前状态」（≤40 行） | **谁干活谁覆盖更新**；并行开发按分支分节；旧状态被覆盖即自动作废 |
-| `DECISIONS.md` | 决策点卡片：当前答案 + 否决理由 | 更新只判「**有无新论据**」：有 → 旧答案压一行史；无（纯横跳）→ 直接覆盖。同点 30 天翻转 ≥2 次 → 停下找用户拍板，不记账 |
-| `PITFALLS.md` | 确定性环境坑（只收推导不出来的） | 新坑追加；失效即删 |
-| `YYYY-MM-DD.md`（本目录根部） | 操作流水（WorkBuddy 固定写这里，路径改不了） | append-only，带 `[Agent名]` 标识，不改他人条目；超 30 天由每周日自动化蒸馏归档 |
+| `.workbuddy/memory/NOW.md` | 唯一「当前状态」（≤40 行） | **谁干活谁覆盖更新**；并行开发按分支分节；旧状态被覆盖即自动作废 |
+| `.workbuddy/memory/DECISIONS.md` | 决策点卡片：当前答案 + 否决理由 | 更新只判「**有无新论据**」：有 → 旧答案压一行史；无（纯横跳）→ 直接覆盖。同点 30 天翻转 ≥2 次 → 停下找用户拍板，不记账 |
+| `.workbuddy/memory/PITFALLS.md` | 确定性环境坑（只收推导不出来的） | 新坑追加；失效即删 |
+| `YYYY-MM-DD`（`.workbuddy/memory/` 根部，按日期命名，形如 `.workbuddy/memory/2026-09-24.md`） | 操作流水（WorkBuddy 固定写这里，路径改不了） | append-only，带 `[Agent名]` 标识，不改他人条目；超 30 天由每周日自动化蒸馏归档 |
 
 **写入纪律**：daily 流水可用命令行直写文件尾（PowerShell 追加必须显式 UTF-8，`>>` 产 UTF-16）；正式文件先读后改；红线 10（禁 Key / 敏感信息）同样适用于记忆文件。
 **不入记忆判据**：能从代码 / 脚本 / git 推导的信息不入；「评估过并否决」的理由**只在** DECISIONS.md。
