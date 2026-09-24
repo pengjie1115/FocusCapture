@@ -64,30 +64,9 @@
                                Foreground="#CCCCCC"
                                FontSize="14" FontWeight="SemiBold"
                                VerticalAlignment="Center"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <Button x:Name="BtnHistory"
-                                Content="历史"
-                                FontSize="12"
-                                Height="26"
-                                Padding="10,0"
-                                Margin="0,0,6,0"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                BorderThickness="0"
-                                Click="BtnHistory_Click"/>
-                        <Button x:Name="BtnNewSession"
-                                Content="+ 新会话"
-                                FontSize="12"
-                                Height="26"
-                                Padding="10,0"
-                                Margin="0,0,6,0"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                BorderThickness="0"
-                                Click="BtnNewSession_Click"/>
-                        <!-- 2026-09-21：窗口内关闭按钮已删 —— 全局按钮样式的 Padding(12,5) 把 28×28 按钮里的
-                             "×"字形裁成一条竖缝，看着像两个点（用户反馈）。关窗走原生标题栏 ×。 -->
-                    </StackPanel>
+                    <!-- 2026-09-24：标题栏「历史」「+ 新会话」按钮已删 —— 开关侧边栏交给主区左上角
+                         BtnToggleSidebar，新会话交给侧边栏「新对话」（用户拍板：标题栏只留标题）。
+                         关窗走原生标题栏 ×（旧窗口内关闭按钮的字形裁切问题见下）。 -->
                 </Grid>
             </Border>
 
@@ -101,7 +80,23 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <controls:ChatSidebar x:Name="Sidebar" Grid.Column="0" Width="0"/>
+                <!-- 主区左上角：展开/收起侧边栏 + 全局搜索（2026-09-24，取代标题栏「历史」按钮）。
+                 两按钮在主区列(Grid.Column="2")顶部，不随侧边栏宽度裁剪；BtnToggleSidebar 文案按抽屉状态切换。 -->
+            <StackPanel Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Top"
+                        Margin="6,6,0,0" Orientation="Horizontal" Panel.ZIndex="50">
+                <Button x:Name="BtnToggleSidebar" Click="BtnToggleSidebar_Click"
+                        Width="28" Height="28" Padding="0" FontSize="15"
+                        Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                        ToolTip="展开侧边栏">≡</Button>
+                <Button x:Name="BtnGlobalSearch" Click="BtnGlobalSearch_Click"
+                        Width="28" Height="28" Padding="0" Margin="4,0,0,0"
+                        Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                        ToolTip="搜索会话（跨所有会话搜消息正文）">
+                    <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                          Stroke="#B8B8B8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                </Button>
+            </StackPanel>
+            <controls:ChatSidebar x:Name="Sidebar" Grid.Column="0" Width="0"/>
                 <Thumb x:Name="DrawerSplitter" Grid.Column="1" Width="5" Margin="0,0"
                        Cursor="SizeWE" DragDelta="DrawerSplitter_DragDelta" DragCompleted="DrawerSplitter_DragCompleted">
                     <Thumb.Template>
@@ -263,6 +258,9 @@
                                                     <DataTrigger Binding="{Binding IsUser}" Value="True">
                                                         <Setter Property="Background" Value="#2A3A2A"/>
                                                         <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding SearchHighlight}" Value="True">
+                                                        <Setter Property="Background" Value="#3A4A2A"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -614,6 +612,14 @@
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center"/>
                                 </Button>
+
+                                <!-- 会话级模型切换（2026-09-24 任务5）：点开弹所有可用模型，选中只改本会话 ModelKey。
+                                     空 = 跟随全局默认；新建会话已写入当时全局默认，这里可改。 -->
+                                <Button x:Name="BtnSessionModel" Click="BtnSessionModel_Click"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,38,2"
+                                        Padding="6,2" FontSize="11" Cursor="Hand"
+                                        Background="Transparent" Foreground="#9A9A9A" BorderThickness="0"
+                                        ToolTip="切换本会话使用的模型（只影响本会话）">模型 ▾</Button>
 
                                 <!-- 发送（2026-09-24）：圆形 + 向上箭头（WorkBuddy 式）。
                                      局部模板只是"去外壳"（全局样式的方形底/悬停变色对圆形按钮是灾难），

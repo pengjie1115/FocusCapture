@@ -358,6 +358,10 @@ public partial class SettingsWindow : Window
         LogRetentionInput.Text = _settings.LogRetentionDays.ToString();
 
         UpdateIconUI();
+        // AI 问答界面（2026-09-24）：昵称 / 侧边栏默认展开 / 图片资源状态回显
+        ChatNicknameInput.Text = _settings.ChatUserNickname ?? "";
+        SidebarDefaultExpandedCheck.IsChecked = _settings.ChatSidebarDefaultExpanded;
+        UpdateChatAssetsUI();
         LoadSyncSettings();
         LoadFileSettings();
         LoadTodoSettings();
@@ -1820,6 +1824,89 @@ public partial class SettingsWindow : Window
             IconStatusText.Text = $"恢复失败：{ex.Message}";
             IconStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
         }
+    }
+
+    // ── AI 问答界面（2026-09-24）：侧边栏 / 昵称 / 欢迎语图标 / 用户头像 ──
+    // 图片走 ChatAssetsService（不持久化绝对路径，判据 = Has*）；昵称 / 侧边栏默认展开走 AppSettings。
+    // 与上面「自定义托盘图标」是三套独立资源，互不串味（见 ChatAssetsService 头注释）。
+    private void UpdateChatAssetsUI()
+    {
+        var hasWelcome = ChatAssetsService.HasWelcomeIcon;
+        WelcomeIconStatus.Text = hasWelcome ? "已设置欢迎语图标" : "未设置（只显示文字）";
+        WelcomeIconStatus.Foreground = hasWelcome
+            ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50))
+            : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+        var hasAvatar = ChatAssetsService.HasUserAvatar;
+        AvatarStatus.Text = hasAvatar ? "已设置用户头像" : "未设置（昵称首字色块）";
+        AvatarStatus.Foreground = hasAvatar
+            ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50))
+            : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+    }
+
+    private void SidebarDefaultExpanded_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.ChatSidebarDefaultExpanded = SidebarDefaultExpandedCheck.IsChecked == true;
+        _settings.Save();
+        _onChanged?.Invoke();
+    }
+
+    private void ChatNickname_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.ChatUserNickname = ChatNicknameInput.Text;
+        _settings.Save();
+        _onChanged?.Invoke();
+    }
+
+    private void BtnWelcomeIconPick_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择欢迎语图标（图片 / 表情包，≤10MB）",
+            Filter = "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件 (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() != true) return;
+        if (ChatAssetsService.ImportWelcomeIcon(dlg.FileName) == null)
+        {
+            WelcomeIconStatus.Text = "导入失败：格式不支持 / 文件过大（≤10MB）/ 文件不可读";
+            WelcomeIconStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            return;
+        }
+        UpdateChatAssetsUI();
+        _onChanged?.Invoke();
+    }
+
+    private void BtnWelcomeIconReset_Click(object sender, RoutedEventArgs e)
+    {
+        ChatAssetsService.ResetWelcomeIcon();
+        UpdateChatAssetsUI();
+        _onChanged?.Invoke();
+    }
+
+    private void BtnAvatarPick_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择用户头像（图片，≤10MB）",
+            Filter = "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件 (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() != true) return;
+        if (ChatAssetsService.ImportUserAvatar(dlg.FileName) == null)
+        {
+            AvatarStatus.Text = "导入失败：格式不支持 / 文件过大（≤10MB）/ 文件不可读";
+            AvatarStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            return;
+        }
+        UpdateChatAssetsUI();
+        _onChanged?.Invoke();
+    }
+
+    private void BtnAvatarReset_Click(object sender, RoutedEventArgs e)
+    {
+        ChatAssetsService.ResetUserAvatar();
+        UpdateChatAssetsUI();
+        _onChanged?.Invoke();
     }
 
     private void BtnRecycleBin_Click(object sender, RoutedEventArgs e)

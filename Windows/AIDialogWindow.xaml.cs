@@ -117,6 +117,19 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         }
     }
 
+    private bool _searchHighlight;
+    /// <summary>搜索命中标记：从全局搜索跳转过来时，命中气泡短暂高亮（2026-09-24，气泡 DataTemplate 的 DataTrigger 改背景）</summary>
+    public bool SearchHighlight
+    {
+        get => _searchHighlight;
+        set
+        {
+            if (_searchHighlight == value) return;
+            _searchHighlight = value;
+            FirePropertyChanged(nameof(SearchHighlight));
+        }
+    }
+
     private string _reasoningText = "";
     /// <summary>思考过程文本（仅思考型模型产生；流式追加）</summary>
     public string ReasoningText
@@ -204,6 +217,9 @@ public partial class AIDialogWindow : Window
     private readonly NoteService _noteService;
     private readonly AppSettings _settings;
     private readonly OpenAICompatibleProvider _provider;
+    // 会话级模型 provider 缓存（2026-09-24 任务5）：按会话 ModelKey 解析，同 key 复用同一 provider 实例
+    // —— 否则 LastTrimHint 会因每次 new 新 provider 而丢失（发送设的裁剪提示取不回来）。
+    private readonly Dictionary<string, OpenAICompatibleProvider> _sessionProviders = new(StringComparer.Ordinal);
     private bool _closed;
     private bool _drawerOpen;               // 历史抽屉展开状态
     private AgentToolRegistry? _registry; // Agent 工具注册表（AgentEnabled 时懒构建）
@@ -363,6 +379,8 @@ public partial class AIDialogWindow : Window
         var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit)
         {
             GroupId = groupId,   // 空 = 未分组（原行为不变）
+            // 2026-09-24 任务5：新建会话即写入当时全局默认模型 —— 会话从第一句起固定，之后改全局不影响它
+            ModelKey = _settings.ActiveModelKey ?? "",
         };
         var runtime = new ConversationRuntime(session, mode, targetNote);
         _runtimes[session.SessionId] = runtime;
@@ -382,6 +400,62 @@ public partial class AIDialogWindow : Window
         RefreshHandleChips();     // 牌号卡片跟会话走（2026-09-21）：切到哪个会话就摆哪个会话选的文件
         RestoreDraft(runtime);   // 回填目标 runtime 的草稿
         FocusInput();
+        UpdateSessionModelButton();   // 会话级模型下拉显示跟会话走（2026-09-24 任务5）
+    }
+
+    // ── 会话级模型下拉（2026-09-24 任务5）──
+    // 新建会话已写入当时全局默认 ModelKey（见 StartNewSession），这里给用户改本会话模型的入口：
+    // 点开弹所有可用模型（供应商 × 模型）+「跟随全局默认」；选中只改本会话 ModelKey，不动全局。
+    private void BtnSessionModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active == null) return;
+        // 刻意用 new ContextMenu() 不用初始化器：自带 Style 会顶掉 App.xaml 深色模板出白条（项目已踩过）
+        var menu = new ContextMenu();
+        var follow = new MenuItem { Header = "跟随全局默认", IsChecked = string.IsNullOrWhiteSpace(_active.Session.ModelKey) };
+        follow.Click += (_, _) => ApplySessionModel("");
+        menu.Items.Add(follow);
+
+        foreach (var p in _settings.AiModelProviders)
+        {
+            foreach (var m in p.Models)
+            {
+                var key = p.Id + "/" + m.Id;
+                var label = (string.IsNullOrWhiteSpace(p.Name) ? "" : p.Name + " · ") +
+                            (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
+                var item = new MenuItem { Header = label, IsChecked = _active.Session.ModelKey == key };
+                var captured = key;
+                item.Click += (_, _) => ApplySessionModel(captured);
+                menu.Items.Add(item);
+            }
+        }
+        menu.PlacementTarget = BtnSessionModel;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>切换当前会话的模型：改本会话 ModelKey + 清 provider 缓存（key 变了旧缓存失效）+ 刷新下拉</summary>
+    private void ApplySessionModel(string key)
+    {
+        if (_active == null) return;
+        _active.Session.ModelKey = key;
+        _sessionProviders.Clear();
+        UpdateSessionModelButton();
+    }
+
+    /// <summary>下拉按钮显示：空 = 「模型 ▾」，非空 = 解析出的 DisplayLabel</summary>
+    private void UpdateSessionModelButton()
+    {
+        if (_active == null || BtnSessionModel == null) return;
+        var key = _active.Session.ModelKey ?? "";
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            BtnSessionModel.Content = "模型 ▾";
+            BtnSessionModel.ToolTip = "跟随全局默认（点开切换本会话模型）";
+            return;
+        }
+        var resolved = AiModelResolver.Resolve(_settings, key);
+        BtnSessionModel.Content = (resolved?.DisplayLabel ?? "模型") + " ▾";
+        BtnSessionModel.ToolTip = "本会话使用：" + (resolved?.DisplayLabel ?? key) + "（点开切换）";
     }
 
     /// <summary>把当前输入框的纯文本草稿存到活跃会话（切会话/关窗前调用）。</summary>
@@ -1718,7 +1792,7 @@ public partial class AIDialogWindow : Window
             // 上下文裁剪是隐形的（设计稿 §6 坑⑤）：本轮真丢了消息就如实告诉用户。
             // 只写进气泡的**显示内容**，不进会话历史 —— 这是我们给的提示，不是模型说的话。
             // 放在两条路径的共同收尾处而不是各路径内部：写两处必然漏一处。
-            var trimHint = _provider.LastTrimHint;
+            var trimHint = ResolveProviderForSession(runtime).LastTrimHint;
             if (!string.IsNullOrWhiteSpace(trimHint))
                 current.Content = (current.Content ?? "") + "\n\n（" + trimHint + "）";
         }
@@ -1770,6 +1844,22 @@ public partial class AIDialogWindow : Window
         return messages;
     }
 
+    /// <summary>按会话级 ModelKey 解析 provider（2026-09-24 任务5）。
+    /// 会话 ModelKey 空 = 跟随全局 _provider；非空则按 key 调 AiModelResolver.Resolve 解析，失效回退全局。
+    /// 同 key 复用缓存实例 —— LastTrimHint 等 provider 侧状态才能跨发送/取提示正确传递。</summary>
+    private OpenAICompatibleProvider ResolveProviderForSession(ConversationRuntime runtime)
+    {
+        var key = runtime.Session.ModelKey ?? "";
+        if (string.IsNullOrWhiteSpace(key)) return _provider;
+        if (_sessionProviders.TryGetValue(key, out var cached)) return cached;
+        var resolved = AiModelResolver.Resolve(_settings, key);
+        var p = resolved != null
+            ? new OpenAICompatibleProvider(resolved.BaseUrl, resolved.ApiKey, resolved.ModelId, resolved.MaxOutputTokens, resolved.ContextWindow)
+            : _provider;
+        _sessionProviders[key] = p;
+        return p;
+    }
+
     /// <summary>普通问答路径：消费 StreamChatWithToolsAsync 事件流（无 tools），正文打字机 + 思考过程展示。
     /// 用户停止时已生成的部分内容照常写入会话历史。</summary>
     private async Task StreamPlainReplyAsync(ConversationRuntime runtime, ChatBubbleViewModel current, CancellationTokenSource cts)
@@ -1777,7 +1867,7 @@ public partial class AIDialogWindow : Window
         var sb = new StringBuilder();
         try
         {
-            await foreach (var ev in _provider.StreamChatWithToolsAsync(BuildPlainRequestMessages(runtime), tools: null, cts.Token))
+            await foreach (var ev in ResolveProviderForSession(runtime).StreamChatWithToolsAsync(BuildPlainRequestMessages(runtime), tools: null, cts.Token))
             {
                 // 多会话并行：不再因切会话丢弃旧流；取消由 cts.Token 触发 OperationCanceledException
                 switch (ev)
@@ -1824,7 +1914,7 @@ public partial class AIDialogWindow : Window
     {
         EnsureAgentRegistry();
         AppendAgentRulesOnce(runtime);
-        var agent = new AgentRunService(_provider, _registry!, runtime.Session, _settings.AgentMaxToolRounds)
+        var agent = new AgentRunService(ResolveProviderForSession(runtime), _registry!, runtime.Session, _settings.AgentMaxToolRounds)
         {
             // 必须经 UiThread 封送：工具跑在线程池线程上，直接 MessageBox.Show(this, …) 会因
             // 跨线程访问窗口对象而抛「调用线程无法访问此对象」（2026-09-20 实测，详见 UiThread 注释）。
@@ -1964,12 +2054,61 @@ public partial class AIDialogWindow : Window
         // 输入框回答期间保持可用（可预输入下一条），发送动作由 _active.IsStreaming 守卫拦截
     }
 
-    /// <summary>历史抽屉开关：展开时刷新会话列表；宽度动画滑出/收起</summary>
-    private void BtnHistory_Click(object sender, RoutedEventArgs e)
+    /// <summary>主区左上角：展开/收起侧边栏（2026-09-24，取代标题栏「历史」按钮）。
+    /// 开关逻辑与旧 BtnHistory_Click 一致：收起态先刷新再展开，展开态直接收起。</summary>
+    private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
     {
         if (!_drawerOpen)
             RefreshDrawer();
         OpenDrawer(!_drawerOpen);
+    }
+
+    /// <summary>主区左上角：打开全局搜索窗（跨所有会话搜消息正文，点结果跳转会话）。
+    /// 搜索底层走 ChatSearchService.Search(query, null)（null = 搜全部会话含已分组），
+    /// 防抖与结果展示在 ChatSearchWindow 内；点结果回调本窗 OpenSessionFromSearch 打开会话。</summary>
+    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new ChatSearchWindow(this) { Owner = this };
+        win.Show();
+    }
+
+    /// <summary>搜索结果点击 → 打开会话并定位命中处（由 ChatSearchWindow 回调）。
+    /// 复用侧边栏点击会话的 LoadHistorySession 打开会话；会话内 query 定位 + 命中气泡短暂高亮见 HighlightSearchTerm。</summary>
+    internal void OpenSessionFromSearch(string filePath, string query)
+    {
+        LoadHistorySession(filePath);
+        HighlightSearchTerm(query);
+    }
+
+    // ── 4c：会话内搜 query 定位 + 命中气泡短暂高亮 ──
+    // 气泡正文是只读 TextBox（不支持词级高亮），用「命中气泡整体短暂高亮」替代词级：
+    // 滚到首条命中消息 + 该气泡 SearchHighlight=true（气泡 DataTemplate 的 DataTrigger 改背景），2.5s 后清除。
+    private async void HighlightSearchTerm(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return;
+        // 等消息渲染到 MessagesList（LoadHistorySession 同步填充源，但渲染需一帧）
+        await Dispatcher.BeginInvoke(new Action(() => { }), DispatcherPriority.Loaded);
+
+        await Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var needle = query;
+            for (int i = 0; i < MessagesList.Items.Count; i++)
+            {
+                if (MessagesList.Items[i] is not ChatBubbleViewModel vm) continue;
+                if (string.IsNullOrEmpty(vm.Content) || vm.Content.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                vm.SearchHighlight = true;
+                if (MessagesList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+                    fe.BringIntoView();
+                _ = ClearHighlightAsync(vm);
+                return;
+            }
+        }), DispatcherPriority.Background);
+    }
+
+    private static async Task ClearHighlightAsync(ChatBubbleViewModel vm)
+    {
+        await Task.Delay(2500);
+        vm.SearchHighlight = false;
     }
 
     // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
@@ -1983,6 +2122,9 @@ public partial class AIDialogWindow : Window
     private void OpenDrawer(bool open)
     {
         _drawerOpen = open;
+        // 同步主区左上角开关按钮的文案（2026-09-24，取代标题栏「历史」按钮）
+        BtnToggleSidebar.Content = open ? "‹" : "≡";
+        BtnToggleSidebar.ToolTip = open ? "收起侧边栏" : "展开侧边栏";
         DrawerSplitter.IsEnabled = false; // 动画期间禁用拖拽，避免与动画打架（铁律 2）
         if (open)
         {
@@ -2347,17 +2489,23 @@ public partial class AIDialogWindow : Window
         _ = Dispatcher.BeginInvoke(new Action(() =>
         {
             if (_activeGroupId != groupId) return;
-            // 命中渲染成与正常列表同标准的条目（用户要求：展示规格一致）；
-            // 片段放在预览位（悬停可见），标题仍是会话标题
-            GroupSessionList.ItemsSource = hits.Select(h => new HistoryItemViewModel(
-                h.SessionId, h.FilePath, h.SavedAt, "",
-                string.IsNullOrWhiteSpace(h.Title) ? h.Preview : h.Title,
-                false, groupId, h.Snippet, h.Snippet)).ToList();
-            GroupSessionEmptyHint.Text = hits.Count == 0
-                ? $"没有匹配「{query.Trim()}」的会话。"
-                : "";
-            GroupSessionEmptyHint.Visibility = hits.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            RenderGroupSearchResults(hits, groupId, query);
         }));
+    }
+
+    /// <summary>渲染分组搜索命中。**异步接线（RunGroupSearchAsync）与快照 Seeder 共用同一口径** ——
+    /// 改这里两处同时生效：命中渲染成与正常列表同标准的条目（展示规格一致）；
+    /// 片段放在预览位（悬停可见），标题仍是会话标题。</summary>
+    private void RenderGroupSearchResults(IReadOnlyList<ChatSearchHit> hits, string groupId, string query)
+    {
+        GroupSessionList.ItemsSource = hits.Select(h => new HistoryItemViewModel(
+            h.SessionId, h.FilePath, h.SavedAt, "",
+            string.IsNullOrWhiteSpace(h.Title) ? h.Preview : h.Title,
+            false, groupId, h.Snippet, h.Snippet)).ToList();
+        GroupSessionEmptyHint.Text = hits.Count == 0
+            ? $"没有匹配「{query.Trim()}」的会话。"
+            : "";
+        GroupSessionEmptyHint.Visibility = hits.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void GroupSessionRow_Click(object sender, MouseButtonEventArgs e)
@@ -2477,6 +2625,30 @@ public partial class AIDialogWindow : Window
     {
         SeedSidebarForSnapshot();
         if (_snapshotGroupId.Length > 0) OpenGroupView(_snapshotGroupId, "得到大脑");
+    }
+
+    /// <summary>快照：批量多选态 —— 底部操作条 + ✓ 选中高亮 + 计数文案，
+    /// 三处都只有进入多选才出现，10b/10c 的默认布局永远覆盖不到。</summary>
+    internal void SeedBatchModeForSnapshot()
+    {
+        SeedSidebarForSnapshot();
+        Sidebar.EnterBatchMode();
+        Sidebar.SelectBatchForSnapshot(
+            Sidebar.Items.OfType<HistoryItemViewModel>().Take(2).Select(vm => vm.Id).ToList());
+    }
+
+    /// <summary>快照：分组视图的搜索态（搜索框覆盖工具行）+ 真实命中结果。
+    /// 不走 280ms 防抖的异步链（快照截图流程等不到它，结果必然缺席），改为同步跑同一底层
+    /// ChatSearchService、按同一渲染口径（RenderGroupSearchResults）落图 —— 布局与结果都真实。</summary>
+    internal void SeedGroupSearchForSnapshot()
+    {
+        SeedGroupViewForSnapshot();
+        if (_snapshotGroupId.Length == 0) return;
+        BtnGroupSearch_Click(this, new RoutedEventArgs());   // 复用真实入口：收工具行、显示搜索行
+        GroupSearchBox.Text = "上传";
+        GroupSearchPlaceholder.Visibility = Visibility.Collapsed;
+        _groupSearchCts?.Cancel();                          // TextChanged 启动的异步链到此作废（下面同步渲染）
+        RenderGroupSearchResults(ChatSearchService.Search("上传", _snapshotGroupId), _snapshotGroupId, "上传");
     }
 
     private void HandleRecycleBin()
@@ -2626,12 +2798,8 @@ public partial class AIDialogWindow : Window
         Activate(runtime);
     }
 
-    private void BtnNewSession_Click(object sender, RoutedEventArgs e)
-    {
-        CloseGroupView();   // 在分组视图里点「新会话」= 明确要回到普通对话
-        // 新会话保留当前模式与目标笔记；StartNewSession 内部已处理复用空会话，空会话不落盘
-        StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote);
-    }
+    // 2026-09-24：BtnNewSession_Click 已删 —— 标题栏「+ 新会话」按钮随标题栏精简移除，
+    // 新会话入口交给侧边栏「新对话」（Sidebar.NewChatRequested → CloseGroupView + StartNewSession）。
 
     /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
     private void AppendAgentRulesOnce(ConversationRuntime runtime)

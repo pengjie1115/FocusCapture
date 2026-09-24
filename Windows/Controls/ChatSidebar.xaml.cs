@@ -219,6 +219,16 @@ public partial class ChatSidebar : UserControl
         ReloadLastSessions();
     }
 
+    /// <summary>快照专用：批量模式下按 Id 选中（模拟行点击，不动真实数据）；
+    /// 正常入口是行点击里的 _batchSelected 翻转（ChatSidebar.xaml.cs:276）。</summary>
+    internal void SelectBatchForSnapshot(IEnumerable<string> ids)
+    {
+        if (!_batchMode) return;
+        foreach (var id in ids) _batchSelected.Add(id);
+        ReloadLastSessions();
+        UpdateBatchCount();
+    }
+
     private void UpdateBatchCount() =>
         BatchCount.Text = _batchSelected.Count == 0 ? "点会话选中，再选下面的操作" : $"已选 {_batchSelected.Count} 项";
 

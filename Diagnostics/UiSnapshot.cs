@@ -191,6 +191,24 @@ internal static class UiSnapshot
                 return new AIDialogWindow(notes, settings);
             }, outDir, log);
 
+            // 批量多选态（2026-09-24）：底部操作条 + ✓ 选中高亮 + 计数文案 ——
+            // 三处只有进入多选才出现，默认布局的 10b/10c 永远覆盖不到。
+            Capture("10e-AI 对话-批量操作", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedBatchModeForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 分组搜索态（2026-09-24）：搜索框覆盖分组工具行 ——
+            // 覆盖态会不会把分组名/按钮挤出可视区，只有出图才看得见（同批量态一个道理）。
+            Capture("10f-AI 对话-分组搜索", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedGroupSearchForSnapshot();
+                return w;
+            }, outDir, log);
+
             // 标题栏全功能预览：把 13 个功能全挂上、并放宽面板宽度避免溢出，
             // 用于一次性核验所有图标字形真实存在 —— 图标字符写错一个就会渲染成空框（豆腐块），
             // 这类错误静态代码看不出来，只能靠渲染结果判定。
