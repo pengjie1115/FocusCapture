@@ -321,14 +321,18 @@ public partial class AIDialogWindow : Window
     }
 
     /// <summary>新建会话：建一个新 runtime 并切为活跃。**不中断当前活跃会话的后台回答**（多会话并行）。
-    /// 当前活跃会话若仍空（未对话）且模式/目标笔记一致 → 复用，避免空 runtime 堆积。</summary>
-    private void StartNewSession(ExplainMode mode, NoteEntry? targetNote)
+    /// 当前活跃会话若仍空（未对话）且模式/目标笔记/**分组归属**一致 → 复用，避免空 runtime 堆积。
+    /// <paramref name="groupId"/> 非空 = 直接建在该分组里（2026-09-24 修：此前根本不传，
+    /// "在分组里发消息"建的会话全是未分组 —— 用户报的"分组里创建的会话没有归类"就是这个）。</summary>
+    private void StartNewSession(ExplainMode mode, NoteEntry? targetNote, string groupId = "")
     {
-        // 复用仍空的当前会话：模式与目标笔记一致时直接接管，不另造一个空 runtime
+        // 复用仍空的当前会话：模式、目标笔记、**分组归属**全一致才接管 ——
+        // 少了归属这一条，在分组里新建会话会错误复用一个未分组的空会话，归组再次落空
         if (_active != null
             && !HasConversation(_active)
             && _active.Mode == mode
-            && SameTargetNote(_active.TargetNote, targetNote))
+            && SameTargetNote(_active.TargetNote, targetNote)
+            && string.Equals(_active.Session.GroupId, groupId, StringComparison.Ordinal))
         {
             _active.AgentRulesAdded = false;
             Activate(_active);
@@ -343,7 +347,10 @@ public partial class AIDialogWindow : Window
             noteContent = targetNote.Content;
         }
 
-        var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit);
+        var session = new ChatSessionService(mode, noteContext, noteContent, _settings.AiToolResultLimit)
+        {
+            GroupId = groupId,   // 空 = 未分组（原行为不变）
+        };
         var runtime = new ConversationRuntime(session, mode, targetNote);
         _runtimes[session.SessionId] = runtime;
         Activate(runtime);
@@ -932,6 +939,17 @@ public partial class AIDialogWindow : Window
 
         var (text, attachments) = ExtractInput();
         if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
+
+        // 分组视图下输入 = 在该分组里开一个**新会话**（用户 2026-09-23 定："开对话之前先选好分组"）。
+        // 不切走的话消息会发进 _active（多半是别的会话），归组落空 —— 这正是 2026-09-24 修的根因之一。
+        // 发送即退出分组视图并收起侧边栏（用户 2026-09-24 拍板），回到正常对话界面。
+        if (_activeGroupId.Length > 0)
+        {
+            var groupId = _activeGroupId;
+            CloseGroupView();
+            if (_drawerOpen) OpenDrawer(false);
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, groupId);
+        }
 
         // 双保险：设置里关了图片发送时，即使图片已贴在输入区也不上行。
         // 提示后保留输入区内容，不擅自丢弃用户已经准备好的东西。
@@ -2074,8 +2092,13 @@ public partial class AIDialogWindow : Window
         RefreshDrawer();
     }
 
-    /// <summary>点侧边栏里的某个分组（收藏也走这里）→ 主区切到分组视图</summary>
-    private void HandleGroupSelected(SidebarGroupHeader group) => OpenGroupView(group.GroupId, group.Name);
+    /// <summary>点侧边栏里的某个分组（收藏也走这里）→ 主区切到分组视图。
+    /// 同时收起侧边栏（用户 2026-09-24 拍板：进了分组视图就该让内容区最大化）。</summary>
+    private void HandleGroupSelected(SidebarGroupHeader group)
+    {
+        OpenGroupView(group.GroupId, group.Name);
+        if (_drawerOpen) OpenDrawer(false);
+    }
 
     /// <summary>分组三点菜单：重命名 / 置顶此分组 / 删除此分组</summary>
     private void HandleGroupAction(SidebarGroupHeader group, GroupMenuAction action)
@@ -2144,11 +2167,12 @@ public partial class AIDialogWindow : Window
         InputBox.Focus();
     }
 
-    /// <summary>退出分组视图，回到普通对话</summary>
+    /// <summary>退出分组视图，回到普通对话。退出分组靠侧边栏切换或发消息（2026-09-24 已去掉「返回对话」按钮）</summary>
     private void CloseGroupView()
     {
         if (_activeGroupId.Length == 0) return;
         _activeGroupId = "";
+        ExitGroupSearch();                      // 搜索态是分组视图的一部分，一起清掉
         GroupViewPanel.Visibility = Visibility.Collapsed;
         MessagesScroll.Visibility = Visibility.Visible;
     }
@@ -2167,10 +2191,90 @@ public partial class AIDialogWindow : Window
             .ToList();
 
         GroupSessionList.ItemsSource = items;
+        // 文案一并恢复 —— 搜索态会把这条提示改成"没有匹配…"，不清回去的话
+        // 清空搜索框后空分组会显示上一轮的搜索提示
+        GroupSessionEmptyHint.Text = "这个分组还没有会话 —— 在下面输入框里说第一句，就会开始一个属于它的话题。";
         GroupSessionEmptyHint.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void BtnGroupViewClose_Click(object sender, RoutedEventArgs e) => CloseGroupView();
+    // ── 分组内搜索（2026-09-24 补做：用户指出漏了；范围=本分组，含消息正文全文）──
+    // 底层走 ChatSearchService（快层 13 条 + 慢层检查点已守），这里只做 UI 接线：
+    // 输入防抖 280ms → 后台线程搜索 → 回 UI 线程渲染。单轮搜索全量读盘，严禁每次按键都同步跑。
+
+    private CancellationTokenSource? _groupSearchCts;
+
+    private void BtnGroupSearch_Click(object sender, RoutedEventArgs e)
+    {
+        GroupToolbar.Visibility = Visibility.Collapsed;
+        GroupSearchBar.Visibility = Visibility.Visible;
+        GroupSearchBox.Focus();
+    }
+
+    private void BtnGroupSearchClose_Click(object sender, RoutedEventArgs e)
+    {
+        ExitGroupSearch();
+        RefreshGroupView();
+    }
+
+    /// <summary>退出搜索态：清框、恢复工具行（CloseGroupView 与搜索关闭按钮共用）</summary>
+    private void ExitGroupSearch()
+    {
+        _groupSearchCts?.Cancel();
+        GroupSearchBox.Text = "";
+        GroupSearchPlaceholder.Visibility = Visibility.Visible;
+        GroupSearchBar.Visibility = Visibility.Collapsed;
+        GroupToolbar.Visibility = Visibility.Visible;
+    }
+
+    private void GroupSearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        GroupSearchPlaceholder.Visibility = string.IsNullOrEmpty(GroupSearchBox.Text)
+            ? Visibility.Visible : Visibility.Collapsed;
+        _ = RunGroupSearchAsync(GroupSearchBox.Text);
+    }
+
+    private async Task RunGroupSearchAsync(string query)
+    {
+        var groupId = _activeGroupId;
+        if (groupId.Length == 0) return;
+
+        _groupSearchCts?.Cancel();
+        var cts = _groupSearchCts = new CancellationTokenSource();
+        var token = cts.Token;
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            RefreshGroupView();   // 清空搜索框 = 回到该分组的完整列表
+            return;
+        }
+
+        try { await Task.Delay(280, token).ConfigureAwait(true); }
+        catch (OperationCanceledException) { return; }
+
+        IReadOnlyList<ChatSearchHit> hits;
+        try
+        {
+            hits = await Task.Run(() => ChatSearchService.Search(query, groupId), token);
+        }
+        catch (OperationCanceledException) { return; }
+
+        if (token.IsCancellationRequested || _activeGroupId != groupId) return;
+        // 丢弃返回值（DispatcherOperation 可等待，不丢弃会吃 CS4014 警告）；结果不需要等待
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_activeGroupId != groupId) return;
+            // 命中渲染成与正常列表同标准的条目（用户要求：展示规格一致）；
+            // 片段放在预览位（悬停可见），标题仍是会话标题
+            GroupSessionList.ItemsSource = hits.Select(h => new HistoryItemViewModel(
+                h.SessionId, h.FilePath, h.SavedAt, "",
+                string.IsNullOrWhiteSpace(h.Title) ? h.Preview : h.Title,
+                false, groupId, h.Snippet, h.Snippet)).ToList();
+            GroupSessionEmptyHint.Text = hits.Count == 0
+                ? $"没有匹配「{query.Trim()}」的会话。"
+                : "";
+            GroupSessionEmptyHint.Visibility = hits.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }));
+    }
 
     private void GroupSessionRow_Click(object sender, MouseButtonEventArgs e)
     {

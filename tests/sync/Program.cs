@@ -1592,6 +1592,18 @@ print(json.dumps({
                   "本机墓碑 ∪ 云端完全没动过的同名分组 → 仍是墓碑（最基本的复活场景）");
             Check(ChatGroupMerge.MergeSameId(tombLocal, tombCloudClean).IsTombstone,
                   "参数顺序对调（云端墓碑 ∪ 本地活分组）→ 同样是墓碑（两个方向都要压住）");
+
+            // 归组通路（2026-09-24：用户报"分组到…/分组里新建的会话，点进分组找不到"）：
+            // 会话带上 GroupId 落盘后，ListSessions 按 GroupId 过滤必须能查到 ——
+            // 这条守住数据层；UI 层（StartNewSession 传参）由 code-behind 的调用点保证
+            var groupMe = new ChatSessionService(ExplainMode.Ask);
+            groupMe.AddUser("归组通路的测试消息");
+            groupMe.GroupId = "sec-g1";
+            groupMe.Save();
+            Check(ChatSessionService.ListSessions().Any(s => s.Id == groupMe.SessionId
+                  && string.Equals(s.GroupId, "sec-g1", StringComparison.Ordinal)),
+                  "会话带 GroupId 落盘后，分组视图的过滤条件能查到它（归组通路）",
+                  "查不到 = 用户看到的「分组里找不到」，且不报任何错");
         }
         finally
         {

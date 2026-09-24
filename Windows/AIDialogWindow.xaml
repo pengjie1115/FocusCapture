@@ -130,23 +130,71 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <!-- 工具行：分组名 + 添加指令 / 编辑分组名 / 删除分组 / 返回对话 -->
-                        <WrapPanel Grid.Row="0" Margin="14,12,14,4">
-                            <TextBlock x:Name="GroupViewTitle" FontSize="15" Foreground="#E8E8E8"
-                                       VerticalAlignment="Center" Margin="0,0,14,4"/>
-                            <Button x:Name="BtnGroupInstruction" Content="添加指令" Click="BtnGroupInstruction_Click"
-                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
-                                    Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
-                            <Button x:Name="BtnGroupRename" Content="编辑分组名" Click="BtnGroupRename_Click"
-                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
-                                    Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
-                            <Button x:Name="BtnGroupDelete" Content="删除分组" Click="BtnGroupDelete_Click"
-                                    Padding="8,3" Margin="0,0,6,4" FontSize="12" Cursor="Hand"
-                                    Background="#2A2A2A" Foreground="#D08080" BorderBrush="#3A3A3A" BorderThickness="1"/>
-                            <Button x:Name="BtnGroupViewClose" Content="返回对话" Click="BtnGroupViewClose_Click"
-                                    Padding="8,3" Margin="0,0,0,4" FontSize="12" Cursor="Hand"
-                                    Background="Transparent" Foreground="#7A9E7A" BorderThickness="0"/>
-                        </WrapPanel>
+                        <!-- 工具行两态（2026-09-24 用户要求）：
+                             默认态 = 分组名 + 添加指令 + 搜索/编辑名/删除（后两个用图标）；
+                             搜索态 = 搜索框覆盖整行（× 退出）。
+                             没有「返回对话」按钮 —— 退出分组靠发消息（自动回到正常对话）
+                             或点侧边栏的任意项（用户 2026-09-24 拍板）。 -->
+                        <Grid Grid.Row="0" Margin="14,12,14,4">
+                            <WrapPanel x:Name="GroupToolbar" VerticalAlignment="Center">
+                                <TextBlock x:Name="GroupViewTitle" FontSize="15" Foreground="#E8E8E8"
+                                           VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <Button x:Name="BtnGroupInstruction" Content="添加指令" Click="BtnGroupInstruction_Click"
+                                        Padding="8,3" Margin="0,0,6,0" FontSize="12" Cursor="Hand"
+                                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                                <Button x:Name="BtnGroupSearch" Click="BtnGroupSearch_Click"
+                                        Width="26" Height="24" Padding="0" Margin="0,0,6,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="搜索本分组内的会话（含消息正文）">
+                                    <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                                          Stroke="#A8A8A8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                                <Button x:Name="BtnGroupRename" Click="BtnGroupRename_Click"
+                                        Width="26" Height="24" Padding="0" Margin="0,0,6,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="编辑分组名">
+                                    <Path Data="M1.5,10.5 L1.5,13 L4,13 L12.5,4.5 L10,2 Z M9,3 L11.5,5.5"
+                                          Stroke="#A8A8A8" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                                <Button x:Name="BtnGroupDelete" Click="BtnGroupDelete_Click"
+                                        Width="26" Height="24" Padding="0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="删除分组（组内会话回到未分组）">
+                                    <Path Data="M2,4 H12 M5.5,4 V2.5 H8.5 V4 M3.8,4 L4.5,13.5 H9.5 L10.2,4 M6.3,6.5 V11 M7.7,6.5 V11"
+                                          Stroke="#C08080" StrokeThickness="1.3" StrokeLineJoin="Round"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Button>
+                            </WrapPanel>
+                            <!-- 搜索态：覆盖工具行（展开/收起由 code-behind 切 Visibility）-->
+                            <Grid x:Name="GroupSearchBar" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Background="#1A1A1A" BorderBrush="#3A3A3A"
+                                        BorderThickness="1" CornerRadius="6" Padding="8,4">
+                                    <Grid>
+                                        <TextBox x:Name="GroupSearchBox" Background="Transparent"
+                                                 Foreground="#E0E0E0" CaretBrush="#E0E0E0"
+                                                 BorderThickness="0" FontSize="12"
+                                                 VerticalAlignment="Center"
+                                                 TextChanged="GroupSearchBox_TextChanged"/>
+                                        <TextBlock x:Name="GroupSearchPlaceholder"
+                                                   Text="搜索本分组内的消息内容…"
+                                                   Foreground="#6A6A6A" FontSize="12"
+                                                   VerticalAlignment="Center" IsHitTestVisible="False"/>
+                                    </Grid>
+                                </Border>
+                                <Button x:Name="BtnGroupSearchClose" Grid.Column="1" Click="BtnGroupSearchClose_Click"
+                                        Width="26" Height="24" Padding="0" Margin="6,0,0,0" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0"
+                                        ToolTip="退出搜索">
+                                    <Path Data="M3,3 L11,11 M11,3 L3,11"
+                                          Stroke="#A8A8A8" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+                                </Button>
+                            </Grid>
+                        </Grid>
 
                         <!-- 该分组当前的指令（只读展示；改要点上面的「添加指令」）-->
                         <TextBlock x:Name="GroupInstructionText" Grid.Row="1" Margin="14,0,14,8"
