@@ -1536,6 +1536,38 @@ print(json.dumps({
                   "完整性：该出现的会话一条都不能少、也不能多",
                   "分区规则漏一条的后果是「某条会话在侧边栏凭空消失」，且不报任何错");
 
+            // ══ 侧边栏相对时间（ChatTimeText.Relative，纯函数；2026-09-26 用户要求）══
+            // 为什么必须进检查点：时间文案算错不会抛异常、也不会红，只会"看起来怪"；
+            // 边界（59 秒 / 整 1 分钟 / 59 分 / 整 1 小时 / 23 小时 / 整 1 天）全靠这几条钉住。
+            var tNow = new DateTime(2026, 9, 26, 12, 0, 0);
+            Check(ChatTimeText.Relative(tNow.AddSeconds(-30), tNow) == "刚刚",
+                  "相对时间：1 分钟以内显示「刚刚」");
+            Check(ChatTimeText.Relative(tNow.AddSeconds(-59), tNow) == "刚刚",
+                  "相对时间：59 秒仍是「刚刚」（边界上沿）");
+            Check(ChatTimeText.Relative(tNow.AddSeconds(-60), tNow) == "1分钟前",
+                  "相对时间：整 1 分钟切到「1分钟前」（边界，不能停在刚刚）");
+            Check(ChatTimeText.Relative(tNow.AddMinutes(-59), tNow) == "59分钟前",
+                  "相对时间：59 分钟仍按分钟显示（边界上沿）");
+            Check(ChatTimeText.Relative(tNow.AddMinutes(-60), tNow) == "1小时前",
+                  "相对时间：整 60 分钟切到「1小时前」（边界）");
+            Check(ChatTimeText.Relative(tNow.AddHours(-23), tNow) == "23小时前",
+                  "相对时间：23 小时仍按小时显示（边界上沿）");
+            Check(ChatTimeText.Relative(tNow.AddHours(-24), tNow) == "1天前",
+                  "相对时间：整 24 小时切到「1天前」（边界）");
+            Check(ChatTimeText.Relative(tNow.AddDays(-137), tNow) == "137天前",
+                  "相对时间：天数不设上限（用户 2026-09-26 拍板，久远会话不回落成日期）");
+            Check(ChatTimeText.Relative(tNow.AddSeconds(5), tNow) == "刚刚",
+                  "相对时间：未来时间戳（时钟回拨 / 跨端同步来的更晚会话）不出现「-3分钟前」这种负数文案");
+            Check(new HistoryItemViewModel("rt", "p", DateTime.Now.AddHours(-2), "Ask", "标题", false, "", "", "预览")
+                      .RelativeTimeText == "2小时前",
+                  "相对时间：侧边栏条目在构造时就算好文案（列表一出来就有值，不需要额外刷新一次）");
+            // 同一条目上验两套口径：侧边栏用相对时间，分组视图/搜索窗用日期 + 详细时间（用户要求分组里保持不变）
+            var rtSavedAt = DateTime.Now.AddHours(-2);
+            var rtVm = new HistoryItemViewModel("rt2", "p", rtSavedAt, "Ask", "标题", false, "", "", "预览");
+            Check(rtVm.TimeText == rtSavedAt.ToString("MM-dd HH:mm"),
+                  "相对时间：分组视图用的 TimeText 仍是日期 + 详细时间（用户要求分组里保持不变）",
+                  "两套口径混用 = 用户点进分组后看到的时间与侧边栏不一致");
+
             // ══ 分组置顶（2026-09-24：点「置顶此分组」= 分组行本身浮到最前。
             //    旧语义"组内会话全部置顶"在空分组上零反馈，用户实测"点了没反应"）══
             var pinnedGroup = new ChatGroup { Id = "sec-pin", Name = "置顶组", CreatedAt = DateTime.Now, Pinned = true };

@@ -157,6 +157,16 @@ internal static class UiSnapshot
                 return w;
             }, outDir, log);
 
+            // AI 问答界面子块（2026-09-26）：本板块**最顶部**那一组（昵称 / 自定义欢迎语 / 用户头像）。
+            // 为什么必须单独一张：03b 与 03c 都滚到了板块底部，顶部这组正好两张都覆盖不到 ——
+            // 而"设置项加了却看不见/被挤出去"正是只有出图才能发现的问题。
+            Capture("03d-设置-AI 问答界面", () =>
+            {
+                var w = new SettingsWindow(settings, noteService: notes);
+                w.NavList.SelectedIndex = 2;      // 2 = 「AI 功能」
+                return w;
+            }, outDir, log);
+
             // 其余可无副作用构造的窗口：用于横向排查同一类 UI 写法（按钮内边距 / 图标字形 / 对齐）
             Capture("04-全局查找弹窗", () => new SearchDialog(), outDir, log);
             Capture("05-待办汇总", () => new TodoSummaryWindow(notes, settings), outDir, log);
@@ -206,6 +216,25 @@ internal static class UiSnapshot
             {
                 var w = new AIDialogWindow(notes, settings);
                 w.SeedGroupSearchForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 对话态（2026-09-26）：有消息时输入区必须沉到底部。用户实测过「发完首条消息输入框还停在正中间」——
+            // 根因是布局只在输入区变化时重算、气泡加进来时漏了重算；这条链路没有出图就守不住。
+            // 侧边栏一起开着，顺带把「刚刚 / N分钟前」这套相对时间也验在图上。
+            Capture("10g-AI 对话-对话态", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedConversationForSnapshot();
+                return w;
+            }, outDir, log);
+
+            // 回答中的发送/停止按钮（2026-09-26）：蓝底圆 + 中心白色圆角方块（用户给的"铜钱"样式）。
+            // 圆底色与图标是两处独立设置 —— 只切一处（老的实现就是只切图标、底色恒绿）在图上立刻看得见。
+            Capture("10h-AI 对话-回答中按钮", () =>
+            {
+                var w = new AIDialogWindow(notes, settings);
+                w.SeedBusyForSnapshot();
                 return w;
             }, outDir, log);
 

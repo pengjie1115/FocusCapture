@@ -225,18 +225,16 @@
                         </ScrollViewer>
                     </Grid>
 
-                    <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（图标 + 文字），
-                         此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。 -->
+                    <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（**只有文字**），
+                         此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。
+                         2026-09-26：欢迎语图标（Image）按用户要求删除 —— 设置里对应入口同步删除。 -->
                     <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
                         <!-- 底部 180 的留白是刻意的：输入区居中时中心也在 Row 0 的中心，
                              欢迎语靠这个偏移让出它头顶的位置，两者不会叠在一起。 -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,180">
-                            <Image x:Name="WelcomeIcon" Width="56" Height="56" Stretch="Uniform"
-                                   HorizontalAlignment="Center" Visibility="Collapsed"/>
-                            <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="#D8D8D8"
-                                       HorizontalAlignment="Center" TextWrapping="Wrap"
-                                       TextAlignment="Center" MaxWidth="420" Margin="0,14,0,0"/>
-                        </StackPanel>
+                        <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="#D8D8D8"
+                                   VerticalAlignment="Center" HorizontalAlignment="Center"
+                                   Margin="32,0,32,180"
+                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"/>
                     </Grid>
 
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
@@ -646,12 +644,21 @@
                                             </Setter>
                                         </Style>
                                     </Button.Style>
+                                    <!-- 图标坐标系刻意写成按钮内容区 30×30 本身、几何以 (15,15) 为中心手算：
+                                         2026-09-26 修「箭头明显不居中」—— 原 Data 用的是 0..13 的坐标 + 默认 Stretch=None，
+                                         控件被 Grid 居中、几何却按自身原点画，整体偏右下。 -->
                                     <Grid>
                                         <Border x:Name="SendCircle" Background="#4CAF50" CornerRadius="15"/>
-                                        <Path x:Name="SendIcon" Data="M7,12.5 L7,1.5 M2.5,6 L7,1.5 L11.5,6"
+                                        <Path x:Name="SendIcon"
+                                              Width="30" Height="30" Stretch="None"
+                                              Data="M15,21.5 L15,8.5 M10.5,13 L15,8.5 L19.5,13"
                                               Stroke="#FFFFFF" StrokeThickness="1.8"
                                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                                        <Path x:Name="StopIcon" Data="M4.5,4.5 H10.5 V10.5 H4.5 Z" Fill="#E57373" Visibility="Collapsed"/>
+                                        <!-- 回答中：蓝底圆 + 中心白色圆角方块（用户给的"铜钱"样式，2026-09-26）。
+                                             圆底色由 code-behind 的 SetBusyUi 切换，这里只放两个图标。 -->
+                                        <Border x:Name="StopIcon" Width="11" Height="11" CornerRadius="3"
+                                                Background="#FFFFFF" Visibility="Collapsed"
+                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Grid>
                                 </Button>
                             </Grid>

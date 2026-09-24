@@ -358,8 +358,9 @@ public partial class SettingsWindow : Window
         LogRetentionInput.Text = _settings.LogRetentionDays.ToString();
 
         UpdateIconUI();
-        // AI 问答界面（2026-09-24）：昵称 / 侧边栏默认展开 / 图片资源状态回显
+        // AI 问答界面（2026-09-24）：昵称 / 自定义欢迎语 / 侧边栏默认展开 / 图片资源状态回显
         ChatNicknameInput.Text = _settings.ChatUserNickname ?? "";
+        ChatWelcomeInput.Text = _settings.ChatWelcomeText ?? "";
         SidebarDefaultExpandedCheck.IsChecked = _settings.ChatSidebarDefaultExpanded;
         UpdateChatAssetsUI();
         LoadSyncSettings();
@@ -1826,16 +1827,13 @@ public partial class SettingsWindow : Window
         }
     }
 
-    // ── AI 问答界面（2026-09-24）：侧边栏 / 昵称 / 欢迎语图标 / 用户头像 ──
-    // 图片走 ChatAssetsService（不持久化绝对路径，判据 = Has*）；昵称 / 侧边栏默认展开走 AppSettings。
-    // 与上面「自定义托盘图标」是三套独立资源，互不串味（见 ChatAssetsService 头注释）。
+    // ── AI 问答界面（2026-09-24）：侧边栏 / 昵称 / 自定义欢迎语 / 用户头像 ──
+    // 图片走 ChatAssetsService（不持久化绝对路径，判据 = Has*）；昵称 / 欢迎语 / 侧边栏默认展开走 AppSettings。
+    // 与上面「自定义托盘图标」是两套独立资源，互不串味（见 ChatAssetsService 头注释）。
+    // 2026-09-26：「欢迎语图标」整块按用户要求删除（起手页不再显示图标，此处入口与 ChatAssetsService 的 4 个 API 一并移除；
+    // 已落盘的 chat_welcome_icon.* 保留不删 —— 删除类动作只给用户，且已无代码读取它）。
     private void UpdateChatAssetsUI()
     {
-        var hasWelcome = ChatAssetsService.HasWelcomeIcon;
-        WelcomeIconStatus.Text = hasWelcome ? "已设置欢迎语图标" : "未设置（只显示文字）";
-        WelcomeIconStatus.Foreground = hasWelcome
-            ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50))
-            : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
         var hasAvatar = ChatAssetsService.HasUserAvatar;
         AvatarStatus.Text = hasAvatar ? "已设置用户头像" : "未设置（昵称首字色块）";
         AvatarStatus.Foreground = hasAvatar
@@ -1859,28 +1857,13 @@ public partial class SettingsWindow : Window
         _onChanged?.Invoke();
     }
 
-    private void BtnWelcomeIconPick_Click(object sender, RoutedEventArgs e)
+    /// <summary>自定义欢迎语（2026-09-26 新增）：存整句，留空 = 回到默认句式「{昵称}，我帮你」。
+    /// 改完即时生效 —— _onChanged 会让 AI 问答窗口重刷起手页（下次打开/切回起手态就能看到）。</summary>
+    private void ChatWelcome_TextChanged(object sender, TextChangedEventArgs e)
     {
-        var dlg = new OpenFileDialog
-        {
-            Title = "选择欢迎语图标（图片 / 表情包，≤10MB）",
-            Filter = "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件 (*.*)|*.*"
-        };
-        if (dlg.ShowDialog() != true) return;
-        if (ChatAssetsService.ImportWelcomeIcon(dlg.FileName) == null)
-        {
-            WelcomeIconStatus.Text = "导入失败：格式不支持 / 文件过大（≤10MB）/ 文件不可读";
-            WelcomeIconStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-            return;
-        }
-        UpdateChatAssetsUI();
-        _onChanged?.Invoke();
-    }
-
-    private void BtnWelcomeIconReset_Click(object sender, RoutedEventArgs e)
-    {
-        ChatAssetsService.ResetWelcomeIcon();
-        UpdateChatAssetsUI();
+        if (_suppressEvents) return;
+        _settings.ChatWelcomeText = ChatWelcomeInput.Text;
+        _settings.Save();
         _onChanged?.Invoke();
     }
 

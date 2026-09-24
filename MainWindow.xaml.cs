@@ -595,6 +595,9 @@ public partial class MainWindow : Window
                 // 三步都跑完两处才同源；全在同一个事件里完成，所以不必重启应用。
                 AppIconService.Reload(_settings.CustomIconPath);
                 ApplyAssistantNameToAllEntries();
+                // AI 问答界面（2026-09-26）：昵称 / 自定义欢迎语 / 用户头像改完即时生效 ——
+                // 否则用户在设置里改完欢迎语，起手页那句话要等重开窗口才变（看着像没生效）。
+                AIDialogHelper.NotifyChatUiSettingsChanged();
                 AppIconService.RefreshOpenWindows();
 
                 // 拖放保存（2026-09-16）：开关关掉要立刻收回球上的 AllowDrop，并收掉已经浮着的浮层；

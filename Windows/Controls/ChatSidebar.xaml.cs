@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using FocusCapture.Models;
 using FocusCapture.Services;
 
@@ -87,6 +88,29 @@ public partial class ChatSidebar : UserControl
     {
         InitializeComponent();
         ListHost.ItemsSource = Items;
+    }
+
+    // ── 相对时间每分钟刷新（2026-09-26 用户要求）──
+    // 侧边栏改成"刚刚 / N分钟前 / N小时前 / N天前"后必须自己走表：不重算的话侧边栏一直开着，
+    // 时间会永远停在打开那一刻（"刚刚"永远是"刚刚"）。
+    // 停表时机：控件卸载、或侧边栏收起（宽度 0，列表根本不在图上）—— 收起态白遍历几十条没意义。
+    // 刻意**不重建列表**：重建会打断悬停态与批量选中高亮，只借 ViewModel 自带的 INPC 改文案。
+    private DispatcherTimer? _relativeTimer;
+
+    private void ChatSidebar_Loaded(object sender, RoutedEventArgs e)
+    {
+        _relativeTimer ??= new DispatcherTimer(
+            TimeSpan.FromMinutes(1), DispatcherPriority.Background, OnRelativeTimeTick, Dispatcher);
+        _relativeTimer.Start();
+    }
+
+    private void ChatSidebar_Unloaded(object sender, RoutedEventArgs e) => _relativeTimer?.Stop();
+
+    private void OnRelativeTimeTick(object? sender, EventArgs e)
+    {
+        if (!IsVisible || ActualWidth <= 0) return;
+        var now = DateTime.Now;
+        foreach (var vm in Items.OfType<HistoryItemViewModel>()) vm.RefreshRelativeTime(now);
     }
 
     /// <summary>刷新侧边栏（分区构造见 <see cref="BuildSections"/>）</summary>

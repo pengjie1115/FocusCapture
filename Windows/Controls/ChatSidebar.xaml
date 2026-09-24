@@ -3,7 +3,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:FocusCapture.Windows.Controls"
              FontFamily="Microsoft YaHei UI" FontSize="13"
-             Background="#1E1E1E">
+             Background="#1E1E1E"
+             Loaded="ChatSidebar_Loaded" Unloaded="ChatSidebar_Unloaded">
     <!-- AI 问答侧边栏（2026-09-23 重构，取代历史抽屉）。
          分区自上而下：新对话 / 新分组 →（收藏 · 各分组）→ 置顶 → 最近 → 用户区。
          数据由宿主经 Load() 注入；所有业务动作（改字段 / 删除 / 导出）抛事件给宿主执行 ——
@@ -113,8 +114,10 @@
                                            Text="{Binding Title}" Foreground="#C8C8C8"
                                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                                            ToolTip="{Binding Preview}"/>
-                                <!-- 最后聊天时间 / 日期（用户要求：每条会话后面带上）-->
-                                <TextBlock Grid.Column="1" Text="{Binding TimeText}"
+                                <!-- 最后聊天时间（2026-09-26 用户要求改**相对时间**：
+                                     刚刚 / N分钟前 / N小时前 / N天前，由 ChatSidebar 的分钟定时器重算）。
+                                     分组视图与搜索窗仍绑 TimeText（日期 + 详细时间），保持原样。 -->
+                                <TextBlock Grid.Column="1" Text="{Binding RelativeTimeText}"
                                            Foreground="#6E6E6E" FontSize="11"
                                            Margin="6,0,0,0" VerticalAlignment="Center"/>
                                 <!-- 会话的三点：重命名 / 置顶 / 收藏 / 分组到… / 导出 / 删除。
@@ -177,11 +180,18 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Grid Grid.Column="0" Width="26" Height="26">
-                    <!-- 默认：昵称首字色块；设了头像则显示图片盖住它 -->
+                    <!-- 默认：昵称首字色块；设了头像则显示图片盖住它。
+                         2026-09-26：头像按用户要求裁成**圆形** —— 方图此前直接摆着就是方角。
+                         Clip 用绝对坐标（圆心 13,13 / 半径 13 = 26×26 的一半）；
+                         改这个 Grid 尺寸时半径与圆心必须同步改。 -->
                     <Ellipse Fill="#3A4A6A"/>
                     <TextBlock x:Name="AvatarInitial" Text="" Foreground="#D8E0F0" FontSize="12"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    <Image x:Name="AvatarImage" Stretch="UniformToFill" Visibility="Collapsed"/>
+                    <Image x:Name="AvatarImage" Stretch="UniformToFill" Visibility="Collapsed">
+                        <Image.Clip>
+                            <EllipseGeometry Center="13,13" RadiusX="13" RadiusY="13"/>
+                        </Image.Clip>
+                    </Image>
                 </Grid>
                 <TextBlock x:Name="UserNickname" Grid.Column="1" Margin="8,0,0,0"
                            Foreground="#B8B8B8" VerticalAlignment="Center"

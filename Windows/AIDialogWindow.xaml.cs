@@ -665,15 +665,37 @@ public partial class AIDialogWindow : Window
         InputArea.BeginAnimation(OpacityProperty, fade);
     }
 
-    /// <summary>欢迎语内容：图标（用户上传的，没设就不显示图标）+「{昵称}，今天干点啥？」</summary>
+    /// <summary>
+    /// 欢迎语内容（2026-09-26 改版）。
+    /// - 设置里填了「自定义欢迎语」→ 整句照用，其中 <c>{昵称}</c> 会替换成称呼（不填占位符就原样显示）；
+    /// - 没填 → 默认句式「{昵称}，我帮你」；
+    /// - 称呼来源：设置里的昵称优先，留空取 Windows 登录名，再取不到（异常 / 空）就只显示「我帮你」。
+    /// 2026-09-26 起**不再有欢迎语图标**（用户拍板删除，起手页只显示文字）。
+    /// </summary>
     private void UpdateWelcomeContent()
     {
-        var icon = ChatAssetsService.LoadWelcomeIcon();
-        WelcomeIcon.Source = icon;
-        WelcomeIcon.Visibility = icon != null ? Visibility.Visible : Visibility.Collapsed;
+        var nickname = ResolveWelcomeNickname();
+        var custom = (_settings.ChatWelcomeText ?? "").Trim();
+        WelcomeText.Text = custom.Length > 0
+            ? custom.Replace("{昵称}", nickname)
+            : nickname.Length > 0 ? $"{nickname}，我帮你" : "我帮你";
+    }
 
+    /// <summary>欢迎语里的称呼：设置里的昵称优先，留空取 Windows 登录名（取不到返回空串，绝不抛）。</summary>
+    private string ResolveWelcomeNickname()
+    {
         var nickname = (_settings.ChatUserNickname ?? "").Trim();
-        WelcomeText.Text = nickname.Length > 0 ? $"{nickname}，今天干点啥？" : "今天干点啥？";
+        if (nickname.Length > 0) return nickname;
+        try { return (Environment.UserName ?? "").Trim(); }
+        catch { return ""; }
+    }
+
+    /// <summary>设置里改了昵称 / 自定义欢迎语 / 头像后重刷界面（由 <see cref="AIDialogHelper.NotifyChatUiSettingsChanged"/> 调用）。
+    /// 起手页那句话与侧边栏底部用户区都跟着设置走；窗口没开着就不会走到这里。</summary>
+    internal void RefreshChatUiFromSettings()
+    {
+        UpdateWelcomeContent();
+        Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
     }
 
     /// <summary>把键盘焦点落到输入框。窗口是非模态弹出的，WPF 不会自动聚焦任何控件，必须显式调</summary>
@@ -1773,6 +1795,11 @@ public partial class AIDialogWindow : Window
         {
             AddBubble(runtime, true, text, attachments: BuildAttachmentVms(attachments));
             AddBubble(runtime, false, "", runtime.TargetNote != null && runtime.Mode != ExplainMode.Ask);
+            // 2026-09-26 修「发首条消息后输入框不下沉」：SendCurrentInput 里的 ResetInput() 先跑，
+            // 那一刻 Bubbles 还是 0 → RefreshComposerLayout 判定为起手态，输入区保持居中；
+            // 气泡加进来之后若不在这里重算一次，布局就永远停在中间（用户实测截图）。
+            // 位置必须在第一个 await 之前 —— AddBubble 与本行都还在 UI 线程上。
+            RefreshComposerLayout();
             var current = runtime.Bubbles[runtime.Bubbles.Count - 1];
             current.Content = "思考中…"; // 首包到达前的等待占位
 
@@ -2030,7 +2057,8 @@ public partial class AIDialogWindow : Window
             : partial + "\n\n（已停止）";
     }
 
-    /// <summary>发送/停止按钮状态机：回答中变红色停止图标，空闲恢复发送</summary>
+    /// <summary>发送/停止按钮状态机（2026-09-26 改版）：回答中 = 蓝圆 + 中心白色圆角方块（用户给的"铜钱"样式），
+    /// 空闲 = 绿圆 + 向上箭头。圆底色与图标都在这里一起切 —— 原先只切图标、圆底恒为绿色，与用户要的样子不符。</summary>
     private void SetBusyUi(bool busy)
     {
         if (_closed) return;   // 窗口已关闭不刷按钮（关窗后后台 runtime 完成的回调不应再动 UI）
@@ -2038,16 +2066,14 @@ public partial class AIDialogWindow : Window
         {
             SendIcon.Visibility = Visibility.Collapsed;
             StopIcon.Visibility = Visibility.Visible;
-            BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
-            BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x73, 0x73));
+            SendCircle.Background = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6));
             BtnSend.ToolTip = "停止生成";
         }
         else
         {
             SendIcon.Visibility = Visibility.Visible;
             StopIcon.Visibility = Visibility.Collapsed;
-            BtnSend.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
-            BtnSend.BorderBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+            SendCircle.Background = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
             BtnSend.ToolTip = null;
             InputBox.Focus();
         }
@@ -2651,12 +2677,32 @@ public partial class AIDialogWindow : Window
         RenderGroupSearchResults(ChatSearchService.Search("上传", _snapshotGroupId), _snapshotGroupId, "上传");
     }
 
+    /// <summary>快照：对话态（有消息）—— 输入区必须沉到底部。
+    /// 为什么要这张图（2026-09-26）：用户实测「发完首条消息，输入框还停在正中间」，
+    /// 根因是布局只在输入区内容变化时重算、气泡加进来那一刻漏了重算 —— 这条链路没有出图就守不住。
+    /// 走真实的加载链路（LoadHistorySession → Activate），不手搓气泡：伪造的状态验不出真问题。
+    /// 侧边栏一起开着（SeedSidebarForSnapshot 里展开），顺带把「刚刚 / N分钟前」的相对时间也验在图上。</summary>
+    internal void SeedConversationForSnapshot()
+    {
+        SeedSidebarForSnapshot();
+        var latest = ChatSessionService.ListSessions().FirstOrDefault();
+        if (latest != null) LoadHistorySession(latest.FilePath);
+    }
+
+    /// <summary>快照：回答中的发送/停止按钮（蓝底圆 + 中心白色圆角方块，用户给的"铜钱"样式）。
+    /// 只切视觉状态，不真发请求 —— 快照要的是样子。底色与图标是两处独立设置，
+    /// 「只切图标、底色恒绿」正是这次要修的老毛病，一张图就能看出来。</summary>
+    internal void SeedBusyForSnapshot()
+    {
+        SeedConversationForSnapshot();
+        SetBusyUi(true);
+    }
+
     private void HandleRecycleBin()
     {
         new ChatTrashWindow { Owner = this }.ShowDialog();
         RefreshDrawer();
     }
-
     /// <summary>改单会话元数据：当前打开的会话改内存字段（保持内存与文件一致），否则 Load → 改 → Save。
     /// Save 自动自增 Rev + 触发 SessionChanged（同步管道入口），重命名/置顶/分组无需额外接线。</summary>
     private void ApplySessionMeta(HistoryItemViewModel item, Action<ChatSessionService> mutate)
@@ -3127,6 +3173,18 @@ public static class AIDialogHelper
         dialog.Dispatcher.BeginInvoke(new Action(() =>
         {
             if (!dialog.IsClosed) dialog.RefreshFileViews();
+        }));
+    }
+
+    /// <summary>设置里改了 AI 问答界面相关的项（昵称 / 自定义欢迎语 / 用户头像）后刷新打开中的窗口：
+    /// 起手页那句话与侧边栏底部用户区。窗口没开着就什么都不做（下次打开自然是新值）。</summary>
+    public static void NotifyChatUiSettingsChanged()
+    {
+        var dialog = _dialog;
+        if (dialog == null) return;
+        dialog.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!dialog.IsClosed) dialog.RefreshChatUiFromSettings();
         }));
     }
 

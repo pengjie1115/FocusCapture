@@ -2,24 +2,27 @@ using System.Windows.Media.Imaging;
 
 namespace FocusCapture.Services;
 
-/// <summary>AI 问答的两个自定义图片资源：欢迎语图标 + 用户头像。
-/// 【硬要求】两者独立存储、独立读写 —— 任何一个的操作都不得影响另一个，
-/// 也不得影响应用图标（那是 AppIconService / custom_icon.png，另一套东西）。
+/// <summary>AI 问答复用图片资源：**用户头像**（侧边栏底部那个圆形）。
+/// 【硬要求】与本应用的其它图片资源（应用图标 custom_icon.png，另一套 AppIconService）独立存储、独立读写 ——
+/// 任何一边的操作都不得影响另一边。
 ///
 /// 为什么要有这个类（2026-09-23，见 docs/2026-09-23-AI问答界面重构设计稿.md §0.3）：
-/// 全项目此前只有「应用图标」一套图片机制，另两处（起手页欢迎语前的图、侧边栏底部圆形头像）
-/// 若各自现写一份落盘/加载，早晚会在「换后缀残留两个文件」「文件句柄没放导致换图失败」
-/// 这类细节上各踩一次坑。这里把两套资源用同一份实现管住，靠**基名不同**保证互不串味。
+/// 全项目此前只有「应用图标」一套图片机制，头像若现写一份落盘/加载，早晚会在
+/// 「换后缀残留两个文件」「文件句柄没放导致换图失败」这类细节上踩坑。
 ///
-/// 四条实现口径（改前先读，都是坑）：
+/// 2026-09-26 变更：**欢迎语图标已按用户要求删除**（起手页不再显示图标、设置里入口一并删除，
+/// 相关的 4 个 API 从本类移除）。用户数据根里若还留着旧文件 chat_welcome_icon.*，**刻意不删** ——
+/// 删除类动作只给用户（项目红线 7），且该文件不再被任何代码读取/显示，留着无害。
+/// 因此本类现在只管一套资源，"两套资源靠基名区分"那条纪律随之失效，不要再往里加第二套。
+///
+/// 三条实现口径（改前先读，都是坑）：
 /// - **落盘位置由 <see cref="FocusCapturePaths.Combine"/> 动态求值**，不缓存绝对路径：
 ///   用户可在设置里切换数据根，缓存下来的旧路径会指向已搬走的位置。
 /// - **Import 是"复制"不是"记住原路径"**：用户把原图删了/移了，界面就裂图。
-/// - **两套资源只靠文件名前缀区分**，没有共享字段 —— 删欢迎语图标绝不看头像文件一眼。
 /// - **永不抛**：选错格式、图片损坏、目录不可用全部只回落，由调用方按 null 处理。
 public static class ChatAssetsService
 {
-    /// <summary>源文件大小上限（10 MB）。超限直接拒收：这两个位置显示尺寸都在 100px 内，
+    /// <summary>源文件大小上限（10 MB）。超限直接拒收：头像显示尺寸不到 100px，
     /// 收一张 50MB 的原图只会白占数据根，还得全套解码一遍。</summary>
     public const long MaxSourceBytes = 10L * 1024 * 1024;
 
@@ -30,9 +33,6 @@ public static class ChatAssetsService
     /// </summary>
     private static readonly string[] AllowedExts = { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
 
-    /// <summary>欢迎语图标落盘基名（实际文件为 <c>chat_welcome_icon</c> + 小写后缀）。</summary>
-    private const string WelcomeBase = "chat_welcome_icon";
-
     /// <summary>用户头像落盘基名。</summary>
     private const string AvatarBase = "chat_user_avatar";
 
@@ -41,20 +41,6 @@ public static class ChatAssetsService
     /// 后一个的删除会把前一个刚复制好的文件删掉。加锁把这两步合起来，代价可忽略。
     /// </summary>
     private static readonly object _ioLock = new();
-
-    // ══════════════════ 欢迎语图标（起手页欢迎语前面那张）══════════════════
-
-    /// <summary>导入欢迎语图标：复制到数据根并返回**目标绝对路径**；失败返回 null。</summary>
-    public static string? ImportWelcomeIcon(string sourcePath) => Import(sourcePath, WelcomeBase);
-
-    /// <summary>恢复默认：删掉已落盘的欢迎语图标（不设时界面只显示文字，不借用应用图标）。</summary>
-    public static void ResetWelcomeIcon() => Reset(WelcomeBase);
-
-    /// <summary>载入欢迎语图标；未设置 / 文件损坏 → null，永不抛。</summary>
-    public static BitmapImage? LoadWelcomeIcon() => Load(WelcomeBase);
-
-    /// <summary>是否已设置欢迎语图标（只落盘的判断，见 <see cref="HasStored"/> 的取舍说明）。</summary>
-    public static bool HasWelcomeIcon => HasStored(WelcomeBase);
 
     // ══════════════════ 用户头像（侧边栏底部那个圆形）══════════════════
 

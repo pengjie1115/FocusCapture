@@ -84,9 +84,16 @@ public class AppSettings
 
     // ── AI 问答界面（2026-09-23 重构：侧边栏 / 起手页）──
 
-    /// <summary>用户在 AI 问答里的昵称。驱动两处：起手页欢迎语（「{昵称}，今天干点啥？」）与侧边栏底部用户区。
-    /// 为空时欢迎语降级为不带称呼的句式，界面不显示空占位。</summary>
+    /// <summary>用户在 AI 问答里的昵称。驱动两处：起手页欢迎语里的称呼、侧边栏底部用户区。
+    /// 为空时：欢迎语回落到 Windows 登录名，取不到才显示不带称呼的句式；侧边栏底部显示「我」。</summary>
     public string ChatUserNickname { get; set; } = "";
+
+    /// <summary>
+    /// 起手页欢迎语的自定义整句（2026-09-26 新增）。留空 = 用默认句式「{昵称}，我帮你」。
+    /// 文本里的 <c>{昵称}</c> 占位符会替换成称呼（昵称，为空则 Windows 登录名）；不含占位符就整句原样显示。
+    /// 老 settings.json 没有这个字段 → 反序列化为空 → 走默认句式，零迁移。
+    /// </summary>
+    public string ChatWelcomeText { get; set; } = "";
 
     /// <summary>打开 AI 问答时侧边栏是否默认展开。默认 false = 收起（对话区更宽敞），设置里可改。</summary>
     public bool ChatSidebarDefaultExpanded { get; set; }
