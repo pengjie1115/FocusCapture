@@ -45,8 +45,12 @@ docs/PROGRESS.md
 /PROGRESS.md
 docs/fc-sync-test-archive/
 
-# WorkBuddy local data
-.workbuddy/
+# WorkBuddy 本地数据（默认全忽略；开发记忆例外，规则见 AGENTS.md「三、开发记忆」）
+.workbuddy/*
+!.workbuddy/memory/
+.workbuddy/memory/*
+!.workbuddy/memory/*.md
+.workbuddy/memory/MEMORY.backup-*.md
 
 # WorkBuddy 发布应用内部标记
 *.genie
