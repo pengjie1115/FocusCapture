@@ -221,14 +221,19 @@ function Test-DocRefs {
         # 外部生态的格式文件名不算项目引用 —— 它们必然出现在文档里，但不是本仓库的文件。
         # 2026-09-20 实测：B-17 段写 SKILL.md（Skill 机制约定的入口文件名）触发了假红。
         # 判据保持不变（宁可漏报也不扩大匹配面），只加已知的外部名白名单。
-        $foreignNames = @('SKILL.md')
+        $foreignNames = @('SKILL.md', 'YYYY-MM-DD.md')
         foreach ($one in $m) {
             $target = $one.Groups[1].Value
             if ($foreignNames -contains $target) { continue }
             $total = $total + 1
             $tp = Join-Path $RepoRoot ($target -replace '/', '\')
             if (-not (Test-Path -LiteralPath $tp)) {
-                $bad += "$d -> $target"
+                # 候选目录：仓库根找不到时再试开发记忆目录。AGENTS.md「三、开发记忆」用裸文件名
+                # 引用 NOW/DECISIONS/PITFALLS 等（短名是刻意设计），2026-09-24 check-docs 落地时补的解析。
+                $mem = Join-Path $RepoRoot ('.workbuddy\memory\' + ($target -replace '/', '\'))
+                if (-not (Test-Path -LiteralPath $mem)) {
+                    $bad += "$d -> $target"
+                }
             }
         }
     }
@@ -262,7 +267,24 @@ function Invoke-Ready {
     return $ExOk
 }
 
-# ────────────────────────── 4. push ──────────────────────────
+# ────────────────────────── 4. check-docs ──────────────────────────
+
+function Invoke-CheckDocs {
+    # 独立的文档引用检查入口（复用 ready 内嵌的 Test-DocRefs，检查逻辑只此一份）。
+    # 2026-09-24 补实现：设计文档七子命令里承诺过，此前从未落地（EXIT=2 未知命令）。
+    Write-Head 'check-docs 文档引用检查'
+    $r = Test-DocRefs
+    if ($r.Bad.Count -gt 0) {
+        Write-Host "发现 $($r.Bad.Count) 处失效引用：" -ForegroundColor Yellow
+        foreach ($b in $r.Bad) { Write-Host "  - $b" -ForegroundColor Yellow }
+        Write-Fail '文档引用检查' '所有 ``xxx.md`` 引用都能找到目标' "失效 $($r.Bad.Count) 处" '改文档里的路径，或补回被引用文件；确认是合理例外后再说' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "文档引用检查通过（$($r.Total) 处全部有效）" -ForegroundColor Green
+    return $ExOk
+}
+
+# ────────────────────────── 5. push ──────────────────────────
 
 function Invoke-Push {
     Write-Head 'push 双远程推送（目标：main）'
@@ -693,6 +715,7 @@ function Show-Help {
     Write-Host '  test                  跑快层检查点'
     Write-Host '  test -Slow            跑慢层检查点'
     Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
+    Write-Host '  check-docs            单独跑文档引用检查（改文档后快速验证；全量仍在 ready）'
     Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
     Write-Host '  start <分支名>        新建分支（自动补类型前缀 + 开工查重；默认从 main，-From 指定起点）'
     Write-Host '  merge                 把当前分支 ff-only 合并到 main（合并后自动校验索引）'
@@ -720,6 +743,7 @@ try {
         'build'   { $final = Invoke-Build }
         'test'    { if ($Slow -or $Apply) { $final = Invoke-Test -Slow } else { $final = Invoke-Test } }
         'ready'   { $final = Invoke-Ready }
+        'check-docs' { $final = Invoke-CheckDocs }
         'push'    { $final = Invoke-Push }
         'recover' { $final = Invoke-Recover }
         'snap'    { $final = Invoke-Snap }
