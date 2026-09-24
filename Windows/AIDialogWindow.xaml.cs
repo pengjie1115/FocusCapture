@@ -2016,7 +2016,9 @@ public partial class AIDialogWindow : Window
 
             case ChatItemAction.Rename:
             {
-                var name = PromptDialog.Show(this, "重命名会话", "会话标题（留空恢复默认预览）：");
+                // 初始值带当前标题（2026-09-24 用户要求：保留原名并全选，可整体替换也可局部改，
+                // 而不是让用户看着空框从零打）。留空确认 = 恢复默认预览的语义保留。
+                var name = PromptDialog.Show(this, "重命名会话", "会话标题（留空恢复默认预览）：", item.Title);
                 if (name == null) return;
                 ApplySessionMeta(item, s => s.Title = name);
                 RefreshDrawer();
@@ -2089,12 +2091,11 @@ public partial class AIDialogWindow : Window
                 break;
             }
 
-            // 「置顶此分组」= 把该分组内的会话全部置顶。
-            // 没做「分组本身排序靠前」是因为那要给 ChatGroup 加字段、再配一套跨端合并裁决；
-            // 而用户的原话是"置顶此分组"，组内会话都浮到「置顶」区在语义上也成立。
-            // 若他要的是分组行排到分组列表最前，换实现即可（不动数据模型）—— 已记入待确认清单。
+            // 「置顶此分组」= **分组本身**浮到分组列表最前（ChatGroup.Pinned，2026-09-24 改语义）。
+            // 旧实现（组内会话全部置顶）在空分组上零反馈，用户实测"点了没反应"；
+            // 且分组行不动，有会话也看不出效果。菜单文案按 group.IsPinned 动态（侧边栏生成）。
             case GroupMenuAction.Pin:
-                SetPinForGroup(group.GroupId, pinned: true);
+                ChatGroupService.SetPinned(group.GroupId, !group.IsPinned);
                 break;
 
             case GroupMenuAction.Delete:
@@ -2108,29 +2109,6 @@ public partial class AIDialogWindow : Window
             }
         }
         RefreshDrawer();
-    }
-
-    /// <summary>把某分组内所有会话批量置顶（逐条 Load→改→Save，Rev 自增随同步管道传到他端）。</summary>
-    private static void SetPinForGroup(string groupId, bool pinned)
-    {
-        var dir = FocusCapturePaths.Combine("chat_history");
-        if (!Directory.Exists(dir)) return;
-
-        foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
-        {
-            try
-            {
-                var svc = ChatSessionService.Load(file);
-                if (svc == null || !string.Equals(svc.GroupId, groupId, StringComparison.Ordinal)) continue;
-                if (svc.Pinned == pinned) continue;   // 已是该状态就不写盘（省掉无谓的 Rev 自增与上传）
-                svc.Pinned = pinned;
-                svc.Save();
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[FocusCapture] 批量置顶跳过文件: {file}: {ex.Message}");
-            }
-        }
     }
 
     // ── 分组视图（2026-09-23）：点侧边栏里的分组进来 ──

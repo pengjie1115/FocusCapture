@@ -21,12 +21,14 @@ public sealed class SidebarGroupHeader
     public string Name { get; }
     public string GroupId { get; }
     public bool IsFavorite { get; }
+    public bool IsPinned { get; }
 
-    public SidebarGroupHeader(string name, string groupId, bool isFavorite)
+    public SidebarGroupHeader(string name, string groupId, bool isFavorite, bool isPinned = false)
     {
         Name = name;
         GroupId = groupId;
         IsFavorite = isFavorite;
+        IsPinned = isPinned;
     }
 
     /// <summary>收藏带一个记号，免得与用户自己建的同名分组混淆</summary>
@@ -114,11 +116,17 @@ public partial class ChatSidebar : UserControl
 
         var result = new List<object>();
 
-        // ① 收藏 + 用户建的分组（顺序跟清单走，与分组管理办法一致）
+        // ① 收藏恒在最前；其后是**置顶的分组**（2026-09-24：用户从 WorkBuddy「置顶任务」借鉴，
+        //    点「置顶此分组」= 分组行本身浮到最前，而不是组内会话置顶 —— 旧语义空分组点了零反馈）；
+        //    再后是普通分组（顺序跟清单走，与分组管理办法一致）
         var favorite = groups.FirstOrDefault(g => ChatGroupStore.IsFavorite(g.Id));
         if (favorite != null)
             result.Add(new SidebarGroupHeader(favorite.Name, favorite.Id, true));
-        foreach (var g in groups.Where(g => !ChatGroupStore.IsFavorite(g.Id)))
+
+        var userGroups = groups.Where(g => !ChatGroupStore.IsFavorite(g.Id)).ToList();
+        foreach (var g in userGroups.Where(g => g.Pinned))
+            result.Add(new SidebarGroupHeader(g.Name, g.Id, false, isPinned: true));
+        foreach (var g in userGroups.Where(g => !g.Pinned))
             result.Add(new SidebarGroupHeader(g.Name, g.Id, false));
 
         // ② 置顶区（跨分组；置顶会话在所属分组里**也会**再出现一次 —— 这是用户要的叠加语义）
@@ -193,7 +201,8 @@ public partial class ChatSidebar : UserControl
         // 弹出层会变成白条（项目在待办汇总右键菜单上踩过同一个坑）。
         var menu = new ContextMenu();
         menu.Items.Add(MakeGroupMenuItem(group, GroupMenuAction.Rename, "重命名"));
-        menu.Items.Add(MakeGroupMenuItem(group, GroupMenuAction.Pin, "置顶此分组"));
+        menu.Items.Add(MakeGroupMenuItem(group, GroupMenuAction.Pin,
+            group.IsPinned ? "取消置顶" : "置顶此分组"));
         menu.Items.Add(MakeGroupMenuItem(group, GroupMenuAction.Delete, "删除此分组"));
 
         menu.PlacementTarget = btn;
@@ -230,7 +239,11 @@ public partial class ChatSidebar : UserControl
         menu.Items.Add(MakeSessionMenuItem(item, ChatItemAction.Favorite,
             ChatGroupStore.IsFavorite(item.GroupId) ? "取消收藏" : "收藏"));
 
-        var groupMenu = MakeSessionMenuItem(item, ChatItemAction.Group, "分组到…");
+        // ⚠️「分组到…」「导出」这类**父项**只能当子菜单容器，绝不能绑 Click ——
+        // 父项经 MakeSessionMenuItem 绑的 context 是 null，而宿主把 Group+null 解释成「移出分组」。
+        // 2026-09-24 实锤过这条链：用户点父项 → GroupId 被清空 → 会话留/回「最近」且 SavedAt 刷新，
+        // 看起来就是"跳到最近最上面、分组里找不到"。
+        var groupMenu = MakeMenuHeader("分组到…");
         foreach (var g in ChatGroupStore.Load().Where(g => !ChatGroupStore.IsFavorite(g.Id)))
         {
             var menuItem = new MenuItem { Header = g.Name, IsChecked = g.Id == item.GroupId };
@@ -238,11 +251,14 @@ public partial class ChatSidebar : UserControl
             menuItem.Click += (_, _) => SessionAction?.Invoke(item, ChatItemAction.Group, targetId);
             groupMenu.Items.Add(menuItem);
         }
+        // 已在某个普通分组里 → 给一个明确的「移出分组」出口（收藏走「取消收藏」，别走这里）
+        if (!string.IsNullOrEmpty(item.GroupId) && !ChatGroupStore.IsFavorite(item.GroupId))
+            groupMenu.Items.Add(MakeSessionMenuItem(item, ChatItemAction.Group, "移出分组", ""));
         // 一个分组都没有时，「分组到…」点开是个空菜单 —— 不如直接禁掉
         if (groupMenu.Items.Count == 0) groupMenu.IsEnabled = false;
         menu.Items.Add(groupMenu);
 
-        var exportMenu = MakeSessionMenuItem(item, ChatItemAction.Export, "导出");
+        var exportMenu = MakeMenuHeader("导出");
         foreach (var (formatName, format) in ExportFormats)
         {
             var menuItem = new MenuItem { Header = formatName };
@@ -259,10 +275,13 @@ public partial class ChatSidebar : UserControl
         menu.IsOpen = true;
     }
 
-    private MenuItem MakeSessionMenuItem(HistoryItemViewModel item, ChatItemAction action, string header)
+    /// <summary>子菜单父项：只当容器，**不绑任何事件**。绑了就会在宿主那里被当成 context=null 的动作。</summary>
+    private static MenuItem MakeMenuHeader(string header) => new() { Header = header };
+
+    private MenuItem MakeSessionMenuItem(HistoryItemViewModel item, ChatItemAction action, string header, string? context = null)
     {
         var menuItem = new MenuItem { Header = header };
-        menuItem.Click += (_, _) => SessionAction?.Invoke(item, action, null);
+        menuItem.Click += (_, _) => SessionAction?.Invoke(item, action, context);
         return menuItem;
     }
 }

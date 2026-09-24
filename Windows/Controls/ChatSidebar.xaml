@@ -54,12 +54,20 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding DisplayName}"
                                            Foreground="#D0D0D0" TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center"/>
+                                <!-- 置顶标记（2026-09-24）：置顶的分组排到列表最前，这里给个可见记号 ——
+                                     否则用户点完「置顶此分组」只看到它换了位置，不确定是真生效还是眼花 -->
+                                <Border x:Name="PinBadge" Grid.Column="1" Margin="6,0,0,0"
+                                        Padding="4,0" CornerRadius="3" Background="#2E3A2E"
+                                        VerticalAlignment="Center" Visibility="Collapsed">
+                                    <TextBlock Text="置顶" FontSize="10" Foreground="#7A9E7A"/>
+                                </Border>
                                 <!-- 三点：仅鼠标悬停时出现（2026-09-23，参照千问）-->
-                                <Button x:Name="GroupMore" Grid.Column="1" Content="⋮"
+                                <Button x:Name="GroupMore" Grid.Column="2" Content="⋮"
                                         Width="20" Height="20" Padding="0"
                                         Background="Transparent" Foreground="#9A9A9A"
                                         BorderThickness="0" Cursor="Hand"
@@ -69,9 +77,17 @@
                             </Grid>
                         </Border>
                         <DataTemplate.Triggers>
-                            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Border}}" Value="True">
+                            <!-- ⚠️ 悬停高亮必须用 Trigger SourceName，**禁止**改回
+                                 DataTrigger + RelativeSource AncestorType=Border：
+                                 DataTemplate 里那种写法会越过条目自身的 Border、绑到外层共享的
+                                 滚动区外壳 Border 上 —— 结果是鼠标进列表任意位置，所有条目一起高亮
+                                 （2026-09-24 用户实测：悬停任一条目全员高亮 + 切换时闪屏）。 -->
+                            <Trigger SourceName="GroupRow" Property="IsMouseOver" Value="True">
                                 <Setter TargetName="GroupRow" Property="Background" Value="#2E2E2E"/>
                                 <Setter TargetName="GroupMore" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsPinned}" Value="True">
+                                <Setter TargetName="PinBadge" Property="Visibility" Value="Visible"/>
                             </DataTrigger>
                             <!-- 收藏是系统保留分区：不能重命名 / 置顶 / 删除，干脆不给三点入口。
                                  放在悬停 Trigger 之后 —— 同一目标的同一属性，后定义者生效。 -->
@@ -112,10 +128,11 @@
                             </Grid>
                         </Border>
                         <DataTemplate.Triggers>
-                            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Border}}" Value="True">
+                            <!-- 同分组行：必须 Trigger SourceName，禁止 RelativeSource AncestorType=Border（原因见分组行注释） -->
+                            <Trigger SourceName="SessionRow" Property="IsMouseOver" Value="True">
                                 <Setter TargetName="SessionRow" Property="Background" Value="#2E2E2E"/>
                                 <Setter TargetName="SessionMore" Property="Visibility" Value="Visible"/>
-                            </DataTrigger>
+                            </Trigger>
                         </DataTemplate.Triggers>
                     </DataTemplate>
                 </ItemsControl.Resources>

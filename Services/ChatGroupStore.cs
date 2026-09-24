@@ -24,6 +24,21 @@ public class ChatGroup
 
     /// <summary>指令最后修改时间（同上，跨端 LWW 判方向用）</summary>
     public DateTime InstructionUpdatedAt { get; set; }
+
+    // ── 2026-09-24 新增：分组置顶 ──
+
+    /// <summary>分组是否置顶 —— 置顶的分组在侧边栏分组列表里排到最前（收藏恒在最前，不参与排序）。
+    ///
+    /// 为什么要有这个字段：用户从 WorkBuddy 的「置顶任务」借鉴，点「置顶此分组」时期望的是
+    /// **分组本身浮到前面**。旧实现（把组内会话全部置顶）在侧边栏上看不出任何变化 ——
+    /// 空分组点下去更是彻底"没反应"（用户 2026-09-24 实测反馈）。</summary>
+    public bool Pinned { get; set; }
+
+    /// <summary>置顶状态最后修改时间（跨端 LWW 判方向）。
+    /// ⚠️ **取消置顶也必须刷新它** —— 否则"取消"在合并时会被云端那条 Pinned=true 顶回来，
+    /// 用户会看到自己明明取消了、换台机器又置顶了（本字段是 bool，没有它就无法区分真假）。
+    /// 旧清单缺该字段 → 反序列化得 DateTime.MinValue → 合并时回退到"本地 wins"（不恶化现状）。</summary>
+    public DateTime PinnedUpdatedAt { get; set; }
 }
 
 /// <summary>

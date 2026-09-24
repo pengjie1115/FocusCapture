@@ -1534,6 +1534,37 @@ print(json.dumps({
             Check(sectionIds.Count == 3,
                   "完整性：该出现的会话一条都不能少、也不能多",
                   "分区规则漏一条的后果是「某条会话在侧边栏凭空消失」，且不报任何错");
+
+            // ══ 分组置顶（2026-09-24：点「置顶此分组」= 分组行本身浮到最前。
+            //    旧语义"组内会话全部置顶"在空分组上零反馈，用户实测"点了没反应"）══
+            var pinnedGroup = new ChatGroup { Id = "sec-pin", Name = "置顶组", CreatedAt = DateTime.Now, Pinned = true };
+            var pinnedSections = ChatSidebar.BuildSections(
+                new List<SessionSummary>(),
+                new List<ChatGroup> { sectionFavorite, sectionGroup, pinnedGroup });
+            var pinnedHeaders = pinnedSections.OfType<SidebarGroupHeader>().ToList();
+            Check(pinnedHeaders.Count == 3
+                  && pinnedHeaders[0].IsFavorite
+                  && pinnedHeaders[1].GroupId == "sec-pin" && pinnedHeaders[1].IsPinned,
+                  "置顶分组排在收藏之后、普通分组之前，并带 IsPinned 标记",
+                  "顺序不对 = 用户点「置顶此分组」看不到任何位置变化");
+
+            var pinTarget = ChatGroupService.Create("置顶测试组", out _);
+            Check(pinTarget != null && ChatGroupService.SetPinned(pinTarget!.Id, true) && ChatGroupService.IsPinned(pinTarget.Id),
+                  "SetPinned(true) 置顶生效");
+            Check(ChatGroupService.SetPinned(pinTarget.Id, false) && !ChatGroupService.IsPinned(pinTarget.Id),
+                  "SetPinned(false) 取消置顶生效");
+            Check(!ChatGroupService.SetPinned(ChatGroupStore.FavoriteId, true),
+                  "收藏分区不可置顶（它本来就恒在最前）");
+
+            // 跨端合并：置顶按时间戳取新；**取消置顶**（时间戳更新）不得被云端旧的 true 顶回 ——
+            // 取消动作被回滚 = 用户这边取消了、换台机器又变回置顶
+            var pinMine = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = DateTime.Now, Pinned = false, PinnedUpdatedAt = DateTime.Now };
+            var pinCloudStale = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = pinMine.CreatedAt, Pinned = true, PinnedUpdatedAt = DateTime.Now.AddHours(-1) };
+            Check(!ChatGroupMerge.MergeSameId(pinCloudStale, pinMine).Pinned,
+                  "本地刚取消的置顶不被云端旧置顶顶回（bool 字段的时间戳裁决）");
+            var pinCloudNew = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = pinMine.CreatedAt, Pinned = true, PinnedUpdatedAt = DateTime.Now.AddHours(1) };
+            Check(ChatGroupMerge.MergeSameId(pinCloudNew, pinMine).Pinned,
+                  "云端更新的置顶按时间戳赢过本地旧状态（另一端置顶要能同步过来）");
         }
         finally
         {

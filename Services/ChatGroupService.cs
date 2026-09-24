@@ -183,6 +183,39 @@ public static class ChatGroupService
         return ok;
     }
 
+    /// <summary>
+    /// 置顶 / 取消置顶一个分组（2026-09-24）。收藏保留分区不支持 —— 它本来就恒在列表最前。
+    ///
+    /// 语义：置顶的分组排到分组列表最前（收藏之后）。与「置顶会话」是两件事：
+    /// 前者改的是分组清单里的 ChatGroup.Pinned，后者改的是会话文件里的 SessionFile.Pinned。
+    /// </summary>
+    public static bool SetPinned(string id, bool pinned)
+    {
+        if (ChatGroupStore.IsFavorite(id)) return false;   // 收藏恒在最前，不需要也不能置顶
+
+        var ok = false;
+        ChatGroupStore.Mutate(groups =>
+        {
+            var target = groups.FirstOrDefault(g => g.Id == id);
+            if (target == null) return false;
+            if (target.Pinned == pinned) { ok = true; return false; }   // 状态没变，不落盘、不刷新时间戳
+            target.Pinned = pinned;
+            // ⚠️ 取消置顶（pinned=false）走到这里也必须刷新时间戳 ——
+            // 少了这一步，跨端合并分不清"本地取消置顶"和"本地还是旧数据"，会把它顶回 true。
+            target.PinnedUpdatedAt = DateTime.Now;
+            ok = true;
+            return true;
+        });
+        return ok;
+    }
+
+    /// <summary>某分组是否置顶（分组不存在 / 收藏 → false）。侧边栏排序与菜单文案用。</summary>
+    public static bool IsPinned(string id)
+    {
+        if (string.IsNullOrEmpty(id) || ChatGroupStore.IsFavorite(id)) return false;
+        return ChatGroupStore.Load().FirstOrDefault(g => g.Id == id)?.Pinned ?? false;
+    }
+
     /// <summary>取某分组的指令（未分组 / 收藏 / 分组不存在 → 空串）。
     /// 语义是**现读**：调用方每次要用时都重新调，这样用户改完指令下一次发消息就生效，不需要重开会话。</summary>
     public static string GetInstruction(string groupId)

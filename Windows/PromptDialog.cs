@@ -85,8 +85,10 @@ public static class PromptDialog
             FontSize = 13,
             Content = panel,
         };
-        text.Focus();
-        text.SelectAll();
+        // ⚠️ Focus/SelectAll 必须等窗口加载完成（Loaded）后再做 —— ShowDialog 之前调用时窗口
+        // 还没进可视树，设置会被忽略：重命名时初始值虽然传进来了，但既不聚焦也不全选，
+        // 用户以为要重新打一遍（2026-09-24 用户反馈「重命名直接清空原命名」的第二半根因）。
+        win.Loaded += (_, _) => { text.Focus(); text.SelectAll(); };
         win.ShowDialog();
         return result;
     }

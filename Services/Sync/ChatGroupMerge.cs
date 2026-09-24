@@ -36,10 +36,17 @@ public static class ChatGroupMerge
         result.Instruction = localInstructionWins ? local.Instruction : cloud.Instruction;
         result.InstructionUpdatedAt = localInstructionWins ? local.InstructionUpdatedAt : cloud.InstructionUpdatedAt;
 
+        // 置顶状态同样按时间戳取新。**bool 字段尤其依赖时间戳** ——
+        // 只看"哪边是真"是不行的：用户取消置顶（false）也是有效意图，没有时间戳就分不清
+        // 它和"本地是没更新的旧数据"，取消动作会被云端 true 顶回来。
+        var localPinWins = local.PinnedUpdatedAt >= cloud.PinnedUpdatedAt;
+        result.Pinned = localPinWins ? local.Pinned : cloud.Pinned;
+        result.PinnedUpdatedAt = localPinWins ? local.PinnedUpdatedAt : cloud.PinnedUpdatedAt;
+
         return result;
     }
 
-    /// <summary>同名分组合并时，把败者更新的名称 / 指令并进胜者（按时间戳取新）。
+    /// <summary>同名分组合并时，把败者更新的名称 / 指令 / 置顶并进胜者（按时间戳取新）。
     /// 不做这一步的话，"早建的分组"会把"晚改的指令"一起吞掉。</summary>
     public static void MergeLoserIntoWinner(ChatGroup winner, ChatGroup loser)
     {
@@ -52,6 +59,11 @@ public static class ChatGroupMerge
         {
             winner.Instruction = loser.Instruction;
             winner.InstructionUpdatedAt = loser.InstructionUpdatedAt;
+        }
+        if (loser.PinnedUpdatedAt > winner.PinnedUpdatedAt)
+        {
+            winner.Pinned = loser.Pinned;
+            winner.PinnedUpdatedAt = loser.PinnedUpdatedAt;
         }
     }
 
