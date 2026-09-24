@@ -89,6 +89,7 @@ internal static class Program
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
             Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）
             Run("会话分组", TestChatGroups);                 // 收藏保留分区 / 查重 / 改名时间戳 / 删除顺序 / 跨端合并裁决 / 全文搜索（2026-09-23）
+            await RunAsync("会话同步生命周期", TestChatSyncLifecycle);   // 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用（2026-09-24）
             Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
             Run("应用图标", TestAppIcon);                  // 图标两处同源 / 恢复默认回落 / 角标裁切与居中（2026-09-19）
             await RunAsync("附件到期清理", TestAttachmentCleanup);    // 到期清理 / 彻底删除 / 待清理标注 / 退避（2026-09-16 重构）
@@ -3707,6 +3708,111 @@ print(json.dumps({
             g.FillRectangle(brush, 20, 20, width - 40, 60);
         }
         bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+
+    // ══ 会话同步生命周期（ChatSyncEngine Dispose + GroupsChanged 钩子，2026-09-24） ══
+    //
+    // 守两条真实事故的防线：
+    // ① 构造函数订阅静态事件 → 慢层 new 几百个引擎各挂一个订阅者，事件唤醒一切历史实例
+    //    （2026-09-23 上午「慢层测试写穿真实 settings.json」事故的成因之一）；
+    // ② 已停用引擎的防抖 timer 被事件唤醒 → RunOnceAsync 写真实目录（同事故的另一半）。
+    // 接线约定（与 ChatGroupStore.GroupsChanged 注释同步维护）：订阅只在 MainWindow.CreateSyncEngine
+    //（唯一创建点），RebuildSyncEngine 重建前与退出路径（ExitApp / OnClosed）成对调用 Dispose。
+
+    private static async Task TestChatSyncLifecycle()
+    {
+        Console.WriteLine("[会话同步生命周期] 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用");
+
+        const System.Reflection.BindingFlags Inst =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var groupsEvent = typeof(ChatGroupStore).GetField("GroupsChanged",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        var disposedField = typeof(ChatSyncEngine).GetField("_disposed", Inst);
+        var dirtyField = typeof(ChatSyncEngine).GetField("_dirty", Inst);
+        Check(groupsEvent != null && disposedField != null && dirtyField != null,
+            "反射拿到 GroupsChanged / _disposed / _dirty 私有字段",
+            "字段改名会让本组红——红了改检查点，不许删检查点（红线 6）");
+
+        var sem = new SemaphoreSlim(1);
+
+        // ── ① 构造不订阅（事故①防线）──
+        var e1 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        var e2 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        var e3 = new ChatSyncEngine(new AppSettings(), null!, sem);
+        Check(groupsEvent!.GetValue(null) == null,
+            "new 3 个引擎后 GroupsChanged 订阅者仍为 0（构造函数不订阅静态事件）",
+            "构造函数挂静态事件 = 测试每 new 一个引擎永久多一个订阅者（2026-09-23 事故同款）");
+
+        // ── ② 分组落盘钩子仍会发射（MainWindow 接线的收益依赖它）──
+        var fired = 0;
+        Action h = () => fired++;
+        ChatGroupStore.GroupsChanged += h;
+        try
+        {
+            ChatGroupStore.Mutate(gs =>
+            {
+                gs.Add(new ChatGroup
+                {
+                    Id = "g-lifecycle-" + Guid.NewGuid().ToString("N"),
+                    Name = "生命周期检查点分组",
+                    CreatedAt = DateTime.Now,
+                });
+                return true;
+            });
+        }
+        finally { ChatGroupStore.GroupsChanged -= h; }   // 检查点自己退订：绝不给后续用例留订阅者
+        Check(fired == 1, "ChatGroupStore 落盘 → GroupsChanged 触发恰好 1 次（钩子未被删）");
+        Check(groupsEvent.GetValue(null) == null, "检查点退订后订阅者回到 0（不泄漏给后续用例）");
+
+        // ── ③ Dispose 幂等 + 停用标志 ──
+        e1.Dispose();
+        e1.Dispose();   // 幂等：二次 Dispose 不许抛
+        e2.Dispose();
+        e3.Dispose();
+        Check((bool)disposedField!.GetValue(e1)!, "Dispose 幂等不抛，且 _disposed = true");
+
+        // ── ④ 停用后 RunOnceAsync 零副作用（事故②防线）──
+        var s4 = new AppSettings { Sync = { ChatSyncEnabled = true } };
+        var dead4 = new ChatSyncEngine(s4, null!, sem);
+        dead4.Dispose();
+        s4.Sync.ChatSyncResult = "";   // 观察窗清空：停用引擎若再写状态，这里必然非空
+        await dead4.RunOnceAsync();
+        Check(string.IsNullOrEmpty(s4.Sync.ChatSyncResult),
+            "Dispose 后 RunOnceAsync 直接返回（不写状态、不写真实目录）",
+            "已停用引擎还能走到 EnsureDekCurrent / SetChatStatus 就是防线失守");
+
+        // 对照：未 Dispose 的引擎确实会留痕 —— 证明上一条不是「反正什么都不发生」的空断言
+        var s5 = new AppSettings { Sync = { ChatSyncEnabled = true } };
+        var live5 = new ChatSyncEngine(s5, null!, sem);
+        await live5.RunOnceAsync();
+        var wroteStatus = !string.IsNullOrEmpty(s5.Sync.ChatSyncResult);
+        live5.Dispose();
+        Check(wroteStatus, "对照：未 Dispose 的引擎 RunOnceAsync 会写状态留痕（上一条断言有区分度）");
+
+        // ── ⑤ 停用后 NotifyLocalChange 不再点火防抖 timer ──
+        // 盐 + 授权码配齐（DPAPI 本机可逆）才有区分度：否则 EnsureDekCurrent 提前置 false，脏标记恒为 false。
+        var s6 = new AppSettings
+        {
+            Sync =
+            {
+                ChatSyncEnabled = true,
+                E2eeSalt = Convert.ToBase64String(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+                WebDavToken = SyncSettings.ProtectToken("lifecycle-checkpoint-token"),
+            },
+        };
+        var dead6 = new ChatSyncEngine(s6, null!, sem);
+        dead6.Dispose();
+        dead6.NotifyLocalChange();
+        Check(!(bool)dirtyField!.GetValue(dead6)!,
+            "Dispose 后 NotifyLocalChange 不置脏（防抖 timer 不可能再被点火）");
+
+        // 对照：活引擎 + 盐就绪 → 置脏（防抖正常启动）。必须立刻 Dispose 收尾：
+        // timer 已被点火，30s 后到期 —— 不停掉它会在测试结束后跨沙箱写真实目录（事故②镜像）。
+        var live6 = new ChatSyncEngine(s6, null!, sem);
+        live6.NotifyLocalChange();
+        var dirtyLive = (bool)dirtyField.GetValue(live6)!;
+        live6.Dispose();
+        Check(dirtyLive, "对照：活引擎 NotifyLocalChange 置脏（防抖窗口正常启动）");
     }
 
     private static readonly int[] Backoff = { 1, 1, 1 };   // 测试注入小退避（SyncEngine 构造参数）

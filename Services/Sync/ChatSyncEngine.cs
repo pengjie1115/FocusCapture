@@ -61,7 +61,7 @@ public class ChatSyncEnvelope
 /// - 删除闭环①：MarkDeleted → 本地移入 trash + 清单上传；他端拉到后本地文件移入各自的会话回收站；
 ///   镜像目录 / Purged 跨端清空 / 恢复跨端传播延后 v2。
 /// </summary>
-public class ChatSyncEngine
+public class ChatSyncEngine : IDisposable
 {
     private const string ChatFilePrefix = "chat-";            // 云端会话文件名：chat-{Id}.json（与笔记 notes-* 前缀隔离）
     private const string CloudGroupsFile = "chat_groups.json";
@@ -82,6 +82,7 @@ public class ChatSyncEngine
     private byte[]? _dek;
     private string _dekSalt = "";                 // 派生 _dek 时用的盐（笔记端盐变更后自动重派生）
     private volatile bool _dirty;
+    private volatile bool _disposed;              // Dispose 后所有同步入口直接返回，禁止再写任何真实目录
 
     /// <summary>
     /// 检测到会话版本冲突（双端在共同基线之上都有修改）时触发，阶段二 UI 订阅弹窗裁决。
@@ -103,11 +104,24 @@ public class ChatSyncEngine
         _mergeTimer = new Timer(_ => OnMergeWindowElapsed(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
+    /// <summary>
+    /// 停用引擎（幂等）：停防抖定时器 + 置停用标志。**订阅方（MainWindow）负责在重建/退出时调用** ——
+    /// 不 Dispose 的后果：静态事件唤醒已停用引擎的 _mergeTimer 去写真实目录（2026-09-23 事故同款）。
+    /// 构造函数**不订阅任何静态事件**，事件订阅由唯一创建点（MainWindow.CreateSyncEngine）负责，
+    /// 与 Dispose 成对管理（ChatGroupStore.GroupsChanged 注释有同一约定）。
+    /// </summary>
+    public void Dispose()
+    {
+        _disposed = true;
+        _mergeTimer.Dispose();
+    }
+
     // ── 触发入口 ──
 
     /// <summary>会话本地变更后调用（ChatSessionService.SessionChanged 订阅入口），启动/重置上传防抖窗口。</summary>
     public void NotifyLocalChange()
     {
+        if (_disposed) return;
         if (!_settings.Sync.ChatSyncEnabled) return;
         if (!EnsureDekCurrent()) return;   // 盐未就绪：静默跳过（状态已留痕）
         _dirty = true;
@@ -117,7 +131,7 @@ public class ChatSyncEngine
 
     private void OnMergeWindowElapsed()
     {
-        if (!_dirty) return;
+        if (_disposed || !_dirty) return;
         _dirty = false;
         _ = Task.Run(() => RunOnceAsync());
     }
@@ -129,6 +143,7 @@ public class ChatSyncEngine
     /// </summary>
     public async Task RunOnceAsync()
     {
+        if (_disposed) return;
         if (!_settings.Sync.ChatSyncEnabled) return;
         if (!EnsureDekCurrent()) return;
         await _gate.WaitAsync().ConfigureAwait(false);

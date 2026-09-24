@@ -64,7 +64,7 @@ public class ChatGroup
 /// ① 读-改-写无锁 ↔ ChatSyncEngine 在后台线程做同样的事 → 竞态丢分组。
 ///    现在：所有读写都在同一个进程锁下，并新增 Mutate 原子接口 —— 调用方不再自己组织 Load→改→Save。
 /// ② 无变更通知钩子 → 新建空分组后不启动上传防抖窗口，换机器看不到（要等下次任意同步周期）。
-///    现在：落盘成功后触发 GroupsChanged，由 ChatSyncEngine 订阅。
+///    现在：落盘成功后触发 GroupsChanged，由 MainWindow（引擎创建点）订阅并转发给当前 ChatSyncEngine。
 /// ③ 收藏分区（新功能：「收藏 = 分组的另一种形式」）无处安放且需跨端一致。
 ///    现在：FavoriteId 固定 + CreatedAt 取 DateTime.MinValue（同名合并永远它胜出）+ Load 自动补建。
 ///
@@ -89,12 +89,13 @@ public static class ChatGroupStore
     /// <summary>分组清单落盘成功后触发。**设计意图**：由 ChatSyncEngine 订阅它启动上传防抖窗口 ——
     /// 没有这个钩子时，新建的空分组没有会话改动可借力，要等下次任意同步周期才会上传（换机器就是看不到）。
     ///
-    /// ⚠️ **2026-09-23 批 0 只把钩子建好，尚未接线订阅者**，原因：接线必须一并处理 ChatSyncEngine 的
-    /// 生命周期 —— main 上的 ChatSyncEngine 目前**没有 Dispose**（那块在未并入的
-    /// `feature/chat-restore-cross-device` 分支上）。在构造函数里无条件订阅会造成
-    /// ① 每 new 一个引擎就多一个订阅者（慢层测试会 new 很多个）② 已停用的引擎定时器被事件唤醒去写真实目录
-    /// —— 本机 2026-09-23 上午刚因此出过「慢层测试写穿真实 settings.json」的事故。
-    /// 故留到收尾阶段与 Dispose 一起做。</summary>
+    /// **2026-09 批 0 钩子已接线**：订阅方 = MainWindow.CreateSyncEngine（`OnChatGroupsChanged` 读
+    /// `_chatSyncEngine` 字段，引擎重建后自动指向新实例，静态事件 -=/+= 防重复）；ChatSyncEngine 已实现
+    /// Dispose，RebuildSyncEngine 重建前与退出路径（ExitApp / OnClosed）都会调用。
+    ///
+    /// ⚠️ **构造函数里禁止订阅**：① 每 new 一个引擎就多一个订阅者（慢层测试会 new 很多个）
+    /// ② 已停用引擎的定时器被事件唤醒去写真实目录 —— 本机 2026-09-23 上午刚因此出过
+    /// 「慢层测试写穿真实 settings.json」的事故。订阅只许放唯一创建点，且必须与 Dispose 成对管理。</summary>
     public static event Action? GroupsChanged;
 
     /// <summary>读取分组清单（**恒含收藏保留分区**；文件不存在 / 损坏时返回只含收藏的清单，不抛）。
