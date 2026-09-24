@@ -43,10 +43,28 @@ public static class ChatGroupMerge
         result.Pinned = localPinWins ? local.Pinned : cloud.Pinned;
         result.PinnedUpdatedAt = localPinWins ? local.PinnedUpdatedAt : cloud.PinnedUpdatedAt;
 
+        MergeTombstone(result, cloud, local);
         return result;
     }
 
-    /// <summary>同名分组合并时，把败者更新的名称 / 指令 / 置顶并进胜者（按时间戳取新）。
+    /// <summary>墓碑裁决（2026-09-24）：**删除即终态** —— 任一端带墓碑，合并结果就是墓碑。
+    ///
+    /// 为什么删除胜过一切修改（包括时间戳更新的修改）：并集合并表达不了"删除"，这是唯一能
+    /// 保证"删了就永远不复活"的规则（用户 2026-09-24 拍板：墓碑永久保留）。
+    /// 代价是另一端对已删分组的修改会丢 —— 但那个分组在用户眼里已经不存在了，可以接受。
+    /// DeletedAt 取两端较早的非空值：时间更早意味着压制力覆盖更早的云端修改。</summary>
+    public static void MergeTombstone(ChatGroup result, ChatGroup cloud, ChatGroup local)
+    {
+        if (cloud.IsTombstone && local.IsTombstone)
+            result.DeletedAt = cloud.DeletedAt < local.DeletedAt ? cloud.DeletedAt : local.DeletedAt;
+        else if (cloud.IsTombstone)
+            result.DeletedAt = cloud.DeletedAt;
+        else if (local.IsTombstone)
+            result.DeletedAt = local.DeletedAt;
+        // 两端都活着 → 保持 default（未删除）
+    }
+
+    /// <summary>同名分组合并时，把败者更新的名称 / 指令 / 置顶 / 墓碑并进胜者（按时间戳取新）。
     /// 不做这一步的话，"早建的分组"会把"晚改的指令"一起吞掉。</summary>
     public static void MergeLoserIntoWinner(ChatGroup winner, ChatGroup loser)
     {
@@ -65,6 +83,15 @@ public static class ChatGroupMerge
             winner.Pinned = loser.Pinned;
             winner.PinnedUpdatedAt = loser.PinnedUpdatedAt;
         }
+        // 墓碑是终态，直接传播（同名合并的败者若在他端已删，胜者也必须死，否则下轮复活）
+        if (loser.IsTombstone && !winner.IsTombstone)
+        {
+            winner.DeletedAt = loser.DeletedAt;
+        }
+        else if (winner.IsTombstone && loser.IsTombstone && loser.DeletedAt < winner.DeletedAt)
+        {
+            winner.DeletedAt = loser.DeletedAt;
+        }
     }
 
     /// <summary>
@@ -81,5 +108,8 @@ public static class ChatGroupMerge
         && string.Equals(a.Instruction, b.Instruction, StringComparison.Ordinal)
         && string.Equals(a.DeviceId, b.DeviceId, StringComparison.Ordinal)
         && a.NameUpdatedAt == b.NameUpdatedAt
-        && a.InstructionUpdatedAt == b.InstructionUpdatedAt;
+        && a.InstructionUpdatedAt == b.InstructionUpdatedAt
+        && a.Pinned == b.Pinned
+        && a.PinnedUpdatedAt == b.PinnedUpdatedAt
+        && a.DeletedAt == b.DeletedAt;
 }

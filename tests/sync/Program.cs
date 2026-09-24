@@ -1565,6 +1565,33 @@ print(json.dumps({
             var pinCloudNew = new ChatGroup { Id = "pin-merge", Name = "M", CreatedAt = pinMine.CreatedAt, Pinned = true, PinnedUpdatedAt = DateTime.Now.AddHours(1) };
             Check(ChatGroupMerge.MergeSameId(pinCloudNew, pinMine).Pinned,
                   "云端更新的置顶按时间戳赢过本地旧状态（另一端置顶要能同步过来）");
+
+            // ══ 分组删除墓碑（2026-09-24：修"删除分组后一会又复活"）══
+            // 根因：合并是并集，并集表达不了删除 —— 真删的话云端那份下一轮就并回来。
+            var tombVictim = ChatGroupService.Create("要删的分组", out _);
+            Check(tombVictim != null && ChatGroupService.DeleteGroup(tombVictim!.Id, out _),
+                  "DeleteGroup 删除分组成功");
+            Check(!ChatGroupStore.Load().Any(g => g.Id == tombVictim.Id),
+                  "删除后 Load()（UI 口径）看不到该分组");
+            var tombRecord = ChatGroupStore.LoadAll().FirstOrDefault(g => g.Id == tombVictim.Id);
+            Check(tombRecord != null && tombRecord.IsTombstone,
+                  "删除后 LoadAll()（同步口径）保留墓碑 —— 它是压制云端残留的唯一手段");
+
+            // 墓碑在后续业务写入后不得丢失（Mutate 会把墓碑原样并回落盘）
+            ChatGroupService.SetPinned(pinTarget!.Id, true);
+            Check(ChatGroupStore.LoadAll().Any(g => g.Id == tombVictim.Id && g.IsTombstone),
+                  "其它分组变更（Mutate）后墓碑仍在清单里（被 Mutate 抹掉 = 下轮复活）");
+
+            // 核心场景：本机是墓碑、云端还是活分组（删除还没传到他端）→ 合并结果必须是墓碑
+            var tombLocal = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = DateTime.Now, DeletedAt = DateTime.Now };
+            var tombCloudStale = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = tombLocal.CreatedAt, NameUpdatedAt = DateTime.Now.AddMinutes(1) };
+            Check(ChatGroupMerge.MergeSameId(tombCloudStale, tombLocal).IsTombstone,
+                  "本机墓碑 ∪ 云端活分组 → 结果仍是墓碑（删除即终态，云端更新的修改也救不活它）");
+            var tombCloudClean = new ChatGroup { Id = "tomb-1", Name = "T", CreatedAt = tombLocal.CreatedAt };
+            Check(ChatGroupMerge.MergeSameId(tombCloudClean, tombLocal).IsTombstone,
+                  "本机墓碑 ∪ 云端完全没动过的同名分组 → 仍是墓碑（最基本的复活场景）");
+            Check(ChatGroupMerge.MergeSameId(tombLocal, tombCloudClean).IsTombstone,
+                  "参数顺序对调（云端墓碑 ∪ 本地活分组）→ 同样是墓碑（两个方向都要压住）");
         }
         finally
         {

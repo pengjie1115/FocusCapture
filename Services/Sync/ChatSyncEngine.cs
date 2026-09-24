@@ -438,7 +438,9 @@ public class ChatSyncEngine
     /// </summary>
     private async Task SyncGroupsAsync()
     {
-        var localGroups = ChatGroupStore.Load();
+        // ⚠️ 必须用 LoadAll（含删除墓碑）：合并要拿得到墓碑才能压制云端残留。
+        // 用 Load()（过滤墓碑）的话，本机删的分组在合并时"看起来不存在"，云端那份又并回来 —— 删除复活。
+        var localGroups = ChatGroupStore.LoadAll();
         var localById = localGroups.GroupBy(g => g.Id, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var cloudJson = await _storage.DownloadFileAsync(CloudGroupsFile, CancellationToken.None).ConfigureAwait(false);
@@ -478,7 +480,9 @@ public class ChatSyncEngine
             {
                 // 败者更新的名称/指令要先并进胜者，否则"早建的分组"会把"晚改的指令"一起吞掉
                 ChatGroupMerge.MergeLoserIntoWinner(winner, loser);
-                merged.Remove(loser.Id);
+                // 败者不真删：标墓碑保留在清单里 —— 另一端可能还存着它，真删会被下一轮并集复活
+                //（与 DeleteGroup 同一道理）；墓碑记录 Load() 会过滤，UI 看不到
+                loser.DeletedAt = DateTime.Now;
                 remap[loser.Id] = winner.Id;
             }
         }

@@ -39,6 +39,22 @@ public class ChatGroup
     /// 用户会看到自己明明取消了、换台机器又置顶了（本字段是 bool，没有它就无法区分真假）。
     /// 旧清单缺该字段 → 反序列化得 DateTime.MinValue → 合并时回退到"本地 wins"（不恶化现状）。</summary>
     public DateTime PinnedUpdatedAt { get; set; }
+
+    // ── 2026-09-24 新增：删除墓碑 ──
+
+    /// <summary>删除时间。**default（MinValue）= 未删除**；非默认值 = 这条记录是墓碑。
+    ///
+    /// 为什么必须有它：分组合并是"本地 ∪ 云端"的并集，并集表达不了"删除"——
+    /// 本机删了分组，云端那份还在，下一轮同步就把它并回来（用户实测"删除分组后一会又复活"，
+    /// 会话那条 2026-09-23 已有删除清单防线，分组是漏网的）。
+    ///
+    /// 语义（2026-09-24 用户拍板）：**删除即终态 + 墓碑永久保留** —— 任一端删了，
+    /// 两端都永远消失，墓碑记录留在清单里压制云端残留（一条几十字节，不做清理）。</summary>
+    public DateTime DeletedAt { get; set; }
+
+    /// <summary>是否为删除墓碑（DeletedAt 有值）。Load() 会把墓碑过滤掉，UI 永远看不到它们。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsTombstone => DeletedAt != default;
 }
 
 /// <summary>
@@ -81,8 +97,16 @@ public static class ChatGroupStore
     /// 故留到收尾阶段与 Dispose 一起做。</summary>
     public static event Action? GroupsChanged;
 
-    /// <summary>读取分组清单（**恒含收藏保留分区**；文件不存在 / 损坏时返回只含收藏的清单，不抛）</summary>
+    /// <summary>读取分组清单（**恒含收藏保留分区**；文件不存在 / 损坏时返回只含收藏的清单，不抛）。
+    /// **UI / 业务口径：不含删除墓碑** —— 墓碑只活在磁盘和同步引擎里（见 <see cref="LoadAll"/>）。</summary>
     public static List<ChatGroup> Load()
+    {
+        lock (Gate) return LoadUnlocked().Where(g => !g.IsTombstone).ToList();
+    }
+
+    /// <summary>读取含**删除墓碑**的完整清单（**同步引擎专用**）。
+    /// 合并必须拿得到墓碑：并集合并表达不了"删除"，靠墓碑压制云端残留（否则删了又复活）。</summary>
+    public static List<ChatGroup> LoadAll()
     {
         lock (Gate) return LoadUnlocked();
     }
@@ -90,24 +114,31 @@ public static class ChatGroupStore
     /// <summary>
     /// 原子读-改-写：把当前清单交给 mutate，返回 true 表示有改动需要落盘；返回落盘后的最终清单。
     /// **这就是替代「Load→改→Save」的正确姿势** —— 中间不会被后台同步线程插入。
+    /// mutate 收到的列表**不含墓碑**（业务永远看不到墓碑）；落盘时墓碑原样并回，
+    /// 业务代码不需要（也不允许）关心墓碑的存在。
     /// </summary>
     public static List<ChatGroup> Mutate(Func<List<ChatGroup>, bool> mutate)
     {
         lock (Gate)
         {
-            var groups = LoadUnlocked();
+            var all = LoadUnlocked();
+            var tombstones = all.Where(g => g.IsTombstone).ToList();
+            var groups = all.Where(g => !g.IsTombstone).ToList();
 
             var changed = false;
             try { changed = mutate(groups); }
             catch (Exception ex) { Debug.WriteLine($"[FocusCapture] 分组清单变更回调失败: {ex.Message}"); }
 
             if (!changed) return groups;
-            SaveUnlocked(groups);
+            SaveUnlocked(tombstones.Concat(groups).ToList());
             return groups;
         }
     }
 
-    /// <summary>整体覆盖写（ChatSyncEngine 把云端清单与本地合并后落盘用）。加锁 + 落盘成功后触发变更通知。</summary>
+    /// <summary>整体覆盖写（**同步引擎专用**：传含墓碑的完整清单，见 <see cref="LoadAll"/>）。
+    /// 加锁 + 落盘成功后触发变更通知。
+    /// ⚠️ 业务代码不许调它 —— 业务路径走 <see cref="Mutate"/>（会自动保留墓碑），
+    /// 直接 Save 一个不含墓碑的清单会把墓碑抹掉，下一轮同步删除就被云端复活。</summary>
     public static void Save(List<ChatGroup> groups)
     {
         lock (Gate) SaveUnlocked(groups);

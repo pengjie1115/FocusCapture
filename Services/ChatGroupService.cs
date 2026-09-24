@@ -103,9 +103,15 @@ public static class ChatGroupService
     }
 
     /// <summary>
-    /// 删除分组：**先把组内会话放回未分组，再删分组记录** —— 顺序不可颠倒。
-    /// 旧实现是先删记录、再逐个改会话（ChatGroupsWindow.cs:139-154），中途失败会留下
-    /// 「分组没了但会话还挂着失效 GroupId」的状态，界面上表现为冒出一个「（未知分组）」幽灵分区。
+    /// 删除分组：**先把组内会话放回未分组，再把分组记录标记为删除墓碑** —— 顺序不可颠倒。
+    ///
+    /// 为什么是墓碑而不是真删：分组合并是"本地 ∪ 云端"的并集，并集表达不了"删除"——
+    /// 真删的话，云端那份还在，下一轮同步就把它并回来（用户实测"删除分组后一会又复活"；
+    /// 会话那条 2026-09-23 已有删除清单防线，分组是漏网的）。
+    /// 语义（用户拍板）：删除即终态 + 墓碑永久保留，任一端删了两端都永远消失。
+    ///
+    /// 旧实现是先删记录、再逐个改会话，中途失败会留下「分组没了但会话还挂着失效 GroupId」，
+    /// 界面上表现为冒出「（未知分组）」幽灵分区 —— 先清会话的顺序保持不变。
     /// 收藏保留分区不可删除。
     /// </summary>
     public static bool DeleteGroup(string id, out string error)
@@ -143,15 +149,18 @@ public static class ChatGroupService
             Debug.WriteLine($"[FocusCapture] 分组删除遍历会话失败: {ex.Message}");
         }
 
-        // ② 再删分组记录
+        // ② 标记删除（墓碑留在清单里，Load() 会把它过滤出 UI；同步引擎拿它压制云端残留）
         var removed = false;
         ChatGroupStore.Mutate(groups =>
         {
-            removed = groups.RemoveAll(g => g.Id == id) > 0;
-            return removed;
+            var target = groups.FirstOrDefault(g => g.Id == id);
+            if (target == null) return false;
+            target.DeletedAt = DateTime.Now;   // 墓碑时间：另一端以它为界判定"这个分组已死"
+            removed = true;
+            return true;
         });
 
-        if (removed) AppLog.Info("ChatGroup", $"已删除分组 {id}，{moved} 个会话回到未分组");
+        if (removed) AppLog.Info("ChatGroup", $"已删除分组 {id}（墓碑保留），{moved} 个会话回到未分组");
         error = removed ? "" : "分组不存在（可能已在另一台设备上删除）";
         return removed;
     }
