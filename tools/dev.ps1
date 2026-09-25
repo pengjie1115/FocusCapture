@@ -50,6 +50,10 @@ $ExScriptFail = 2   # 脚本自身故障 —— 该改脚本（走「脚本异�
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $MsgFile  = Join-Path $RepoRoot '.git\FC_COMMIT_MSG'
 
+# 两层实际跑出的条数（由 Invoke-Test 填，供 ready 的 Test-DocCounts 核对文档声明）
+$script:FastCount = 0
+$script:SlowCount = 0
+
 # ────────────────────────── 工具函数 ──────────────────────────
 
 function Repair-BuildEnv {
@@ -218,6 +222,17 @@ function Invoke-Test {
     }
     foreach ($line in $captured) { Write-Host $line }
 
+    # 记下本层实际跑了多少条（只供 ready 核对 REGRESSION.md 里声明的数字，见 Test-DocCounts）。
+    # 快层输出「===== N 项通过」；慢层输出「… | 合计 X ms / N 条 | …」。
+    $flat = ($captured | Out-String)
+    if ($Slow) {
+        $m = [regex]::Match($flat, '合计\s+\d+\s+ms\s*/\s*(\d+)\s*条')
+        if ($m.Success) { $script:SlowCount = [int]$m.Groups[1].Value }
+    } else {
+        $m = [regex]::Match($flat, '=====\s*(\d+)\s*项通过')
+        if ($m.Success) { $script:FastCount = [int]$m.Groups[1].Value }
+    }
+
     # 判据 = 产物自己的退出码（2026-09-25 收紧）。
     # 此前是「退出码 + 输出里的 [RESULT] 结论行」双重判据，那是为 .bat 设计的：
     # .bat 曾以 pause 结尾、从不传 ERRORLEVEL，退出码恒为 0，只好再看结论行。
@@ -274,6 +289,44 @@ function Test-DocRefs {
     return @{ Total = $total; Bad = $bad }
 }
 
+function Test-DocCounts {
+    # 核对 REGRESSION.md 声明的两层条数与本次实际跑出的条数是否一致（2026-09-25 新增）。
+    # 为什么需要它：条数这个数字一直靠人肉维护，**并且已经漂移过** —— 2026-09-25 实测时
+    # REGRESSION 写 583、NOW.md 写 584、实际跑出 605，三处三个数，谁都没发现。
+    # 这正是本项目反复踩的那个坑：**人肉维护的数字必然腐化**；能被机器判的，就不该靠人记得改。
+    # 判据与 Test-DocRefs 同类（文档里写的 vs 实际有的），区别是这里比的是**运行结果**，
+    # 所以只能在 ready 里做（此时两层都已跑完，$script:FastCount / $script:SlowCount 已就位）。
+    Write-Head '文档条数核对'
+    $p = Join-Path $RepoRoot 'REGRESSION.md'
+    if (-not (Test-Path -LiteralPath $p)) {
+        Write-Fail '文档条数核对' 'REGRESSION.md 存在' "找不到 $p" '文件被移动或改名；确认后改本脚本' $ExScriptFail
+        return $ExScriptFail
+    }
+    $text = Get-Content -LiteralPath $p -Raw -Encoding UTF8
+    $mF = [regex]::Match($text, '\|\s*\*\*快层\*\*\s*\|[^|\r\n]*\|\s*\*\*(\d+)\*\*')
+    $mS = [regex]::Match($text, '\|\s*\*\*慢层\*\*\s*\|[^|\r\n]*\|\s*\*\*(\d+)\*\*')
+    if (-not $mF.Success -or -not $mS.Success) {
+        # 抓不到 = §二 分层表的写法变了 → 这是**脚本故障**（判据失效），不是任务失败。
+        # 明说归脚本管，别让人去改检查点（狼来了会让门禁失效）。
+        Write-Fail '文档条数核对' '能从 §二 分层表抓到两层条数' `
+            "fast=$($mF.Success) slow=$($mS.Success)" '分层表行格式改了；改本函数的正则' $ExScriptFail
+        return $ExScriptFail
+    }
+    $docFast = [int]$mF.Groups[1].Value
+    $docSlow = [int]$mS.Groups[1].Value
+    $bad = @()
+    if ($docFast -ne $script:FastCount) { $bad += "快层：文档写 $docFast，实际跑出 $script:FastCount" }
+    if ($docSlow -ne $script:SlowCount) { $bad += "慢层：文档写 $docSlow，实际跑出 $script:SlowCount" }
+    if ($bad.Count -gt 0) {
+        foreach ($b in $bad) { Write-Host "  - $b" -ForegroundColor Yellow }
+        Write-Fail '文档条数核对' 'REGRESSION.md 声明的条数 = 实际跑出的条数' ($bad -join '；') `
+            '改了检查点就同步 REGRESSION.md §二 分层表的数字（这条就是为它存在的：数字漂移不用等人发现）' $ExTaskFail
+        return $ExTaskFail
+    }
+    Write-Host "文档条数核对通过（快层 $docFast / 慢层 $docSlow，与实际一致）" -ForegroundColor Green
+    return $ExOk
+}
+
 function Invoke-Ready {
     Write-Head 'ready 交付前总检'
     $c1 = Invoke-Build
@@ -295,6 +348,9 @@ function Invoke-Ready {
         return $ExTaskFail
     }
     Write-Host "文档引用检查通过（$($r.Total) 处全部有效）" -ForegroundColor Green
+
+    $c4 = Test-DocCounts
+    if ($c4 -ne $ExOk) { return $c4 }
 
     Write-Host ''
     Write-Host '── ready 总检通过 ──' -ForegroundColor Green
@@ -749,7 +805,7 @@ function Show-Help {
     Write-Host '  build                 编译 Debug（自带环境变量补丁）'
     Write-Host '  test                  跑快层——纯逻辑，1 秒内（中间迭代用这个）'
     Write-Host '  test -Slow            跑慢层检查点（含真 I/O / 真起进程的重活组）'
-    Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
+    Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用/条数核对'
     Write-Host '  check-docs            单独跑文档引用检查（改文档后快速验证；全量仍在 ready）'
     Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
     Write-Host '  start <分支名>        新建分支（自动补类型前缀 + 开工查重；默认从 main，-From 指定起点）'

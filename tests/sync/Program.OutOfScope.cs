@@ -325,17 +325,25 @@ internal static partial class Program
     {
         // 8.1 超时保留已读：进程「说完就挂住」时，已经读到的 stdout 不许丢
         var holdPsi = SkillProcess.Build(selfExe!, new[] { "--child-hold" }, Path.GetTempPath(), false);
-        var rHeld = await SkillProcess.RunAsync(holdPsi, null, 1500);
+        // 超时 4000ms（原 1500，2026-09-25 迁入本层后放宽 —— 只动等待时长，判据一条没改）：
+        // 本组守的是「**超时那一刻**已读到的内容不许丢」，不是「机器多快能读到」。
+        // 原值 1500 是照快层 exe 定的；本层 exe 更重（net8.0-windows + ProjectReference 主项目），
+        // 迁入后实测出现过间歇红：8.3（子进程输完立即退出）稳过，而 8.1/8.2（输完挂住、靠超时收尾）
+        // 偶尔读不到 KEEP_ME —— 典型时序余量不足，与产品代码无关（子进程实测 239ms 就输出，但
+        // 父进程「启动 → 建立读循环 → 捞到行」这段在负载下会滑出 1500ms）。
+        // 给足余量后，这两条才真的在测「超时保留已读」；子进程 Sleep 30 秒，4000ms 仍必然超时，
+        // 上面那条「本组前提」断言照旧成立。
+        var rHeld = await SkillProcess.RunAsync(holdPsi, null, 4000);
         Check(rHeld.TimedOut, "该子进程应当是在超时点被杀掉的（否则本组前提不成立）",
               $"实际 TimedOut={rHeld.TimedOut}，exit={rHeld.ExitCode}");
         Check(rHeld.Stdout.Contains("KEEP_ME"),
               "超时被杀时，已经读到的 stdout 必须原样交出来（旧实现丢弃成空字符串）",
               $"实际 stdout：{Cut(rHeld.Stdout)}");
-    
+
         // 8.2 流式回调：进程还活着的时候就要能收到行，不必等它退出
         var streamed = new List<string>();
         var streamGate = new object();
-        var rStream = await SkillProcess.RunAsync(holdPsi, null, 1500, default,
+        var rStream = await SkillProcess.RunAsync(holdPsi, null, 4000, default,
                                                   line => { lock (streamGate) streamed.Add(line); });
         Check(streamed.Any(l => l.Contains("KEEP_ME")),
               "行回调必须在进程还活着时就收到输出（等退出才回调 = 阻塞命令永远拿不到链接）",

@@ -11,9 +11,12 @@
 - PowerShell 执行策略 Restricted → 同一条命令里先 `Set-ExecutionPolicy -Scope Process Bypass -Force`
 - 沙箱不把 `$env:PATH` 修改传子进程；中文路径进环境变量会乱码 → 探针纯 ASCII、路径进程内拼
 - 联网 git（push/ls-remote）走 bash；PowerShell git 出网 128+零输出 = 沙箱限制，别动凭据
+- shell 里用 `cat > 文件 <<EOF`（heredoc 写文件）会被安全策略判为 **LOLBin** 拦下 → 改用文件写入工具（例：写 `.git/FC_COMMIT_MSG`）
 
 ## 工具行为
 - 写文件工具可能**假成功** → 落笔后 Grep 复核；同文件多 Edit 串行
+- **`dev.ps1` 的输出全走 `Write-Host`** → `& dev.ps1 ... | Out-File` **一个字都抓不到**（落盘只剩自己写的那几行）→ 要抓必须 `6>&1`
+- **`dotnet run` 每轮都做一整轮 MSBuild 增量评估**（2026-09-25 实测：快层吃掉 9.4 秒，而断言本体只要 0.73 秒）→ 频繁跑的路径改「显式 `dotnet build` + 直跑已编译产物」（本项目 `dev.ps1 test` 已这么改）；**前提是先 build 再跑**，否则会拿旧二进制当结果
 - `dev.ps1 snap` **不先编译** → 改完代码先 `build` 再 `snap`，否则出的是旧图
 - 快照 Seeder 必须**幂等**——每场景 new 窗口但沙箱共享，不清数据会重复两套
 - 剪贴板写入失败先跑 `tools/clipdiag`（常是网易UU远程抢占，非本应用 bug）
@@ -27,6 +30,8 @@
 - 带子菜单的父项**绝不绑 Click**（context=null 被宿主解释成动作）
 - XAML 模板根只能一个子级（MC3089）；模板内 x:Name 不进窗口 NameScope
 - **Auto 列宽 = 所有子元素期望宽度的最大值**：往 `Width="Auto"` 的列里塞用户可控长度的文本，文本会把列撑宽（2026-09-24 实测：AI 问答标题栏放长助手名，侧边栏从 220 涨到 400）。修法是让该子元素的期望宽度不超列源——`MaxWidth` 绑宽度源的 `Width`（**且该元素自身不能带 Margin**，Margin 不计入 MaxWidth，照样撑宽；边距要下沉到子元素）
+
+- **JIT 编译 `Main` 时会加载 `Main` 里引用到的类型** —— 所以「把自己这个 exe 打进包、解压后再跑」的做法，必须连**整个输出目录的托管程序集**一起打（2026-09-25 实测：慢层 exe 的 `Main` 引用了 `FocusCapturePaths`，只放 exe + 自己的 dll + runtimeconfig 会直接 `Unhandled exception`；快层 exe 几乎零第三方依赖，所以原先只放 4 个文件就够）。**跨工程搬测试代码时，两个工程的依赖树差异会以这种形式冒出来**
 
 ## Git Bash 会转换 `git show 分支:路径` 的冒号参数（2026-09-24）
 
