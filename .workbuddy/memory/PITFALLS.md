@@ -21,7 +21,8 @@
 - 快照 Seeder 必须**幂等**——每场景 new 窗口但沙箱共享，不清数据会重复两套
 - 剪贴板写入失败先跑 `tools/clipdiag`（常是网易UU远程抢占，非本应用 bug）
 - 取证 / 诊断文件**一律落 `%TEMP%` 且用固定文件名**（`fc-<用途>.txt`，下次同名覆盖），**别建在用户主目录**；`%TEMP%\fc-*` 会长期堆积——2026-09-25 清出 **356MB**，其中单个 `fc-typecheck` 是某次构建的输出、独占 **348MB**。用完即清，「临时」别拖成「永久」
-- 批量删除有护栏：**单轮超 50 项**触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`（后续同轮请求会被拦）→ 清大堆临时目录时**先删体积最大的单项**（通常是构建输出目录），一轮不够就分轮，别写 for 循环硬撞
+- 批量删除有护栏：**单轮超 50 项**触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`，同轮后续请求一律被拦。护栏包装的是 shell 的 `rm`（`safe-bin/rm` shim）与 PowerShell 的 `Remove-Item`；**换 .NET 文件 API（`[System.IO.File]::Delete` / `[System.IO.Directory]::Delete`）可一次清完**（2026-09-25 实测 229 项，OK=229 / ERR=0）—— 但那条路径**没有护栏兜底，必须先拿到用户明确授权**再走
+- `Remove-Item` 不接受管道输入（`$list | Remove-Item` 报 ParameterBindingException）→ 用 `-LiteralPath` 带数组、传目录加 `-Recurse`
 
 ## WPF / .NET
 - `ItemsControl` 没有 `ScrollIntoView`（那是 ListBox 的）→ 用容器 `BringIntoView()`
