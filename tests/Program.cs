@@ -63,6 +63,20 @@ void Check(bool ok, string name, string? detail = null)
 
 string Cut(string? s) => s is null ? "(null)" : (s.Length <= 40 ? s : s[..40] + "…");
 
+// ── 逐组耗时（2026-09-25 新增，机制与慢层一致）──
+// 为什么加：此前快层只有一个「全跑一次多久」的数字，哪一组慢全靠猜（慢层 2026-09-17 装同款后
+// 立刻暴露真瓶颈：8 条独占 25.8 秒，而 57 条只花 0.3 秒）。本层照搬。
+// 只做测量：不包任何断言、不改任何行为、不参与退出码。
+var swTotal = System.Diagnostics.Stopwatch.StartNew();
+long markAt = 0;
+var groupMs = new List<(string Name, long Ms)>();
+void Mark(string name)
+{
+    var now = swTotal.ElapsedMilliseconds;
+    groupMs.Add((name, now - markAt));
+    markAt = now;
+}
+
 Console.WriteLine("===== FocusCapture 自动化检查点 =====");
 Console.WriteLine();
 
@@ -185,6 +199,7 @@ Check(QuickViewToolbarCatalog.CanAdd(1280, QuickViewToolbarCatalog.DefaultLeft.T
 // 异常冒泡到全局处理弹模态框；双击笔记时第一下先走复制 → 弹框吃掉第二下点击
 // → 用户表现「双击笔记进不了编辑状态」。
 Console.WriteLine("[5] 剪贴板写入容错 SafeClipboard");
+Mark("[1]-[3] 加密 / 时间解析 / 标题栏目录");
 
 var busyAttempts = 0;
 var busySleeps = new List<int>();
@@ -437,6 +452,7 @@ finally
 // 本组拿「自己这个 exe」当被测子进程，两端都可控。
 Console.WriteLine();
 Console.WriteLine("[8] 子进程流式读与超时保留 SkillProcess");
+Mark("[5]-[7] 剪贴板 / 技能扫描 / 候选目录");
 
 var selfExe = Environment.ProcessPath;
 Check(!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe),
@@ -967,6 +983,7 @@ finally
 //      先开灵感速览/AI 问答再开设置，那两个面板就点不动了。
 //   ③ 右键菜单自带 Style → 顶掉 App.xaml 的隐式深色模板，默认模板左侧那道浅色图标槽就是「白条」。
 Console.WriteLine("[11] 待办与提醒面板的源码契约");
+Mark("★[8]-[10] 子进程 / 内置技能落地 / 运行时下载器");
 
 var uiRepoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
@@ -1035,6 +1052,7 @@ Check(rdCs.Contains("SecurityBlockHint;"),
 // 384K 被当非法值丢掉（用户以为填上了）、K 与 M 差 1024 倍（窗口算错一个数量级）——
 // 界面上都不会报错，所以只能靠机器守。
 Console.WriteLine("[13] AI 模型数值输入解析 TokenCountParser");
+Mark("[11]-[12] 源码契约检查");
 
 Check(TokenCountParser.TryParse("4096", out var tk1) && tk1 == 4096,
       "纯数字：4096 → 4096");
@@ -1313,6 +1331,15 @@ Check(searchHit4 != null && searchHit4.Value.Start == 0,
 Check(ChatSearchMatcher.CountMatches(null!, "a") == 0 && ChatSearchMatcher.ExtractSnippet(null!, "a") == null,
       "null 正文必须安全返回（不抛）",
       "会话正文可能为 null（附件消息），搜索不能因此整体失败");
+
+Mark("[13]-[16] AI 解析 / 裁剪 / 搜索匹配");
+
+Console.WriteLine();
+Console.WriteLine($"=== 各组耗时（按耗时降序）| 快层墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");
+foreach (var g in groupMs.OrderByDescending(x => x.Ms))
+{
+    Console.WriteLine($"  {g.Ms,6} ms | {g.Name}");
+}
 
 Console.WriteLine();
 Console.WriteLine($"===== {pass} 项通过，{fail} 项失败 =====");
