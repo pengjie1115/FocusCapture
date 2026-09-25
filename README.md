@@ -106,7 +106,7 @@ FocusCapture/
 ├── Services/          # 核心服务：剪贴板监听/热键/笔记/导出/语音/回收站/云同步
 ├── Windows/           # 界面：悬浮球/输入窗/速览/设置/语音窗/导出对话框
 ├── docs/              # 官网落地页（GitHub Pages）+ llms.txt
-├── tests/             # 自动化检查点：快层 96 条（纯逻辑，秒级）+ 慢层 685 条（双击 run-*.bat）
+├── tests/             # 自动化检查点：快层 96 条（纯逻辑，秒级）+ 慢层 686 条（双击 run-*.bat）
 ├── tools/             # 辅助脚本：笔记/待办重复行清理（默认只报告，-Apply 才执行）
 ├── MainWindow.xaml    # 主窗口（服务编排与生命周期）
 └── FocusCapture.csproj

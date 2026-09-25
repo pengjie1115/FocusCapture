@@ -2439,6 +2439,21 @@ print(json.dumps({
         Check(parseMessages[0].Content != null && parseMessages[0].Content!.Contains("2026-09-17"),
               "时间解析提示词必须带上当前日期（少了基准点，'明天'只能靠猜 → 提醒时间会错）");
 
+        // ── 前提加固（2026-09-25）：本组后半段依赖「这几条测试数据落在同一分钟」──
+        // 这个前提是真实约束、不是凭空造的：笔记落盘时间只到分钟（NoteEntry.ToMarkdownLine 用
+        // yyyy-MM-dd HH:mm），同一分钟记的多条在时间戳上完全一样 —— 正是本组要守的场景。
+        // 但它此前靠「脚本写得够快」碰运气达成，撞上分钟边界就崩。2026-09-25 实测踩到：
+        // 笔记创建落在 20:52、待办创建落在 20:53 → ⑦-2 拿笔记的时间戳去查待办，查不到，
+        // 于是三条断言连锁红，且失败信息具有误导性（指向「没有该条目」而不是「跨了分钟」）。
+        // 修法：先把窗口对齐到分钟开头 —— 后续写入都发生在本分钟前 50 秒内，就不可能跨分钟。
+        // 本组整组耗时约 0.5 秒，50 秒余量绰绰有余；若将来组变慢到余量不够，下面的显式
+        // 前提自检会直接指出「不同分钟」，不会再给出误导性的失败。**只加固前提，不放宽标准。**
+        var secOfMinute = DateTime.Now.Second;
+        if (secOfMinute > 50)
+        {
+            Thread.Sleep((61 - secOfMinute) * 1000);
+        }
+
         // ── ② 原地改行 + 回收站兜底：笔记 ──
 
         var note = notes.SaveNote("原始内容ABC");
@@ -2543,6 +2558,14 @@ print(json.dumps({
         var allEntries = notes.LoadAllEntries();
         var pickNote = allEntries.First(e => e.Content.Contains("改后内容XYZ"));
         var minute = pickNote.Timestamp.ToString("yyyy-MM-dd HH:mm");
+
+        // 前提自检（2026-09-25 加）：下面三条只在「这两条落在同一分钟」时才有意义。
+        // 若前提不成立，失败信息会指向「找不到该条目」——看起来像产品 bug，实为测试前提没立住
+        // （2026-09-25 就因此被误导过一轮）。显式断言出来，让失败信息直指真正原因。
+        var pickTodoEntry = allEntries.First(e => e.Content.Contains("待办新内容"));
+        Check(pickTodoEntry.Timestamp.ToString("yyyy-MM-dd HH:mm") == minute,
+              "本组前提：精选要导的这两条落在同一分钟（时间戳精度只到分钟 —— 同分钟多条正是要守的场景）",
+              $"笔记 {minute} / 待办 {pickTodoEntry.Timestamp:yyyy-MM-dd HH:mm} —— 不同分钟时下面的精选断言无意义");
 
         var filesBeforePick = Directory.GetFiles(settings.ExportFolderPath).Length;
         var ambiguousOut = exportTool.ExecuteAsync(
