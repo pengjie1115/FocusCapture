@@ -117,19 +117,6 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         }
     }
 
-    private bool _searchHighlight;
-    /// <summary>搜索命中标记：从全局搜索跳转过来时，命中气泡短暂高亮（2026-09-24，气泡 DataTemplate 的 DataTrigger 改背景）</summary>
-    public bool SearchHighlight
-    {
-        get => _searchHighlight;
-        set
-        {
-            if (_searchHighlight == value) return;
-            _searchHighlight = value;
-            FirePropertyChanged(nameof(SearchHighlight));
-        }
-    }
-
     private string _reasoningText = "";
     /// <summary>思考过程文本（仅思考型模型产生；流式追加）</summary>
     public string ReasoningText
@@ -272,6 +259,7 @@ public partial class AIDialogWindow : Window
         // 2026-09-23 多供应商改造：改走统一解析入口（配置 → provider 的唯一映射点）
         _provider = AiModelResolver.CreateProvider(settings);
         InitializeComponent();
+        SearchPanel.OwnerWindow = this;   // 搜索面板 XAML 常驻实例化（默认构造），owner 在此注入
         DarkTitleBar.Enable(this);   // 2026-09-21：主动申请深色原生标题栏（WPF 默认白底，不申请就靠系统心情）
         ApplyHeaderLayout(false);    // 标题栏起始态 = 收起（构造函数里还没开侧边栏；默认展开走下面的 Loaded）
         ApplyAssistantName();        // 标题跟随设置里的 AI 助手名称（不等 Activate —— 空白窗口期也不该闪默认名）
@@ -2120,26 +2108,60 @@ public partial class AIDialogWindow : Window
         OpenDrawer(!_drawerOpen);
     }
 
-    /// <summary>打开全局搜索窗（标题栏里两个位置的放大镜共用；跨所有会话搜消息正文，点结果跳转会话）。
+    // ── 4b：全局搜索覆盖层（2026-09-25，原独立窗体 ChatSearchWindow 改造）──
+    // 面板（ChatSearchPanel）常驻本窗可视树，用 Visibility 开关；主内容整体挂 BlurEffect 做毛玻璃，
+    // 关闭即移除，避免常驻渲染开销。关闭途径：点面板外遮罩 / Esc（Window_PreviewKeyDown）/ 面板右上×。
+
+    /// <summary>打开全局搜索覆盖层（标题栏里两个位置的放大镜共用）。
     /// 搜索底层走 ChatSearchService.Search(query, null)（null = 搜全部会话含已分组），
-    /// 防抖与结果展示在 ChatSearchWindow 内；点结果回调本窗 OpenSessionFromSearch 打开会话。</summary>
-    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e)
+    /// 防抖与结果展示在 ChatSearchPanel 内；点结果回调 OpenSessionFromSearchPanel 打开会话。</summary>
+    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e) => OpenSearchOverlay();
+
+    internal void OpenSearchOverlay()
     {
-        var win = new ChatSearchWindow(this) { Owner = this };
-        win.Show();
+        MainContent.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 8 };
+        SearchPanel.ResetInput();
+        SearchPanel.ReloadRecents();
+        SearchOverlay.Visibility = Visibility.Visible;
+        SearchPanel.FocusSearchBox();
     }
 
-    /// <summary>搜索结果点击 → 打开会话并定位命中处（由 ChatSearchWindow 回调）。
-    /// 复用侧边栏点击会话的 LoadHistorySession 打开会话；会话内 query 定位 + 命中气泡短暂高亮见 HighlightSearchTerm。</summary>
-    internal void OpenSessionFromSearch(string filePath, string query)
+    internal void CloseSearchOverlay()
     {
+        if (SearchOverlay.Visibility != Visibility.Visible) return;
+        SearchOverlay.Visibility = Visibility.Collapsed;
+        MainContent.Effect = null;
+    }
+
+    private void SearchOverlayBackdrop_Click(object sender, MouseButtonEventArgs e) => CloseSearchOverlay();
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // Esc 关搜索覆盖层（仅覆盖层打开时接管，不碰输入框等处 Esc 的既有行为）
+        if (e.Key == Key.Escape && SearchOverlay.Visibility == Visibility.Visible)
+        {
+            CloseSearchOverlay();
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>搜索面板点击（最近会话行 / 搜索结果行）→ 打开会话；带 query 时定位命中处（由 ChatSearchPanel 回调）。
+    /// 复用侧边栏点击会话的 LoadHistorySession 打开会话；命中词短暂高亮见 HighlightSearchTerm。</summary>
+    internal void OpenSessionFromSearchPanel(string filePath, string? query)
+    {
+        CloseSearchOverlay();
         LoadHistorySession(filePath);
-        HighlightSearchTerm(query);
+        if (!string.IsNullOrWhiteSpace(query)) HighlightSearchTerm(query);
     }
 
-    // ── 4c：会话内搜 query 定位 + 命中气泡短暂高亮 ──
-    // 气泡正文是只读 TextBox（不支持词级高亮），用「命中气泡整体短暂高亮」替代词级：
-    // 滚到首条命中消息 + 该气泡 SearchHighlight=true（气泡 DataTemplate 的 DataTrigger 改背景），2.5s 后清除。
+    // ── 4c：会话内搜 query 定位 + 命中词词级短暂高亮（2026-09-25 词级化）──
+    // 旧方案（命中气泡整体换背景色）已删 —— 效果弱到用户以为没实现。
+    // 新方案：气泡正文是只读 TextBox（承担拖选回填，不能换 TextBlock），词级高亮用 TextBox 选区实现：
+    // 滚到首条命中气泡 + BubbleText.Select(首处命中) + 亮黄 SelectionBrush/深色选区字，2.5s 后清除。
+    // TextBox 只有一个选区 → 只标首处命中；高亮期间用户若自己改了选区，清除时让位不再动它。
+    private static readonly SolidColorBrush SearchTermHighlightBrush = new(Color.FromRgb(0xFF, 0xD5, 0x4F));
+    private static readonly SolidColorBrush SearchTermHighlightTextBrush = new(Color.FromRgb(0x1A, 0x1A, 0x1A));
+
     private async void HighlightSearchTerm(string query)
     {
         if (string.IsNullOrWhiteSpace(query)) return;
@@ -2152,20 +2174,50 @@ public partial class AIDialogWindow : Window
             for (int i = 0; i < MessagesList.Items.Count; i++)
             {
                 if (MessagesList.Items[i] is not ChatBubbleViewModel vm) continue;
-                if (string.IsNullOrEmpty(vm.Content) || vm.Content.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                vm.SearchHighlight = true;
+                var idx = string.IsNullOrEmpty(vm.Content)
+                    ? -1
+                    : vm.Content.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
                 if (MessagesList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+                {
                     fe.BringIntoView();
-                _ = ClearHighlightAsync(vm);
+                    if (FindBubbleTextBox(fe) is { } tb)
+                    {
+                        // 非焦点态默认不画选区（TextBoxBase.IsInactiveSelectionHighlightEnabled 默认 false），
+                        // 跳转后焦点不在气泡上，必须打开才能看见高亮
+                        tb.IsInactiveSelectionHighlightEnabled = true;
+                        tb.SelectionBrush = SearchTermHighlightBrush;
+                        tb.SelectionTextBrush = SearchTermHighlightTextBrush;
+                        tb.Select(idx, needle.Length);
+                        _ = ClearSearchHighlightAsync(tb, idx, needle.Length);
+                    }
+                }
                 return;
             }
         }), DispatcherPriority.Background);
     }
 
-    private static async Task ClearHighlightAsync(ChatBubbleViewModel vm)
+    /// <summary>在气泡模板可视化树里找正文 TextBox（x:Name="BubbleText"）。
+    /// 不能「找第一个 TextBox」—— 思考过程（ReasoningArea）里也有 TextBox 且排在正文前面。</summary>
+    private static TextBox? FindBubbleTextBox(DependencyObject node)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(node);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(node, i);
+            if (child is TextBox { Name: "BubbleText" } tb) return tb;
+            var found = FindBubbleTextBox(child);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static async Task ClearSearchHighlightAsync(TextBox tb, int start, int length)
     {
         await Task.Delay(2500);
-        vm.SearchHighlight = false;
+        // 只清我们做的那个选区；期间用户自己拖选了别处就不动，尊重用户当前选区
+        if (tb.SelectionStart == start && tb.SelectionLength == length)
+            tb.Select(0, 0);
     }
 
     // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
