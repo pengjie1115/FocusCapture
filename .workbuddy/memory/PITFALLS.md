@@ -20,6 +20,8 @@
 - `dev.ps1 snap` **不先编译** → 改完代码先 `build` 再 `snap`，否则出的是旧图
 - 快照 Seeder 必须**幂等**——每场景 new 窗口但沙箱共享，不清数据会重复两套
 - 剪贴板写入失败先跑 `tools/clipdiag`（常是网易UU远程抢占，非本应用 bug）
+- 取证 / 诊断文件**一律落 `%TEMP%` 且用固定文件名**（`fc-<用途>.txt`，下次同名覆盖），**别建在用户主目录**；`%TEMP%\fc-*` 会长期堆积——2026-09-25 清出 **356MB**，其中单个 `fc-typecheck` 是某次构建的输出、独占 **348MB**。用完即清，「临时」别拖成「永久」
+- 批量删除有护栏：**单轮超 50 项**触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`（后续同轮请求会被拦）→ 清大堆临时目录时**先删体积最大的单项**（通常是构建输出目录），一轮不够就分轮，别写 for 循环硬撞
 
 ## WPF / .NET
 - `ItemsControl` 没有 `ScrollIntoView`（那是 ListBox 的）→ 用容器 `BringIntoView()`
