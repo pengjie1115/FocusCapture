@@ -393,6 +393,7 @@ public partial class AIDialogWindow : Window
         SaveActiveDraft();        // 切走前把当前输入框草稿存到旧 runtime（每会话各自保留）
         PersistActiveSession();   // 切走前把旧会话落盘，使它进历史列表、用户可点它切回看答案
         _active = runtime;
+        CloseFindBar();           // 会话内查找的命中按会话算的，换会话即失效（顺手收起）
         MessagesList.ItemsSource = runtime.Bubbles;
         ApplyAssistantName();   // 2026-09-26：标题一律跟随设置里的 AI 助手名称（不再显示模式名）
         SetBusyUi(runtime.IsStreaming);
@@ -2108,20 +2109,42 @@ public partial class AIDialogWindow : Window
         OpenDrawer(!_drawerOpen);
     }
 
+    /// <summary>收起态标题栏「＋ 新建会话」（2026-09-25 用户要求）：对话进行中也能立即开新会话。
+    /// 与侧边栏「新对话」同一链路：退查找条 → 退分组视图 → StartNewSession；
+    /// 当前会话由 Activate/Persist 落盘，回答中的会话转后台继续，可从侧边栏切回。</summary>
+    private void BtnHeaderNewChat_Click(object sender, RoutedEventArgs e)
+    {
+        CloseFindBar();
+        CloseGroupView();
+        StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote);
+    }
+
     // ── 4b：全局搜索覆盖层（2026-09-25，原独立窗体 ChatSearchWindow 改造）──
     // 面板（ChatSearchPanel）常驻本窗可视树，用 Visibility 开关；主内容整体挂 BlurEffect 做毛玻璃，
     // 关闭即移除，避免常驻渲染开销。关闭途径：点面板外遮罩 / Esc（Window_PreviewKeyDown）/ 面板右上×。
 
-    /// <summary>打开全局搜索覆盖层（标题栏里两个位置的放大镜共用）。
-    /// 搜索底层走 ChatSearchService.Search(query, null)（null = 搜全部会话含已分组），
-    /// 防抖与结果展示在 ChatSearchPanel 内；点结果回调 OpenSessionFromSearchPanel 打开会话。</summary>
-    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e) => OpenSearchOverlay();
+    /// <summary>1 号搜索（展开态侧边栏标题栏）：恒开全局搜索覆盖层（2026-09-25 用户拍板不调整）。
+    /// 不能与收起态的 BtnGlobalSearch_Click 共用 —— 那颗已按状态分流。</summary>
+    private void BtnSidebarHeaderSearch_Click(object sender, RoutedEventArgs e) => OpenSearchOverlay();
+
+    /// <summary>收起态标题栏 🔍（3号/4号同体，2026-09-25 用户拍板按状态分流）：
+    /// 对话打开（有内容气泡且不在分组视图）= 向右展开**会话内查找条**；
+    /// 起手页 / 分组视图 = 全局搜索覆盖层（原 4 号行为，不调整）。</summary>
+    private void BtnGlobalSearch_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active is { Bubbles.Count: > 0 } && GroupViewPanel.Visibility != Visibility.Visible)
+        {
+            OpenFindBar();
+            return;
+        }
+        OpenSearchOverlay();
+    }
 
     internal void OpenSearchOverlay()
     {
         MainContent.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 8 };
         SearchPanel.ResetInput();
-        SearchPanel.ReloadRecents();
+        SearchPanel.ReloadHistory();
         SearchOverlay.Visibility = Visibility.Visible;
         SearchPanel.FocusSearchBox();
     }
@@ -2137,10 +2160,16 @@ public partial class AIDialogWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        // Esc 关搜索覆盖层（仅覆盖层打开时接管，不碰输入框等处 Esc 的既有行为）
+        // Esc：先关搜索覆盖层（仅覆盖层打开时接管），再关会话内查找条 —— 都不碰输入框等处 Esc 的既有行为
         if (e.Key == Key.Escape && SearchOverlay.Visibility == Visibility.Visible)
         {
             CloseSearchOverlay();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == Key.Escape && FindBar.Visibility == Visibility.Visible)
+        {
+            CloseFindBar();
             e.Handled = true;
         }
     }
@@ -2219,6 +2248,130 @@ public partial class AIDialogWindow : Window
         if (tb.SelectionStart == start && tb.SelectionLength == length)
             tb.Select(0, 0);
     }
+
+    // ── 4c'：会话内查找条（2026-09-25 新增，3号搜索展开态）──
+    // 收起态标题栏 🔍 在对话打开时向右展开：输入即搜当前会话（InSessionFindMatcher 纯逻辑，内存即时算），
+    // 计数「n/m」+ ‹ › 循环切换；当前命中用 BubbleText.Select 高亮（黄选区），查找期间不自动消失，关闭才清。
+    // 与 4c 的全局搜索跳转高亮互不干扰：那边 2.5s 自动清，这边生命周期跟着查找条走。
+    private List<InSessionFindHit> _findHits = [];
+    private int _findIndex = -1;
+    private TextBox? _lastFindTb;   // 上一处高亮的正文框（换命中/关闭时清它的选区）
+
+    /// <summary>展开查找条（只管显隐与焦点；命中随文本变化即时重算）。</summary>
+    private void OpenFindBar()
+    {
+        FindBar.Visibility = Visibility.Visible;
+        FindBox.Text = "";
+        _findHits = [];
+        _findIndex = -1;
+        UpdateFindCount();
+        FindBox.Focus();
+    }
+
+    private void BtnFindClose_Click(object sender, RoutedEventArgs e) => CloseFindBar();
+
+    /// <summary>收起查找条：清高亮与状态。会话切换（Activate）也会调它 —— 命中是按会话算的，换会话即失效。</summary>
+    private void CloseFindBar()
+    {
+        if (FindBar.Visibility != Visibility.Visible) return;
+        ClearFindHighlight();
+        _findHits = [];
+        _findIndex = -1;
+        FindBox.Text = "";
+        FindCount.Text = "";
+        FindBar.Visibility = Visibility.Collapsed;
+    }
+
+    private void FindBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (FindBar.Visibility != Visibility.Visible) return;   // 关闭时的清框不需要重算
+        RefreshFindMatches();
+    }
+
+    private void FindBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Enter:
+                StepFind(e.KeyboardDevice.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1);
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                CloseFindBar();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void BtnFindPrev_Click(object sender, RoutedEventArgs e) => StepFind(-1);
+
+    private void BtnFindNext_Click(object sender, RoutedEventArgs e) => StepFind(1);
+
+    /// <summary>重算当前会话的全部命中（输入即时触发；气泡是内存数据，无需防抖）。</summary>
+    private void RefreshFindMatches()
+    {
+        ClearFindHighlight();
+        _findHits = [];
+        _findIndex = -1;
+        var q = FindBox.Text;
+        if (q.Length > 0 && _active != null)
+            _findHits = InSessionFindMatcher.FindAll(
+                _active.Bubbles.Select(b => (string?)b.Content).ToList(), q);
+
+        if (_findHits.Count > 0)
+        {
+            _findIndex = 0;
+            ShowCurrentFindHit();
+        }
+        UpdateFindCount();
+    }
+
+    /// <summary>上一个/下一个：对命中表做循环步进（-1 = 上一个）。</summary>
+    private void StepFind(int direction)
+    {
+        if (_findHits.Count == 0) return;
+        _findIndex = (_findIndex + direction + _findHits.Count) % _findHits.Count;
+        ShowCurrentFindHit();
+        UpdateFindCount();
+    }
+
+    /// <summary>滚到当前命中的气泡并把命中词标成黄选区。查找期间选区不自动消失（区别于 4c 的 2.5s 高亮）。</summary>
+    private void ShowCurrentFindHit()
+    {
+        if (_active == null || _findIndex < 0 || _findIndex >= _findHits.Count) return;
+        var hit = _findHits[_findIndex];
+        var fe = MessagesList.ItemContainerGenerator.ContainerFromIndex(hit.BubbleIndex) as FrameworkElement;
+        if (fe == null)
+        {
+            MessagesList.UpdateLayout();   // 兜底：容器还没生成时先逼一帧布局
+            fe = MessagesList.ItemContainerGenerator.ContainerFromIndex(hit.BubbleIndex) as FrameworkElement;
+        }
+        if (fe == null) return;
+
+        fe.BringIntoView();
+        if (FindBubbleTextBox(fe) is { } tb)
+        {
+            if (_lastFindTb != null && _lastFindTb != tb) _lastFindTb.Select(0, 0);   // 换气泡时清上一处
+            tb.IsInactiveSelectionHighlightEnabled = true;   // 焦点不在气泡上也要画出选区（同 4c 口径）
+            tb.SelectionBrush = SearchTermHighlightBrush;
+            tb.SelectionTextBrush = SearchTermHighlightTextBrush;
+            tb.Select(hit.Start, FindBox.Text.Length);
+            _lastFindTb = tb;
+        }
+    }
+
+    /// <summary>清掉查找高亮（只清我们自己标的那个选区）。</summary>
+    private void ClearFindHighlight()
+    {
+        _lastFindTb?.Select(0, 0);
+        _lastFindTb = null;
+    }
+
+    /// <summary>计数文案：当前第 n 个/共 m 个；无关键词不显示，有关键词无命中显示 0/0。</summary>
+    private void UpdateFindCount() =>
+        FindCount.Text = FindBox.Text.Length == 0
+            ? ""
+            : $"{(_findIndex >= 0 ? _findIndex + 1 : 0)}/{_findHits.Count}";
 
     // ── 抽屉布局（阶段二）：宽度参数化 + 拖拽 + 跨启动记忆 ──
 
@@ -3232,6 +3385,11 @@ public partial class AIDialogWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        // 分组视图开着时从侧边栏（置顶/最近/收藏）或搜索面板点会话：必须先退分组视图，
+        // 否则会话在背后被加载、界面却被分组列表挡着 —— 表现就是"点了没反应"（2026-09-25 修的根因）。
+        // 分组内行点击自己已先调 CloseGroupView，这里再调是 no-op；快照链路不在分组视图，同样 no-op。
+        CloseGroupView();
 
         // 已是本窗口内存中的 runtime（活跃或后台跑）→ 直接切过去，保留运行态与已生成气泡
         if (_runtimes.TryGetValue(loaded.SessionId, out var existing))

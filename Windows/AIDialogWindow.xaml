@@ -109,8 +109,11 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                             Margin="0,0,14,0"
                             HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <!-- 展开态：搜索在左、收起在右（用户拍板；与收起态正好相反） -->
-                    <Button x:Name="BtnHeaderSearch" Click="BtnGlobalSearch_Click"
+                    <!-- 展开态：搜索在左、收起在右（用户拍板；与收起态正好相反）。
+                         Click 必须走 BtnSidebarHeaderSearch_Click（恒开全局覆盖层）——
+                         不能复用 BtnGlobalSearch_Click：那颗已按状态分流，对话打开时会展开查找条，
+                         而 1 号（本按钮）2026-09-25 用户拍板不调整。 -->
+                    <Button x:Name="BtnHeaderSearch" Click="BtnSidebarHeaderSearch_Click"
                             Width="28" Height="28" Padding="0"
                             Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
                             ToolTip="搜索会话（跨所有会话搜消息正文）">
@@ -125,7 +128,10 @@
             </Grid>
 
             <!-- 标题栏右半截：收起态专用（此时侧边栏宽度为 0，左半截整块不可见）。
-                 靠最左起排：≡ 在左、搜索在右（用户拍板，与展开态相反）。 -->
+                 靠最左起排：≡ 在左、搜索在右（用户拍板，与展开态相反）。
+                 2026-09-25 用户拍板追加：搜索右边再加「＋ 新建会话」与**会话内查找条**。
+                 🔍 按状态分流（3号/4号同体）：对话打开 = 向右展开查找条（只搜本会话）；
+                 起手页 / 分组视图 = 全局搜索覆盖层（原 4 号行为不变）。 -->
             <StackPanel x:Name="CollapsedHeaderPanel" Grid.Row="0" Grid.Column="2"
                         Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center"
                         Margin="14,0,0,0">
@@ -136,10 +142,54 @@
                 <Button x:Name="BtnGlobalSearch" Click="BtnGlobalSearch_Click"
                         Width="28" Height="28" Padding="0" Margin="4,0,0,0"
                         Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
-                        ToolTip="搜索会话（跨所有会话搜消息正文）">
+                        ToolTip="搜索会话（对话中=查找本会话内容；其余状态=跨所有会话搜索）">
                     <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
                           Stroke="#B8B8B8" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 </Button>
+                <!-- ＋ 新建会话（2026-09-25 用户要求）：对话进行中也能立即开新会话；
+                     当前会话的回答转后台继续，可从侧边栏切回（与侧边栏「新对话」同一链路）。 -->
+                <Button x:Name="BtnHeaderNewChat" Click="BtnHeaderNewChat_Click"
+                        Width="28" Height="28" Padding="0" Margin="4,0,0,0"
+                        Background="#2A2A2A" Foreground="#B8B8B8" BorderBrush="#3A3A3A"
+                        ToolTip="新建会话（当前会话保留，回答转后台继续）">
+                    <Path Data="M0,6 H12 M6,0 V12"
+                          Stroke="#B8B8B8" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                </Button>
+
+                <!-- 会话内查找条（3号搜索展开态，对标浏览器页内查找）：
+                     输入即搜当前会话消息正文 → 计数「第 n 个/共 m 个」→ ‹ › 循环切换 → × / Esc 关闭。
+                     只在收起态标题栏出现；侧边栏展开态没有此条（1号搜索保持全局覆盖层，用户拍板不动）。 -->
+                <Grid x:Name="FindBar" Visibility="Collapsed" Margin="8,0,0,0">
+                    <Border Background="#1A1A1A" BorderBrush="#3A3A3A" BorderThickness="1"
+                            CornerRadius="6" Padding="8,2">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="M6,6 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0 M9.4,9.4 L13,13"
+                                  Stroke="#7A7A7A" StrokeThickness="1.5" Stretch="None"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox x:Name="FindBox" Width="150"
+                                     Background="Transparent" Foreground="#E0E0E0" CaretBrush="#E0E0E0"
+                                     BorderThickness="0" FontSize="12" VerticalAlignment="Center"
+                                     TextChanged="FindBox_TextChanged" KeyDown="FindBox_KeyDown"
+                                     ToolTip="查找本会话内容（Enter=下一个，Shift+Enter=上一个）"/>
+                            <TextBlock x:Name="FindCount" Text="" Margin="8,0,6,0" FontSize="11"
+                                       Foreground="#9A9A9A" VerticalAlignment="Center"/>
+                            <Button x:Name="BtnFindPrev" Click="BtnFindPrev_Click" Content="‹"
+                                    Width="22" Height="22" Padding="0" FontSize="13"
+                                    Background="Transparent" Foreground="#B8B8B8" BorderThickness="0" Cursor="Hand"
+                                    ToolTip="上一个（Shift+Enter）"/>
+                            <Button x:Name="BtnFindNext" Click="BtnFindNext_Click" Content="›"
+                                    Width="22" Height="22" Padding="0" FontSize="13" Margin="2,0"
+                                    Background="Transparent" Foreground="#B8B8B8" BorderThickness="0" Cursor="Hand"
+                                    ToolTip="下一个（Enter）"/>
+                            <Button x:Name="BtnFindClose" Click="BtnFindClose_Click"
+                                    Width="22" Height="22" Padding="0" FontSize="12"
+                                    Background="Transparent" Foreground="#B8B8B8" BorderThickness="0" Cursor="Hand"
+                                    ToolTip="关闭查找（Esc）">✕</Button>
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </StackPanel>
 
             <controls:ChatSidebar x:Name="Sidebar" Grid.Row="1" Grid.Column="0" Width="0"/>

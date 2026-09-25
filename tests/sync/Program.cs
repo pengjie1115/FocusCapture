@@ -717,6 +717,18 @@ print(json.dumps({
         Check(collapsedSeg.IndexOf("BtnToggleSidebar", StringComparison.Ordinal) >= 0
               && collapsedSeg.IndexOf("BtnToggleSidebar", StringComparison.Ordinal) < collapsedSeg.IndexOf("BtnGlobalSearch", StringComparison.Ordinal),
               "收起态：≡ 在左、搜索在右（用户拍板）");
+        Check(collapsedSeg.IndexOf("BtnGlobalSearch", StringComparison.Ordinal) < collapsedSeg.IndexOf("BtnHeaderNewChat", StringComparison.Ordinal)
+              && collapsedSeg.IndexOf("BtnHeaderNewChat", StringComparison.Ordinal) < collapsedSeg.IndexOf("x:Name=\"FindBar\"", StringComparison.Ordinal),
+              "收起态标题栏 2026-09-25 起为：≡ → 🔍 → ＋新建会话 → 会话内查找条（用户拍板）");
+        Check(aiXaml.Contains("BtnSidebarHeaderSearch_Click") && aiCs.Contains("BtnSidebarHeaderSearch_Click"),
+              "展开态 1 号搜索必须恒开全局覆盖层（独立入口 BtnSidebarHeaderSearch_Click，不与收起态分流共用）");
+        Check(aiCs.Contains("OpenFindBar") && aiCs.Contains("InSessionFindMatcher") && aiXaml.Contains("x:Name=\"FindBox\""),
+              "收起态 🔍 对话打开时必须展开会话内查找条（3号：n/m 计数 + ‹ › 循环切换 + 黄选区高亮）；起手页/分组视图仍走全局覆盖层（4号不变）");
+        var lhsStart = aiCs.IndexOf("private void LoadHistorySession", StringComparison.Ordinal);
+        var lhsEnd = lhsStart >= 0 ? aiCs.IndexOf("\n    private ", lhsStart + 10, StringComparison.Ordinal) : -1;
+        var loadSeg = lhsStart >= 0 && lhsEnd > lhsStart ? aiCs[lhsStart..lhsEnd] : "";
+        Check(loadSeg.Contains("CloseGroupView()"),
+              "打开历史会话必须先退分组视图（修「分组里点最近/置顶会话切不过去」——会话在背后换、界面被分组列表挡住）");
 
         Check(aiCs.Contains("ApplyAssistantName") && !aiCs.Contains("GetModeTitle"),
               "窗口标题必须跟随设置里的「AI 助手名称」（拼模式名的 GetModeTitle 老写法已退场）");
@@ -834,7 +846,7 @@ print(json.dumps({
         Check(snapshotSrc.Contains("10j-AI 对话-分组批量管理"),
               "快照必须有 10j 分组批量管理场景（复选框 + 操作条只有进批量才出现，出图才看得见；10h 已被「回答中按钮」占用）");
 
-        // ── 7. 全局搜索覆盖层（2026-09-25：原独立窗体 ChatSearchWindow 改造为居中覆盖层 + 毛玻璃 + 词级高亮）──
+        // ── 7. 全局搜索覆盖层（2026-09-25：覆盖层 + 毛玻璃 + 词级高亮；同日改版：列表 = 真·搜索词历史胶囊）──
         var panelXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "ChatSearchPanel.xaml"));
         var panelCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "ChatSearchPanel.xaml.cs"));
 
@@ -854,35 +866,51 @@ print(json.dumps({
               && aiCs.Contains("SelectionBrush") && aiCs.Contains("FindBubbleTextBox"),
               "跳转高亮必须是词级（BubbleText.Select + SelectionBrush），整气泡变色的 SearchHighlight 机制必须删干净",
               "旧机制效果弱到用户以为没实现 —— 删了才能防止有人加回来");
-        Check(panelXaml.Contains("历史对话") && panelXaml.Contains("x:Name=\"BtnClose\"")
-              && panelXaml.Contains("x:Name=\"SearchBox\"") && panelXaml.Contains("x:Name=\"RecentList\"")
+        Check(panelXaml.Contains("搜索历史") && panelXaml.Contains("x:Name=\"BtnClose\"")
+              && panelXaml.Contains("x:Name=\"BtnClearHistory\"")
+              && panelXaml.Contains("x:Name=\"SearchBox\"") && panelXaml.Contains("x:Name=\"HistoryList\"")
               && panelXaml.Contains("x:Name=\"ResultList\""),
-              "搜索面板必须保留三段结构：历史对话标题+关闭×、搜索框、最近会话/搜索结果两态列表");
-        Check(panelCs.Contains("RecentLimit = 100"),
-              "最近会话列表上限必须是 100 条（用户拍板）");
+              "搜索面板必须保留三段结构：搜索历史标题 + 清空 + 关闭×、搜索框、历史胶囊/搜索结果两态列表",
+              "2026-09-25 用户拍板：默认列表从「最近会话」改为真·搜索词历史（胶囊流式排布）");
+        Check(panelXaml.Contains("WrapPanel") && panelXaml.Contains("HistoryChipRemove_Click"),
+              "搜索历史必须是胶囊流式排布（WrapPanel 长短错落自动换行），每颗胶囊带 × 单删",
+              "一条一行垂直排列的老样子不许回来");
+        Check(panelCs.Contains("ChatSearchHistoryStore.Record") && panelCs.Contains("ReloadHistory"),
+              "搜索词必须真落盘（执行过的才记），面板每次打开重载历史（防吐旧数据）");
 
-        // BuildRecentList 纯逻辑（不实例化 UI，只调静态函数）：置顶优先 → 时间倒序 → 截 100 → 标题回退
-        var r17 = new List<SessionSummary>
-        {
-            new("f1", "1", new DateTime(2026, 9, 25, 10, 0, 0), "Ask", "甲会话", false, "", "甲预览", 2),
-            new("f2", "2", new DateTime(2026, 9, 24, 10, 0, 0), "Ask", "乙会话", true, "", "乙预览", 2),
-            new("f3", "3", new DateTime(2026, 9, 25, 12, 0, 0), "Ask", "", false, "", "丙预览", 1),
-            new("f4", "4", new DateTime(2026, 9, 23, 10, 0, 0), "Ask", "", false, "", "", 1),
-        };
-        var recents = ChatSearchPanel.BuildRecentList(r17);
-        Check(recents.Count == 4 && recents[0].Title == "乙会话",
-              "最近会话列表：未达上限不截断，置顶会话排最前（先于时间序）",
-              $"实际：count={recents.Count}，首位={(recents.Count > 0 ? recents[0].Title : "（空）")}");
-        Check(recents.Count > 2 && recents[1].Title == "丙预览" && recents[2].Title == "甲会话",
-              "未置顶会话之间按 SavedAt 倒序（9-25 12点 在 9-25 10点 之前）",
-              $"实际顺序：{(recents.Count > 2 ? string.Join(" / ", recents.Select(r => r.Title)) : "不足 3 条")}");
-        Check(recents.Count > 3 && recents[3].Title == "无标题会话",
-              "Title 与 Preview 全空的会话回退占位文案「无标题会话」",
-              $"实际：{(recents.Count > 3 ? recents[3].Title : "不足 4 条")}");
-        var many = Enumerable.Range(0, 150).Select(i => new SessionSummary(
-            $"f{i}", $"{i}", new DateTime(2026, 1, 1).AddMinutes(i), "Ask", $"会话{i}", false, "", "", 1)).ToList();
-        Check(ChatSearchPanel.BuildRecentList(many).Count == ChatSearchPanel.RecentLimit,
-              "最近会话最多保留 100 条（150 条输入必须截到 100）");
+        // ChatSearchHistoryStore 纯逻辑（不碰磁盘）：去空白 / 重复挪队首 / 空白忽略 / 截上限 / 单删
+        var hTrim = ChatSearchHistoryStore.RecordTerm([], "  测试词  ", ChatSearchHistoryStore.HistoryLimit);
+        Check(hTrim.Count == 1 && hTrim[0] == "测试词",
+              "搜索词入历史必须先去首尾空白");
+        var hMove = ChatSearchHistoryStore.RecordTerm(["甲", "乙", "丙"], "乙", ChatSearchHistoryStore.HistoryLimit);
+        Check(hMove.Count == 3 && hMove[0] == "乙" && hMove[1] == "甲" && hMove[2] == "丙",
+              "重复搜索词必须挪到队首（其余保序）",
+              $"实际：{string.Join(" / ", hMove)}");
+        Check(ChatSearchHistoryStore.RecordTerm(["甲", "乙"], "   ", ChatSearchHistoryStore.HistoryLimit).Count == 2,
+              "空白搜索词不入历史");
+        var hCap = ChatSearchHistoryStore.RecordTerm(
+            Enumerable.Range(1, 25).Select(i => $"词{i}").ToList(), "新词", ChatSearchHistoryStore.HistoryLimit);
+        Check(hCap.Count == ChatSearchHistoryStore.HistoryLimit && hCap[0] == "新词"
+              && !hCap.Contains("词20") && hCap.Contains("词19"),
+              $"搜索历史最多保留 {ChatSearchHistoryStore.HistoryLimit} 条（超出淘汰最旧的）",
+              $"实际 count={hCap.Count}，首位={hCap[0]}，末位={hCap[^1]}");
+        Check(ChatSearchHistoryStore.RecordTerm(["abc"], "ABC", 10)[0] == "ABC"
+              && ChatSearchHistoryStore.RecordTerm(["abc"], "ABC", 10).Count == 1,
+              "重复判定忽略大小写（搜 abc 和 ABC 是同一个词），队首保留最新写法");
+        Check(ChatSearchHistoryStore.RemoveTerm(["甲", "乙", "丙"], "乙").SequenceEqual(["甲", "丙"]),
+              "单条删除只删命中那条（其余保序）");
+
+        // InSessionFindMatcher 纯逻辑（不碰 UI）：大小写不敏感 / 跨气泡有序 / 一词多命中 / 空词无命中
+        var findHits = InSessionFindMatcher.FindAll(["Apple pie and apple juice", null, " pineapple "], "apple");
+        Check(findHits.Count == 3,
+              "会话内查找：大小写不敏感且一词多命中全找齐",
+              $"实际 {findHits.Count} 处");
+        Check(findHits[0].BubbleIndex == 0 && findHits[0].Start == 0
+              && findHits[1].BubbleIndex == 0 && findHits[1].Start == 14
+              && findHits[2].BubbleIndex == 2 && findHits[2].Start == 5,
+              "会话内查找命中顺序 = 气泡顺序 → 气泡内从左到右（供上一/下一个循环步进）");
+        Check(InSessionFindMatcher.FindAll(["有内容"], "").Count == 0,
+              "空关键词必须无命中（查找条空态不打高亮）");
     }
 
     // ══════════════════ 运行时按需下载的配方（2026-09-21，授权闭环步骤 5） ══════════════════
