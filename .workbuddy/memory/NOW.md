@@ -3,33 +3,30 @@
 > **谁干活谁覆盖更新；并行开发按分支分节；旧状态被覆盖即自动作废。** 硬上限 40 行。
 > 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-25
 
-## 当前：feature/process-slimming（已提交，**未合并未推送**）
+## 当前：main `e120d9b` —— 已合并、已推送双远程
 
-- 2026-09-25 [WorkBuddy] 流程减重**批 1（P5+P1）：快层物理分层**
-  ① 原快层 6 个「真做事」组（`[5]`~`[10]` = 剪贴板容错 / Skill 目录扫描 / 运行时候选目录 /
-     子进程流式读 / 内置技能落地恢复 / 运行时下载流程，共 80 条）**连同源文件整体搬进慢层**
-     `tests/sync/Program.OutOfScope.cs`（partial class）；快层 csproj 移除对应 `<Compile Include>`
-     → 「快层源码不出现这些 API」成为**机器可读契约**（想加回来必须动 csproj 这个显眼文件）
-  ② 快层末尾保留运行时墙钟闸门（> 3 秒即红）作第二道防线
-  ③ 删掉 `-All` / `--all` 死开关（快层已无默认集 / 全集之分）
-  ④ `dev.ps1 test` 改走「显式 build + 直跑产物」：**11.14 秒 → 3.24 秒**（绕开 dotnet run 的 MSBuild 增量评估）
-- 实测：快层 **96 条 / 墙钟 0.65 秒**；慢层 **685 条（605 + 80）/ 全绿**；`dev.ps1 ready` 全过
-- 搬迁是**字节级原样搬移，一条断言没改没删**（两边各自全绿，逐组条数与源码 Check 数完全吻合）
-- 决策件：`docs/2026-09-25-流程体系减重建议.md`（含 P1~P8 冲突分析 + 8 条不做清单）
-- 下一步：批 2 / 批 3 未做（P2a 检查节奏入规范 / P3 REGRESSION 拆册 / P4 daily 降级 /
-  P6 触发表机器可读 / P8 改动分级）；合并顺序**必须先 chat-search 再本分支**（本分支从它开出）
+- 2026-09-25 [WorkBuddy] 流程减重：批 1 + 批 2 做完，**批 3 判定不做**
+  - **批 1（P5+P1）快层物理分层**：原快层 6 个「真做事」组（`[5]`~`[10]`，80 条）连同源文件
+    整体搬进慢层 `tests/sync/Program.OutOfScope.cs`；快层 csproj 移除对应 `<Compile Include>`
+    → 「快层源码不出现这些 API」成**机器可读契约**；快层末尾保留墙钟闸门（> 3 秒即红）
+  - **批 2**：P2a 检查节奏补实测锚点 / P3 REGRESSION 加 §〇 索引 + 清 2 处失效引用 /
+    P4 daily 改事件账 / 新增**文档条数核对门禁**（`ready` 自动比对声明条数 vs 实际跑出条数）
+  - **批 3 判定：不做**（三条依据见 `docs/2026-09-25-流程体系减重建议.md`）
+- 合并顺序：`feature/chat-search-refinements`（搜索四项）→ `feature/process-slimming` → main
+- 合并后补修一个既有 flaky：「Agent 工具」组依赖「这几条落在同一分钟」靠运气达成，
+  实测撞上分钟边界（笔记 20:52 / 待办 20:53）→ 组开头对齐分钟窗口 + 加 1 条前提自检（未放宽标准）
+- 实测：快层 **96 条 / 墙钟 0.65 秒**；慢层 **686 条 / 墙钟约 170 秒**；`ready` 退出码 0
 
-## 另一条分支：feature/chat-search-refinements（已提交，**未合并未推送**）
+## 分支
 
-- 2026-09-25 下午 [ZCode] AI 问答搜索四项（3号分流=会话内查找条 / ＋新建会话 / 搜索词历史胶囊 / 修分组内切会话）
-- 涉及 `AIDialogWindow.xaml(.cs)`、`ChatSearchPanel*`、新 `Services/ChatSearchHistoryStore.cs`、`Services/AI/InSessionFindMatcher.cs`
-- ⚠ REGRESSION 新增 6 行**待用户人工验收**；**必须先于 process-slimming 合并**
-
-## main 状态（分支开出时）
-
-- 与双远程一致（`3116b94`）；另有 `feature/chat-restore-cross-device`（未合并，保留）
-- 人工验收旧账 2026-09-25 已全清（见 REGRESSION 结案注记）
+- `feature/chat-search-refinements`、`feature/process-slimming` —— 已并入 main，**已删**
+- `feature/chat-restore-cross-device` —— 未并入，保留
 
 ## 遗留
 
-- 沙箱内推送仍走 bash（`dev.ps1 push` 在 PowerShell 侧出不了网，见 `PITFALLS.md`）
+- 推送走 bash（`dev.ps1 push` 在 PowerShell 侧出不了网）；GitHub 偶发 502 / SSL，重试即可
+- `%TEMP%\fc-*` 尚有 225 项 / 8MB 历史沙箱与取数日志未清（被单轮 50 项删除护栏拦住）
+- 慢层 3 个「真做事」组耗时偏大（Skill 依赖 25s / 运行时下载流程 25s / 内置技能落地恢复 22s）——
+  按「消灭慢的条数，不消灭有价值的条数」原则未动
+- 已实测到 **2 个 flaky**（`[8]` 子进程流式读、Agent 工具组的时间前提），均为「用例靠真实时钟
+  构造前提」这一类；P7（flaky 隔离出口）状态「待定」，判据从「没出现就删」改为「出现过几次」
