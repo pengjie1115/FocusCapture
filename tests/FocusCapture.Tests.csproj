@@ -16,15 +16,23 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <!-- 刻意不引用主项目：避免把 WPF / NAudio / sherpa.onnx 全部依赖拖进来，编译保持秒级。
          代价：被测类不得依赖项目内其他类，否则编译报错（报错显眼，不会静默出错）。
-         将来若要测有内部依赖的模块（如同步引擎），另建一个 ProjectReference 型工程，与本工程共存。 -->
+         将来若要测有内部依赖的模块（如同步引擎），另建一个 ProjectReference 型工程，与本工程共存。
+
+         ★ 下面那份清单同时就是「本层边界」的**机器可读契约**（2026-09-25 物理分层）：
+           列进来 = 允许被测；没列 = 本层源码里根本写不出对这个类的引用，编译直接不过。
+           原先「真做事」的 6 组（[5]~[10]：剪贴板容错 / 技能目录扫描 / 候选目录 /
+           子进程流式读 / 内置技能落地与恢复 / 运行时下载器）连同它们的源文件已整体搬去慢层
+           （tests/sync/Program.OutOfScope.cs）。所以下面看不到 SafeClipboard / SkillCatalog /
+           SkillManifest / SkillRuntimeLocations / FocusCapturePaths / SkillProcess /
+           BuiltinSkills / RuntimeRecipe / RuntimeDownloader 的链接 —— 这不是遗漏，是边界。
+           想把它们加回本层，必须同时改本文件（显眼动作），并且会撞上 Program.cs 末尾的
+           3 秒墙钟闸门，两道闸都拦。 -->
   </PropertyGroup>
 
   <ItemGroup>
     <!-- 主项目通过 GlobalUsings.cs 提供这些命名空间；快层刻意不引主项目，需自己补一份。 -->
     <Using Include="System.Text" />
     <Using Include="System.Text.RegularExpressions" />
-    <!-- SkillProcess 用 Process/ProcessStartInfo（主项目由 GlobalUsings 提供 System.Diagnostics） -->
-    <Using Include="System.Diagnostics" />
   </ItemGroup>
 
   <ItemGroup>
@@ -32,31 +40,6 @@
     <Compile Include="..\Services\Sync\CryptoService.cs" Link="Src\CryptoService.cs" />
     <Compile Include="..\Services\TimeParser.cs" Link="Src\TimeParser.cs" />
     <Compile Include="..\Services\QuickViewToolbarCatalog.cs" Link="Src\QuickViewToolbarCatalog.cs" />
-    <Compile Include="..\Services\SafeClipboard.cs" Link="Src\SafeClipboard.cs" />
-    <!-- Skill 目录扫描与解析（2026-09-20）：这两个文件刻意零项目依赖（根目录由构造注入、
-         不用 AppLog），就是为了能在这里直接链接编译 —— 解析是最需要反复测的部分，
-         真实 SKILL.md 的写法千奇百怪。执行器（SkillScriptRunner）依赖 AppLog，只能进慢层。 -->
-    <Compile Include="..\Services\Skills\SkillCatalog.cs" Link="Src\SkillCatalog.cs" />
-    <Compile Include="..\Services\Skills\SkillManifest.cs" Link="Src\SkillManifest.cs" />
-    <!-- 运行时部件的候选目录（2026-09-21）：SkillRuntimeLocations 刻意零项目依赖，
-         只依赖数据根 FocusCapturePaths（同样零依赖），所以两个文件都能在这里直接链接。
-         顺序错了的后果是静默的 —— 能跑起来、但跑的是旧的那一份，正因如此必须由检查点守。 -->
-    <Compile Include="..\Services\Skills\SkillRuntimeLocations.cs" Link="Src\SkillRuntimeLocations.cs" />
-    <Compile Include="..\Services\FocusCapturePaths.cs" Link="Src\FocusCapturePaths.cs" />
-    <!-- 子进程装配与读取（2026-09-21）：SkillProcess 同样零项目依赖（不用 AppLog、不碰 WPF），
-         所以能在这里直接测「流式读 + 超时保留已读」—— 这两条以前没有防线，
-         而它们错了的后果是"输出明明出来了却永远读不到"（阻塞命令直接死锁）。 -->
-    <Compile Include="..\Services\Skills\SkillProcess.cs" Link="Src\SkillProcess.cs" />
-    <!-- 内置 Skill 的落地与恢复（2026-09-21，步骤 4）：BuiltinSkills 同样零项目依赖（目录全由参数注入、
-         不用 AppLog），所以能在这里直接测。落地逻辑错了的后果是**静默**的 ——
-         用户改过的版本被悄悄覆盖、或者该出现的技能压根没出现，两种都很难被发现。 -->
-    <Compile Include="..\Services\Skills\BuiltinSkills.cs" Link="Src\BuiltinSkills.cs" />
-    <!-- 运行时按需下载（2026-09-21，步骤 5）：配方与下载器同样刻意零项目依赖
-         （日志走注入回调、不引 AppLog），所以能在这里用本地假下载源测。
-         它的错法全是"静默"的 —— 下了一半算成功、该删的没删、自检没过也提交，
-         正需要"每次改动都跑"的这一层守着。 -->
-    <Compile Include="..\Services\Skills\RuntimeRecipe.cs" Link="Src\RuntimeRecipe.cs" />
-    <Compile Include="..\Services\Skills\RuntimeDownloader.cs" Link="Src\RuntimeDownloader.cs" />
     <!-- AI 模型数值输入解析（2026-09-23）：TokenCountParser 刻意零项目依赖（纯字符串→数值，
          不碰配置 / 日志 / WPF），所以能在这层秒级测。它错了的后果全是静默的 ——
          用户照文档抄的 384K 被当非法值丢掉、K 与 M 差 1024 倍算错一个数量级，界面都不报错。 -->

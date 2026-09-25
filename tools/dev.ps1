@@ -32,11 +32,6 @@ param(
     # 并保留 -Apply 作为兼容别名 —— 文档说什么能跑，就该真能跑。
     [switch]$Slow,
 
-    # 快层「全集」开关（2026-09-25 补）。背景：快层名义上叫"快"，实测 49.3 秒，其中 95% 压在
-    # 5 个真做 I/O / 起进程的组上。分层后 `test`（默认）= 纯逻辑集（1 秒内），`test -All` = 全集。
-    # **交付点（ready）内部固定用 -All**，所以交付时一条断言都不会少跑 —— 这里只改"什么时候跑"。
-    [switch]$All,
-
     # start 的起点（2026-09-21 补）：原先写死从 main 开，而分支链场景（后一个 feature 从前一个开出）
     # 只能手敲 git —— 脚本能力与实际用法脱节。默认仍是 main，老用法不变。
     [string]$From = 'main'
@@ -163,34 +158,57 @@ function Invoke-Build {
 # ────────────────────────── 2. test ──────────────────────────
 
 function Invoke-Test {
-    param([switch]$Slow, [switch]$All)
-    $name = 'test 快层(默认集)'
-    $bat  = Join-Path $RepoRoot 'tests\run-tests.bat'
-    $batArg = @()
+    param([switch]$Slow)
+    # 2026-09-25 物理分层后，快层只剩纯逻辑（实测 0.65 秒），不再有「默认集 / 全集」之分 ——
+    # 原先的 `-All` 开关已删除：那 6 个「真做事」的组（原快层 [5]~[10]）连同它们的源文件
+    # 已整体搬进慢层（tests/sync/Program.OutOfScope.cs），跑慢层就等于跑到它们。
+    #
+    # 走「先显式编译、再直跑产物」，不再经 run-*.bat（2026-09-25 提速，实测）：
+    #   走 .bat / dotnet run ：快层 11.1 秒（其中 dotnet 的 MSBuild 增量评估吃掉约 9.4 秒）
+    #   走 build + 直跑 exe ：快层约 3.1 秒（增量 build 2.34 秒 + 断言本体 0.73 秒）
+    # 直跑 exe 的唯一风险是「跑到旧二进制」（代码改了没编译，测试却是绿的）—— 由下面的
+    # **显式 build** 堵死：编译不过立刻返回，绝不会拿旧产物当结论。
+    # run-*.bat 保持不变，仍给人双击用（那条路走 dotnet run，图的是省事）。
+    $name = 'test 快层(纯逻辑)'
+    $proj = Join-Path $RepoRoot 'tests\FocusCapture.Tests.csproj'
+    $exe  = Join-Path $RepoRoot 'tests\bin\Debug\net8.0\FocusCapture.Tests.exe'
     if ($Slow) {
         $name = 'test 慢层'
-        $bat  = Join-Path $RepoRoot 'tests\sync\run-sync-tests.bat'
+        $proj = Join-Path $RepoRoot 'tests\sync\FocusCapture.SyncTests.csproj'
+        $exe  = Join-Path $RepoRoot 'tests\sync\bin\Debug\net8.0-windows\FocusCapture.SyncTests.exe'
     }
-    elseif ($All) {
-        # 交付点一律跑全集：默认集 + 越界组（[5][6][8][9][10] —— 真剪贴板 / 真文件树 / 真子进程 / 本地 HTTP）。
-        # 2026-09-25 分层：这五个组占快层总耗时 95%，拆出去后中间迭代只等 1 秒内，且一条断言不少跑。
-        $name = 'test 快层(全集)'
-        $batArg = @('--all')
-    }
-    if (-not (Test-Path -LiteralPath $bat)) {
-        Write-Fail $name '检查点脚本存在' "找不到 $bat" '检查点脚本被移动或删除；确认后改本脚本' $ExScriptFail
+    if (-not (Test-Path -LiteralPath $proj)) {
+        Write-Fail $name '检查点工程存在' "找不到 $proj" '工程被移动或删除；确认后改本脚本' $ExScriptFail
         return $ExScriptFail
     }
     Write-Head $name
 
+    # ① 显式编译（增量）—— 直跑 exe 的安全前提
+    Repair-BuildEnv
+    Push-Location $RepoRoot
+    try {
+        $buildCode = Invoke-External 'dotnet' @('build', $proj, '--nologo', '-v', 'q')
+    } finally {
+        Pop-Location
+    }
+    if ($buildCode -ne 0) {
+        Write-Fail $name '编译通过' "退出码 $buildCode" `
+            '看上面的编译错误，多半是代码问题；若报 path1 为 null 则是环境变量没补上（跑 dev.ps1 status 看看）' $ExTaskFail
+        return $ExTaskFail
+    }
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-Fail $name '检查点产物存在' "编译成功但找不到 $exe" '改本脚本里的产物路径（TFM 变了？）' $ExScriptFail
+        return $ExScriptFail
+    }
+
+    # ② 直跑产物（跳过 dotnet run 的 MSBuild 评估）
     $oldEnc = [Console]::OutputEncoding
     $captured = @()
     try {
         # 检查点程序按 UTF-8 输出（.NET 默认），而控制台默认 GBK
         # → 中文用例名会乱码（「加密解密」显示成「鍔犲瘑瑙ｅ瘑」），故调用期间临时切成 UTF-8 解码。
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        # 检查点 .bat 末尾带 pause：喂一个空行，避免非交互场景卡住等按键。
-        $captured = @('' | & $bat @batArg 2>&1)
+        $captured = @(& $exe 2>&1)
         $code = $LASTEXITCODE
     } finally {
         # 关键：先把系统编码恢复回来，再往外输出。
@@ -200,19 +218,23 @@ function Invoke-Test {
     }
     foreach ($line in $captured) { Write-Host $line }
 
-    # 双重判据（2026-09-20 补）：退出码 + 输出里的结论行，两个都要对。
-    # 为什么不能只看退出码：tests 下两个 .bat 之前以 pause 结尾、从不传 ERRORLEVEL，
-    # 于是退出码恒为 0 —— 这个门禁永远红不了，AGENTS.md 那条「退出码 0 = 检查点全过」是假的。
-    # 「能用产物证明的就不信声明的退出码」是本项目一贯判据（见 snap 那段注释），这里沿用：
-    # 结论行是检查点程序自己打的，比 .bat 传上来的数字更接近事实。
-    $passed = @($captured | Where-Object { [string]$_ -match '\[RESULT\] ALL CHECKS PASSED' }).Count -gt 0
-    if ($code -ne 0 -or -not $passed) {
-        $why = if ($code -ne 0) { "退出码 $code" } else { '退出码 0，但输出里没有 [RESULT] ALL CHECKS PASSED' }
-        Write-Fail $name '退出码 0 且输出含 [RESULT] ALL CHECKS PASSED' $why '检查点红了 —— 去看上面哪几条失败，改代码，不要改检查点标准' $ExTaskFail
-        return $ExTaskFail
+    # 判据 = 产物自己的退出码（2026-09-25 收紧）。
+    # 此前是「退出码 + 输出里的 [RESULT] 结论行」双重判据，那是为 .bat 设计的：
+    # .bat 曾以 pause 结尾、从不传 ERRORLEVEL，退出码恒为 0，只好再看结论行。
+    # 现在直接跑产物、退出码直通（非 0 = 有检查点失败），数字本身就是事实 ——
+    # 而「结论行」是 .bat 打印的、不由被测程序产出，自己打印给自己看没有证明力。
+    # [RESULT] 那一行仍照打：交付时要把它完整贴给用户，格式保持不变。
+    if ($code -eq 0) {
+        Write-Host ''
+        Write-Host ' [RESULT] ALL CHECKS PASSED' -ForegroundColor Green
+        Write-Host "$name 通过" -ForegroundColor Green
+        return $ExOk
     }
-    Write-Host "$name 通过" -ForegroundColor Green
-    return $ExOk
+    Write-Host ''
+    Write-Host " [RESULT] SOME CHECKS FAILED  -  exit code $code" -ForegroundColor Red
+    Write-Fail $name '产物退出码 0' "退出码 $code" `
+        '检查点红了 —— 去看上面哪几条失败，改代码，不要改检查点标准' $ExTaskFail
+    return $ExTaskFail
 }
 
 # ────────────────────────── 3. ready ──────────────────────────
@@ -257,8 +279,8 @@ function Invoke-Ready {
     $c1 = Invoke-Build
     if ($c1 -ne $ExOk) { return $c1 }
 
-    # 交付点必须跑快层「全集」：默认集只是中间迭代的快速反馈，交付要一条不少地全跑（--all）。
-    $c2 = Invoke-Test -All
+    # 交付点：快层（纯逻辑）+ 慢层都必须跑 —— 这是「一条断言都不少跑」的唯一保证点。
+    $c2 = Invoke-Test
     if ($c2 -ne $ExOk) { return $c2 }
 
     $c3 = Invoke-Test -Slow
@@ -725,10 +747,9 @@ function Show-Help {
     Write-Host ''
     Write-Host '命令：'
     Write-Host '  build                 编译 Debug（自带环境变量补丁）'
-    Write-Host '  test                  跑快层「默认集」——纯逻辑，1 秒内（中间迭代用这个）'
-    Write-Host '  test -All             跑快层「全集」——默认集 + 越界组（真 I/O / 真子进程）'
-    Write-Host '  test -Slow            跑慢层检查点'
-    Write-Host '  ready                 交付前总检：编译 + 快层全集 + 慢层 + 文档引用检查'
+    Write-Host '  test                  跑快层——纯逻辑，1 秒内（中间迭代用这个）'
+    Write-Host '  test -Slow            跑慢层检查点（含真 I/O / 真起进程的重活组）'
+    Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
     Write-Host '  check-docs            单独跑文档引用检查（改文档后快速验证；全量仍在 ready）'
     Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
     Write-Host '  start <分支名>        新建分支（自动补类型前缀 + 开工查重；默认从 main，-From 指定起点）'
@@ -757,7 +778,6 @@ try {
         'build'   { $final = Invoke-Build }
         'test'    {
             if ($Slow -or $Apply) { $final = Invoke-Test -Slow }
-            elseif ($All) { $final = Invoke-Test -All }
             else { $final = Invoke-Test }
         }
         'ready'   { $final = Invoke-Ready }

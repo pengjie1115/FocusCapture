@@ -29,8 +29,12 @@ using FocusCapture.Windows.Controls;
 /// - 两台设备 A/B：独立 NotesPath + 独立 AppSettings（内存）+ 同一桩地址；
 /// - 测试前备份/恢复真实 settings.json（SyncEngine 内部会调 AppSettings.Save）。
 /// </summary>
-internal static class Program
+internal static partial class Program
 {
+    // 本类另有一个 partial 分部：Program.OutOfScope.cs（2026-09-25 从快层迁入的 6 个
+    // 「真做事」检查组 —— 真写剪贴板 / 真建临时目录 / 真起子进程 / 真复制文件树 /
+    // 自建本地 HTTP + 解压）。物理分层后，快层源码里根本不再出现这些 API。
+
     private static int _failed;
     private static int _passed;
     private static string _sandbox = "";
@@ -55,8 +59,26 @@ internal static class Program
         }
     }
 
-    private static async Task<int> Main()
+    private static async Task<int> Main(string[] args)
     {
+        // ── 子进程模式（只供「子进程流式读」组当被测子进程用）──
+        // 2026-09-25 从快层迁入：该组拿「自己这个可执行文件」当被测子进程，
+        // 所以慢层的 exe 也必须认识这两个开关。必须放在最前面 ——
+        // 子进程进来要是一路把全量检查点跑完，那一次就白等几十秒。
+        if (args.Contains("--child-echo"))
+        {
+            Console.WriteLine("ECHO_OK");
+            Console.Out.Flush();
+            return 0;
+        }
+        if (args.Contains("--child-hold"))
+        {
+            Console.WriteLine("KEEP_ME");
+            Console.Out.Flush();
+            Thread.Sleep(30_000);   // 挂住等父进程超时把它杀掉（"输出完就卡住"的最小复现）
+            return 3;
+        }
+
         Console.WriteLine("=== FocusCapture 同步检查点 ===");
 
         // ── 数据隔离（2026-09-11）──
@@ -86,6 +108,15 @@ internal static class Program
             Run("UI 线程封送", TestUiMarshaling);          // 工具线程上弹窗必炸 → 必须封送回 UI 线程（2026-09-20）
             Run("Skill 授权窗口", TestSkillAuthWindow);     // 先准备再扫码 / 失败不出码 / 文案同步 / 失败写日志（2026-09-21）
             Run("内置技能", TestBuiltinSkills);             // 随包分发的桥接 Skill：落地 / 接线 / 打包契约（2026-09-21）
+            // ↓ 以下 6 组 2026-09-25 从快层物理迁入（原快层 [5]~[10]）。
+            //   它们都「真做事」（真写剪贴板 / 真建临时目录 / 真起子进程 / 真复制文件树 /
+            //   自建本地 HTTP + 解压），按 Google Small 测试定义不属快桶，曾把快层拖到 49.3 秒。
+            Run("剪贴板容错", TestClipboardFaultTolerance);          // [5] 退避重试 / 永不抛界面错误框 / 默认参数
+            Run("Skill 目录扫描", TestSkillCatalogScan);             // [6] SKILL.md 解析 / 中文说明 / 畸形文件不连坐
+            Run("运行时候选目录", TestSkillRuntimeLocations);         // [7] 自带与数据目录的查找顺序（错了静默跑旧的）
+            await RunAsync("子进程流式读", TestSkillProcessStreaming); // [8] 超时保留已读 / 流式回调 / 启动失败不抛
+            Run("内置技能落地恢复", TestBuiltinSkillsLifecycle);      // [9] 目标存在不动 / 恢复先备份 / 路径越界拒绝
+            await RunAsync("运行时下载流程", TestRuntimeDownloadFlow); // [10] 自建本地 HTTP：断流 / 自检 / 逃逸拒绝
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
             Run("AI 分组与批量 UI", TestAiChatGroupUi);      // 进分组不收起 / 分组三点 / 批量条 / 标题栏底色 / 默认模型框（2026-09-26）
             Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）

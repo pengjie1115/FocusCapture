@@ -6,14 +6,11 @@ echo.
 echo  ===== FocusCapture automated checks =====
 echo.
 
-rem %1 is forwarded to the test app (--all = also run the out-of-bucket groups).
+rem 2026-09-25 physical split: the old `--all` switch is gone -- the 6 out-of-bucket
+rem groups (clipboard / skill scan / candidate dirs / subprocess / builtin deploy /
+rem runtime download) now live in the slow layer: tests\sync\Program.OutOfScope.cs
 rem Keep added lines ASCII-only: Chinese inside .bat gets mangled by cmd.
-if "%1"=="" goto fc_noargs
-dotnet run --project "%~dp0FocusCapture.Tests.csproj" --nologo -v q -- %1
-goto fc_afterrun
-:fc_noargs
 dotnet run --project "%~dp0FocusCapture.Tests.csproj" --nologo -v q
-:fc_afterrun
 
 set RESULT=%ERRORLEVEL%
 

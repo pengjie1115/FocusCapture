@@ -67,8 +67,8 @@ dotnet publish -c Release -r win-x64 --self-contained true \
 改完代码建议先跑一遍自动化检查点（无需网络，秒级）：
 
 ```bash
-tests\run-tests.bat            # 快层：加密 / 时间解析
-tests\sync\run-sync-tests.bat  # 慢层：双向同步 / 删除 / 自愈（改动涉及 Services\Sync\ 时跑）
+tests\run-tests.bat            # 快层：加密 / 时间解析 / AI 解析（纯逻辑，秒级）
+tests\sync\run-sync-tests.bat  # 慢层：双向同步 / 删除 / 自愈 / 技能执行与运行时下载（改动涉及 Services\Sync\ 时跑）
 ```
 
 退出码 `0` = 通过，`1` = 有失败。检查点跑在临时沙箱中，不会触碰你的真实数据。规则见 [`REGRESSION.md`](REGRESSION.md) 第二节。
@@ -106,7 +106,7 @@ FocusCapture/
 ├── Services/          # 核心服务：剪贴板监听/热键/笔记/导出/语音/回收站/云同步
 ├── Windows/           # 界面：悬浮球/输入窗/速览/设置/语音窗/导出对话框
 ├── docs/              # 官网落地页（GitHub Pages）+ llms.txt
-├── tests/             # 自动化检查点：快层 13 条 + 慢层 75 条（双击 run-*.bat）
+├── tests/             # 自动化检查点：快层 96 条（纯逻辑，秒级）+ 慢层 685 条（双击 run-*.bat）
 ├── tools/             # 辅助脚本：笔记/待办重复行清理（默认只报告，-Apply 才执行）
 ├── MainWindow.xaml    # 主窗口（服务编排与生命周期）
 └── FocusCapture.csproj
