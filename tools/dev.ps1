@@ -32,6 +32,11 @@ param(
     # 并保留 -Apply 作为兼容别名 —— 文档说什么能跑，就该真能跑。
     [switch]$Slow,
 
+    # 快层「全集」开关（2026-09-25 补）。背景：快层名义上叫"快"，实测 49.3 秒，其中 95% 压在
+    # 5 个真做 I/O / 起进程的组上。分层后 `test`（默认）= 纯逻辑集（1 秒内），`test -All` = 全集。
+    # **交付点（ready）内部固定用 -All**，所以交付时一条断言都不会少跑 —— 这里只改"什么时候跑"。
+    [switch]$All,
+
     # start 的起点（2026-09-21 补）：原先写死从 main 开，而分支链场景（后一个 feature 从前一个开出）
     # 只能手敲 git —— 脚本能力与实际用法脱节。默认仍是 main，老用法不变。
     [string]$From = 'main'
@@ -158,12 +163,19 @@ function Invoke-Build {
 # ────────────────────────── 2. test ──────────────────────────
 
 function Invoke-Test {
-    param([switch]$Slow)
-    $name = 'test 快层'
+    param([switch]$Slow, [switch]$All)
+    $name = 'test 快层(默认集)'
     $bat  = Join-Path $RepoRoot 'tests\run-tests.bat'
+    $batArg = @()
     if ($Slow) {
         $name = 'test 慢层'
         $bat  = Join-Path $RepoRoot 'tests\sync\run-sync-tests.bat'
+    }
+    elseif ($All) {
+        # 交付点一律跑全集：默认集 + 越界组（[5][6][8][9][10] —— 真剪贴板 / 真文件树 / 真子进程 / 本地 HTTP）。
+        # 2026-09-25 分层：这五个组占快层总耗时 95%，拆出去后中间迭代只等 1 秒内，且一条断言不少跑。
+        $name = 'test 快层(全集)'
+        $batArg = @('--all')
     }
     if (-not (Test-Path -LiteralPath $bat)) {
         Write-Fail $name '检查点脚本存在' "找不到 $bat" '检查点脚本被移动或删除；确认后改本脚本' $ExScriptFail
@@ -178,7 +190,7 @@ function Invoke-Test {
         # → 中文用例名会乱码（「加密解密」显示成「鍔犲瘑瑙ｅ瘑」），故调用期间临时切成 UTF-8 解码。
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         # 检查点 .bat 末尾带 pause：喂一个空行，避免非交互场景卡住等按键。
-        $captured = @('' | & $bat 2>&1)
+        $captured = @('' | & $bat @batArg 2>&1)
         $code = $LASTEXITCODE
     } finally {
         # 关键：先把系统编码恢复回来，再往外输出。
@@ -245,7 +257,8 @@ function Invoke-Ready {
     $c1 = Invoke-Build
     if ($c1 -ne $ExOk) { return $c1 }
 
-    $c2 = Invoke-Test
+    # 交付点必须跑快层「全集」：默认集只是中间迭代的快速反馈，交付要一条不少地全跑（--all）。
+    $c2 = Invoke-Test -All
     if ($c2 -ne $ExOk) { return $c2 }
 
     $c3 = Invoke-Test -Slow
@@ -712,9 +725,10 @@ function Show-Help {
     Write-Host ''
     Write-Host '命令：'
     Write-Host '  build                 编译 Debug（自带环境变量补丁）'
-    Write-Host '  test                  跑快层检查点'
+    Write-Host '  test                  跑快层「默认集」——纯逻辑，1 秒内（中间迭代用这个）'
+    Write-Host '  test -All             跑快层「全集」——默认集 + 越界组（真 I/O / 真子进程）'
     Write-Host '  test -Slow            跑慢层检查点'
-    Write-Host '  ready                 交付前总检：编译 + 快层 + 慢层 + 文档引用检查'
+    Write-Host '  ready                 交付前总检：编译 + 快层全集 + 慢层 + 文档引用检查'
     Write-Host '  check-docs            单独跑文档引用检查（改文档后快速验证；全量仍在 ready）'
     Write-Host '  status                一屏现状：分支 / 改动 / 与 main 差距 / 待推送 / 文件数'
     Write-Host '  start <分支名>        新建分支（自动补类型前缀 + 开工查重；默认从 main，-From 指定起点）'
@@ -741,7 +755,11 @@ $final = $ExOk
 try {
     switch ($Command.ToLower()) {
         'build'   { $final = Invoke-Build }
-        'test'    { if ($Slow -or $Apply) { $final = Invoke-Test -Slow } else { $final = Invoke-Test } }
+        'test'    {
+            if ($Slow -or $Apply) { $final = Invoke-Test -Slow }
+            elseif ($All) { $final = Invoke-Test -All }
+            else { $final = Invoke-Test }
+        }
         'ready'   { $final = Invoke-Ready }
         'check-docs' { $final = Invoke-CheckDocs }
         'push'    { $final = Invoke-Push }

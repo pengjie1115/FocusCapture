@@ -44,6 +44,21 @@ if (args.Contains("--child-hold"))
     return 3;
 }
 
+// ── 默认集 / --all（2026-09-25 新增）──
+// 本层此前名义上叫「快层」，实测 49.3 秒 —— 95% 的耗时压在 5 个「真做事」的组上：
+//   [5]  剪贴板容错     真写系统剪贴板（且本机常被其他程序占用，要退避重试）
+//   [6]  技能目录扫描   真建临时目录与 SKILL.md 文件
+//   [8]  子进程流式读   真起子进程（含两次等超时）
+//   [9]  内置技能落地   真复制 / 备份 / 递归删除文件树
+//   [10] 运行时下载器   自建本地 HTTP 服务 + 解压 + 目录清理
+// 按「分桶」规则这五个不属于快桶（Google Small 测试的定义：单进程、无 I/O、无 sleep、无网络）。
+// 分层做法（对齐 Google presubmit/postsubmit 与移动端行业实践：每次提交跑「快且确定」的子集，
+// 更宽的概率性检查放到集成 / 交付点）：
+//   每次改动 → 默认集（纯逻辑，目标 1 秒内）        ← dev.ps1 test
+//   交付点   → 全集（默认集 + 越界组 + 慢层）      ← dev.ps1 ready 自带 --all
+// **关键：交付点一律带 --all，所以一条断言都不会少跑；这里只改「什么时候跑」。**
+var runAll = args.Contains("--all");
+
 int pass = 0, fail = 0;
 
 void Check(bool ok, string name, string? detail = null)
@@ -193,13 +208,18 @@ Check(QuickViewToolbarCatalog.CanAdd(1280, QuickViewToolbarCatalog.DefaultLeft.T
 //       而文件仓库必然依赖日志/设置/附件服务，链进来会把这层轻量结构毁掉。
 // 红线守卫（句柄不可伪造）与淘汰保护都在慢层，交付前必跑。
 
+Mark("[1]-[3] 加密 / 时间解析 / 标题栏目录");
+
+// ★ 越界组 A：[5] 剪贴板（真写系统剪贴板）+ [6] 技能扫描（真建临时目录/文件）
+//            + [7] 候选目录（真建/删临时目录来构造 fixture）
+if (runAll)
+{
 // ── [5] 剪贴板写入容错 SafeClipboard ──
 // 用户可见性质：剪贴板被其他程序占用时，复制动作**不得弹出界面错误框**。
 // 真实事故（2026-09-18）：灵感速览面板「单击复制」未捕获 CLIPBRD_E_CANT_OPEN，
 // 异常冒泡到全局处理弹模态框；双击笔记时第一下先走复制 → 弹框吃掉第二下点击
 // → 用户表现「双击笔记进不了编辑状态」。
 Console.WriteLine("[5] 剪贴板写入容错 SafeClipboard");
-Mark("[1]-[3] 加密 / 时间解析 / 标题栏目录");
 
 var busyAttempts = 0;
 var busySleeps = new List<int>();
@@ -442,7 +462,13 @@ finally
     FocusCapturePaths.RootOverride = locOldRoot;
     try { Directory.Delete(locTmp, true); } catch { }
 }
+}   // ★ 越界组 A 结束（含 [7]：它真建 / 删临时目录来构造 fixture）
 
+Mark("[5]-[7] 越界组 A（剪贴板 / 技能扫描 / 候选目录）");
+
+// ★ 越界组 B：[8] 真起子进程 + [9] 真复制/备份/删文件树 + [10] 自建本地 HTTP + 解压
+if (runAll)
+{
 // ── [8] 子进程流式读与超时保留 SkillProcess ──
 // 守的是什么（2026-09-21 新增）：「输出完就卡住」是子进程真实存在的形态 ——
 // lark-cli 的 `config init --new` 就是这样：启动约 1 秒把验证链接吐完（走 stderr），
@@ -452,7 +478,6 @@ finally
 // 本组拿「自己这个 exe」当被测子进程，两端都可控。
 Console.WriteLine();
 Console.WriteLine("[8] 子进程流式读与超时保留 SkillProcess");
-Mark("[5]-[7] 剪贴板 / 技能扫描 / 候选目录");
 
 var selfExe = Environment.ProcessPath;
 Check(!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe),
@@ -974,6 +999,7 @@ finally
     FocusCapturePaths.RootOverride = dlOldRoot;
     try { Directory.Delete(dlTmp, true); } catch { }
 }
+}   // ★ 越界组 B 结束
 
 // ── [11] 待办与提醒面板的源码契约（2026-09-22）──
 // 守的全是「改错了不报错、只静默退化」的东西，判据直接读源码文本（这几处坏了只有真机才看得出来）：
@@ -1335,10 +1361,23 @@ Check(ChatSearchMatcher.CountMatches(null!, "a") == 0 && ChatSearchMatcher.Extra
 Mark("[13]-[16] AI 解析 / 裁剪 / 搜索匹配");
 
 Console.WriteLine();
-Console.WriteLine($"=== 各组耗时（按耗时降序）| 快层墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");
+Console.WriteLine($"=== 各组耗时（按耗时降序）| {(runAll ? "全集 --all" : "默认集")} | 墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");
 foreach (var g in groupMs.OrderByDescending(x => x.Ms))
 {
     Console.WriteLine($"  {g.Ms,6} ms | {g.Name}");
+}
+
+// ★ 默认集必须真的快 —— 防腐化的机器闸门
+// 判据刻意用「跑出来的结果」而不是「源码文本长什么样」：本项目一贯判据是
+// 「能用产物证明的，就不信声明的字面」。谁往默认集里塞了慢操作（起子进程 / 开网络 /
+// 建真实文件树 / 写系统剪贴板），这条立刻变红，不需要人去读代码 —— 这正是本次
+// 「快层实测 49.3 秒而文档写秒级、整整腐化了没人发现」要防的事。
+if (!runAll)
+{
+    Check(swTotal.ElapsedMilliseconds < 3000,
+          "默认集（未加 --all 时）必须在 3 秒内跑完",
+          $"实际 {swTotal.ElapsedMilliseconds} ms —— 默认集被塞进了慢操作："
+          + "把它包进 runAll 分支（若确实必须做 I/O / 起进程），或按分桶规则搬到慢层");
 }
 
 Console.WriteLine();
