@@ -31,6 +31,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# AI 编码工具本地配置（ZCode 自动生成，规则同步自本文件；各机自生成即可，不进仓库）
+.zcodeignore
+
 # Misc
 *.bak
 *.orig
