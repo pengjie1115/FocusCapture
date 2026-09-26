@@ -546,7 +546,60 @@ Check(ChatSearchMatcher.CountMatches(null!, "a") == 0 && ChatSearchMatcher.Extra
       "null 正文必须安全返回（不抛）",
       "会话正文可能为 null（附件消息），搜索不能因此整体失败");
 
-Mark("[13]-[16] AI 解析 / 裁剪 / 搜索匹配");
+// ── [17] AI 整理的提示词与结果清洗 NoteTidyPrompt（2026-09-26）──
+// 守的是三件"坏了不报错"的事：
+//   ① 长度闸门算错 → 超长正文照发：要么被服务商 400，要么只整理了前半段
+//      （后者更糟：用户会以为后半段也整理过了，而笔记里那半段还是乱的原样）；
+//   ② 结果清洗漏掉围栏 / 开场白 → 笔记里凭空多出 ``` 与「以下是整理后的内容：」，写进去就擦不掉；
+//   ③ 提示词漏掉「不新增事实 / 不翻译」→ 模型开始自由发挥，把用户的原始记录改写成另一件事。
+Console.WriteLine("[17] AI 整理提示词与结果清洗 NoteTidyPrompt");
+
+var (tidySys, tidyUser) = NoteTidyPrompt.BuildMessages("  一段随手写的乱文字  ");
+Check(tidySys.Contains("不新增任何事实") && tidySys.Contains("不要翻译"),
+      "系统提示词必须同时锁死「不新增事实」与「不翻译」",
+      "漏一条，模型就会替用户补全或顺手翻译 —— 产出不再是他的原始记录了");
+Check(tidyUser == "一段随手写的乱文字",
+      "送给模型的正文要去掉首尾空白", $"实际「{Cut(tidyUser)}」");
+
+Check(NoteTidyPrompt.CharCount("  abc  ") == 3, "字符数不计首尾空白");
+Check(!NoteTidyPrompt.IsTooLong(new string('中', NoteTidyPrompt.MaxInputChars)),
+      $"上限内（恰 {NoteTidyPrompt.MaxInputChars} 字符）必须放行",
+      "边界取错一个字，用户就会在刚好够用的长度上被拒");
+Check(NoteTidyPrompt.IsTooLong(new string('中', NoteTidyPrompt.MaxInputChars + 1)),
+      "超出上限 1 个字符也必须拦下（不做截断、不做分段 —— 用户拍板：宁可拒绝）");
+
+var tooLongMsg = NoteTidyPrompt.TooLongMessage(9000);
+Check(tooLongMsg.Contains("9000") && tooLongMsg.Contains(NoteTidyPrompt.MaxInputChars.ToString()),
+      "超长提示必须同时给出「实际多少字」与「上限多少字」",
+      "只说超了，用户不知道该删到多少");
+
+Check(NoteTidyPrompt.CleanResult("") == "" && NoteTidyPrompt.CleanResult(null) == "",
+      "空回包清洗后仍是空串（调用方据此判「模型没返回内容」）");
+
+var fenced = NoteTidyPrompt.CleanResult("```markdown\n- 第一条\n- 第二条\n```");
+Check(fenced == "- 第一条\n- 第二条",
+      "整体包裹的代码块围栏必须剥掉（否则笔记里多出 ``` 行）",
+      $"实际「{Cut(fenced)}」");
+
+Check(NoteTidyPrompt.CleanResult("好的，以下是整理后的内容：\n- 第一条") == "- 第一条",
+      "开场白必须剥掉", $"实际「{Cut(NoteTidyPrompt.CleanResult("好的，以下是整理后的内容：\n- 第一条"))}」");
+
+Check(NoteTidyPrompt.CleanResult("以下是整理后的内容：\n好的：\n- 第一条") == "- 第一条",
+      "连续多行开场白要一路剥干净（回包常带两层客套）");
+
+var keepHead = NoteTidyPrompt.CleanResult("会议纪要：讨论了排期\n- 第一条");
+Check(keepHead == "会议纪要：讨论了排期\n- 第一条",
+      "用户正文的首行必须原样保留 —— 清洗只认「以下是 / 整理后 / 好的」这类开场白",
+      $"实际「{Cut(keepHead)}」—— 把用户自己的小标题当客套吃掉，等于静默删了他的内容");
+
+var longHead = new string('长', 50) + "整理后的安排：\n- 第一条";
+Check(NoteTidyPrompt.CleanResult(longHead) == longHead,
+      "超过 40 字符的首行一律不当作开场白（长句是正文，不是客套）");
+
+Check(NoteTidyPrompt.CleanResult("  只有一段话，没有围栏也没有开场白。  ") == "只有一段话，没有围栏也没有开场白。",
+      "既没有围栏也没有开场白时，原样返回（清洗不许画蛇添足）");
+
+Mark("[13]-[17] AI 解析 / 裁剪 / 搜索匹配 / 整理清洗");
 
 Console.WriteLine();
 Console.WriteLine($"=== 各组耗时（按耗时降序）| 纯逻辑集 | 墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");

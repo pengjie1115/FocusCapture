@@ -16,16 +16,19 @@ public partial class NoteEditWindow : Window
     private readonly NoteService _noteService;
     private readonly NoteEntryViewModel _vm;
     private readonly IChatProvider? _provider;
+    private readonly AppSettings? _settings;   // 「AI 整理」要按设置里的「AI 整理模型」解析模型（可空：老调用点不传也能跑）
 
     // v3.5 建议条状态
     private DateTime? _suggestDue;
     private DispatcherTimer? _suggestTimer;
 
-    public NoteEditWindow(NoteService noteService, NoteEntryViewModel vm, string title, IChatProvider? provider = null)
+    public NoteEditWindow(NoteService noteService, NoteEntryViewModel vm, string title,
+        IChatProvider? provider = null, AppSettings? settings = null)
     {
         _noteService = noteService;
         _vm = vm;
         _provider = provider;
+        _settings = settings;
         InitializeComponent();
         Title = title;
         NoteInfoText.Text = $"{title}  ·  来源: {vm.SourceWindow}";
@@ -62,6 +65,56 @@ public partial class NoteEditWindow : Window
     private void BtnCancel_Click(object sender, RoutedEventArgs e) => Close();
 
     private void BtnSave_Click(object sender, RoutedEventArgs e) => Save();
+
+    // ── AI 整理（2026-09-26）──
+
+    /// <summary>同一时间只允许整理一次（按钮禁用 + 本标志双保险）。</summary>
+    private bool _tidyRunning;
+
+    /// <summary>
+    /// 「AI」按钮：把编辑框里<b>当前</b>内容交给大模型整理，先出预览对照窗再决定改不改。
+    /// 落库口径与另两个入口共用一份（<see cref="AiTidyFlow"/>）：
+    /// 「替换原文」立刻原地写盘（旧行先进回收站，可恢复），随后编辑框同步成整理结果，用户可继续润色；
+    /// 「另存为新笔记」只新增一条笔记、编辑框不动；「复制」什么都不改。
+    ///
+    /// <para>这里刻意<b>不</b>顺带弹时间识别建议条 —— 整理只该改文字，不该顺手改用户的提醒设置；
+    /// 想设提醒，保存时那条链路照旧会跑。</para>
+    /// </summary>
+    private async void BtnAiTidy_Click(object sender, RoutedEventArgs e)
+    {
+        if (_tidyRunning) return;
+
+        if (ImmersiveSessionService.IsLocked(_vm.Entry.Timestamp))
+        {
+            System.Windows.MessageBox.Show(this, "沉浸式输入进行中，暂不可整理", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _tidyRunning = true;
+        var original = BtnAiTidy.Content;
+        BtnAiTidy.IsEnabled = false;
+        BtnAiTidy.Content = "…";
+        try
+        {
+            var result = await AiTidyFlow.RunAsync(this, _noteService, _settings, _provider, _vm.Entry, EditBox.Text);
+            if (result?.Choice != TidyChoice.Replace) return;
+
+            // 替换已在 AiTidyFlow 里原地写盘；把编辑框与「行内编辑共享的 EditText」一起同步成整理结果，
+            // 用户可接着改（内容没再变时点保存等于无操作，不会重复写盘）
+            _vm.EditText = result.Text;
+            EditBox.Text = result.Text;
+            EditBox.CaretIndex = 0;
+            EditBox.ScrollToHome();
+            UpdateCharCount();
+        }
+        finally
+        {
+            _tidyRunning = false;
+            BtnAiTidy.IsEnabled = true;
+            BtnAiTidy.Content = original;
+        }
+    }
 
     /// <summary>
     /// 保存（v5 2026-09-20）：分离 AI 释义后——

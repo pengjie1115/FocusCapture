@@ -1508,6 +1508,7 @@ public partial class SettingsWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
 
         AiDefaultModelText.Text = BuildDefaultModelText();
+        AiTidyModelText.Text = BuildTidyModelText();
     }
 
     /// <summary>
@@ -1567,6 +1568,78 @@ public partial class SettingsWindow : Window
     {
         _settings.DefaultModelKey = key;
         _settings.ActiveModelKey = key;
+        _settings.Save();
+        RebuildAiProviderList();
+        _onChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 「AI 整理模型」那一行显示什么（2026-09-26）。
+    /// <list type="bullet">
+    /// <item>用户选过且键<b>精确命中</b> → 显示那个模型名。</item>
+    /// <item>没选过 / 键已失效 → 说明白"跟随当前模型"，并把实际会用的那个模型名写出来 ——
+    /// 只写「跟随当前模型」用户仍不知道到底是哪个模型在干活。</item>
+    /// </list>
+    /// </summary>
+    private string BuildTidyModelText()
+    {
+        var exact = AiModelResolver.TryResolveExact(_settings, _settings.AiTidyModelKey);
+        if (exact != null) return AiModelResolver.DisplayNameFor(_settings, exact);
+
+        var fallback = AiModelResolver.ResolveActive(_settings);
+        return fallback == null
+            ? "跟随当前模型（当前没有可用模型）"
+            : $"跟随当前模型（{AiModelResolver.DisplayNameFor(_settings, fallback)}）";
+    }
+
+    /// <summary>点「AI 整理模型」那一行 → 弹已配置模型列表，点中即生效（用户拍板：不弹确认框）。
+    /// 第一项固定是「跟随当前模型」（= 不写这份配置，与聊天共用），与 AI 问答的模型下拉同一套展示口径。</summary>
+    private void TidyModelRow_Click(object sender, MouseButtonEventArgs e)
+    {
+        // 同 DefaultModelRow_Click：刻意用 new ContextMenu() 不用初始化器（自带 Style 会顶掉 App.xaml 深色模板出白条）
+        var menu = new ContextMenu();
+
+        var follow = new MenuItem
+        {
+            Header = "跟随当前模型",
+            IsChecked = string.IsNullOrWhiteSpace(_settings.AiTidyModelKey),
+        };
+        follow.Click += (_, _) => ApplyTidyModel("");
+        menu.Items.Add(follow);
+        menu.Items.Add(new Separator());
+
+        var count = 0;
+        foreach (var p in _settings.AiModelProviders)
+        {
+            foreach (var m in p.Models)
+            {
+                if (string.IsNullOrWhiteSpace(m.Id)) continue;
+                var key = p.Id + "/" + m.Id;
+                var resolved = AiModelResolver.TryResolveExact(_settings, key);
+                var label = resolved != null
+                    ? AiModelResolver.DisplayNameFor(_settings, resolved)
+                    : (string.IsNullOrWhiteSpace(m.DisplayName) ? m.Id : m.DisplayName);
+                var item = new MenuItem { Header = label, IsChecked = _settings.AiTidyModelKey == key };
+                var captured = key;
+                item.Click += (_, _) => ApplyTidyModel(captured);
+                menu.Items.Add(item);
+                count++;
+            }
+        }
+
+        if (count == 0)
+            menu.Items.Add(new MenuItem { Header = "（还没有配置任何模型）", IsEnabled = false });
+
+        menu.PlacementTarget = TidyModelRow;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>设置整理模型：写 <see cref="AppSettings.AiTidyModelKey"/> 并落盘。空 = 跟随当前活跃模型。
+    /// 刻意不像「默认模型」那样连带改 ActiveModelKey —— 那会把聊天正在用的模型一起改掉（用户没要求）。</summary>
+    private void ApplyTidyModel(string key)
+    {
+        _settings.AiTidyModelKey = key ?? "";
         _settings.Save();
         RebuildAiProviderList();
         _onChanged?.Invoke();

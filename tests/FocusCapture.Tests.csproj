@@ -58,6 +58,11 @@
          它错了的后果是**静默**的 —— 片段里的换行被压成空格后字符串长度变了，
          若仍用替换前的下标做高亮，界面上的高亮会整体错位，且不报任何错。 -->
     <Compile Include="..\Services\AI\ChatSearchMatcher.cs" Link="Src\ChatSearchMatcher.cs" />
+    <!-- AI 整理的提示词 / 长度闸门 / 结果清洗（2026-09-26）：同样刻意零项目依赖
+         （只吃 string，不碰配置 / 日志 / WPF），所以能在这层秒级测。
+         它们错了的后果**全是静默的**：超长正文照发（用户等半天拿到 400 或半截结果）、
+         回包里的 ``` 围栏与「以下是整理后的内容：」原样写进笔记、提示词漏约束则模型开始自由发挥。 -->
+    <Compile Include="..\Services\AI\NoteTidyPrompt.cs" Link="Src\NoteTidyPrompt.cs" />
   </ItemGroup>
 
 </Project>

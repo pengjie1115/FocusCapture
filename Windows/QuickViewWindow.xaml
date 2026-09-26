@@ -575,14 +575,29 @@
                                                 </Border.Style>
                                                 <TextBlock Text="AI" FontSize="9" Foreground="White" FontWeight="SemiBold"/>
                                             </Border>
-                                            <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
-                                                    Margin="0,0,0,0"
-                                                    Background="Transparent"
-                                                    Foreground="#666666"
-                                                    BorderThickness="0"
-                                                    Cursor="Hand"
-                                                    Click="BtnDeleteOne_Click"
-                                                    Tag="{Binding}"/>
+                                            <!-- AI 整理 + × 删除 并排：AI 在删除左边（2026-09-26 用户要求「与 × 同行、放在它前面」）。
+                                                 刻意用「深底 + 绿框绿字」小按钮，与上面那个「绿底白字 AI 徽章」（表示这条已有 AI 释义）
+                                                 在形状与配色上都错开，避免看混。 -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                                <Button x:Name="BtnAiTidy" Content="AI"
+                                                        FontSize="10" FontWeight="SemiBold"
+                                                        Width="22" Height="22" Padding="0"
+                                                        Margin="0,0,4,0"
+                                                        Background="#3A3A3A" Foreground="#4CAF50"
+                                                        BorderBrush="#4CAF50" BorderThickness="1"
+                                                        Cursor="Hand"
+                                                        Tag="{Binding}"
+                                                        ToolTip="AI 整理：把这一大段理成有条理的内容（先出预览，再决定改不改）"
+                                                        Click="BtnAiTidy_Click"/>
+                                                <Button Content="×" FontSize="14" Width="22" Height="22" Padding="0"
+                                                        Margin="0,0,0,0"
+                                                        Background="Transparent"
+                                                        Foreground="#666666"
+                                                        BorderThickness="0"
+                                                        Cursor="Hand"
+                                                        Click="BtnDeleteOne_Click"
+                                                        Tag="{Binding}"/>
+                                            </StackPanel>
                                             <StackPanel Margin="0,6,0,0">
                                                 <StackPanel.Style>
                                                     <Style TargetType="StackPanel">

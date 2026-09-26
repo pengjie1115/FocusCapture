@@ -197,6 +197,9 @@ public partial class TodoSummaryWindow : Window
         };
 
         var readButtons = BuildReadButtons(e, isRead);
+        // 「AI 整理」放在按钮区最前：与灵感速览一样的位置语义（它那边也是排在其它操作按钮之前）
+        readButtons.Children.Insert(0, MakeTidyButton(e));
+
         var editButtons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -205,6 +208,8 @@ public partial class TodoSummaryWindow : Window
         };
         var btnSave = MakeButton("保存", Color.FromRgb(0x4C, 0xAF, 0x50));
         var btnCancel = MakeButton("取消", Color.FromRgb(0xE0, 0xE0, 0xE0));
+        // 编辑态同样留一个入口：用户往往在改的过程中才决定"这段得理一理"
+        editButtons.Children.Add(MakeTidyButton(e));
         editButtons.Children.Add(btnSave);
         editButtons.Children.Add(btnCancel);
 
@@ -240,6 +245,10 @@ public partial class TodoSummaryWindow : Window
 
         btnSave.Click += (_, _) => SaveEdit(ui);
         btnCancel.Click += (_, _) => ExitEdit(ui);
+
+        // 2026-09-26 用户要求：点编辑框以外的任何地方 = 自动保存并退出编辑态
+        //（灵感速览面板早有这套行为，这里按本面板「代码建行」的结构移植一份，口径保持一致）
+        editBox.LostFocus += (_, _) => OnEditBoxLostFocus(ui);
 
         return row;
     }
@@ -325,6 +334,51 @@ public partial class TodoSummaryWindow : Window
         ui.ReadButtons.Visibility = Visibility.Visible;
         ui.EditButtons.Visibility = Visibility.Collapsed;
         if (ReferenceEquals(_editingRow, ui)) _editingRow = null;
+    }
+
+    // ═══════════════ 点编辑框以外 → 自动保存退出（2026-09-26 用户要求）═══════════════
+
+    /// <summary>
+    /// 编辑框失焦 → 若焦点真的离开了这一行，就自动保存并退出编辑态。
+    ///
+    /// <para><b>为什么延迟到 Background 优先级</b>：让本行「保存 / 取消」两个按钮的 Click 先跑完 ——
+    /// 它们在 Click 里已经退出编辑态（<c>_editingRow</c> 置空或换人），本回调据此直接返回，
+    /// 于是既不会"点保存后又自动保存一次"，也不会"点取消反而被存下来"。焦点还在本行（编辑框/两个按钮/
+    /// AI 按钮）时同样不动作，否则一点按钮就会先把草稿存掉。</para>
+    ///
+    /// <para><b>空内容</b>：直接取消退出、丢弃改动（2026-09-26 用户拍板，与点「取消」一致）——
+    /// 点外面就弹「内容不能为空」会把这个"无感保存"的体验彻底打断。</para>
+    ///
+    /// <para><b>非空</b>：走与点「保存」完全一致的链路（原地替换 + 时间识别，识别到时间会弹建议条问几点），
+    /// 这是用户明确要求的"自动保存 = 真保存"。</para>
+    /// </summary>
+    private void OnEditBoxLostFocus(RowUi ui)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!ReferenceEquals(_editingRow, ui)) return;   // 已退出 / 已换编辑目标 / 列表已重建
+            if (IsFocusInRow(ui)) return;                    // 焦点仍在编辑框或本行按钮上
+
+            if (string.IsNullOrWhiteSpace(ui.EditBox.Text))
+            {
+                ExitEdit(ui);   // 空内容：丢弃改动直接退出
+                return;
+            }
+
+            SaveEdit(ui);
+        }), DispatcherPriority.Background);
+    }
+
+    /// <summary>焦点是否还落在这一行内 —— 行内所有元素（编辑框 / 各按钮）都在行根 Border 之下，用 Tag 认行。</summary>
+    private static bool IsFocusInRow(RowUi ui)
+    {
+        var focused = Keyboard.FocusedElement as DependencyObject;
+        while (focused != null)
+        {
+            if (focused is Border b && ReferenceEquals(b.Tag, ui)) return true;
+            focused = VisualTreeHelper.GetParent(focused);
+        }
+        return false;
     }
 
     /// <summary>
@@ -420,6 +474,77 @@ public partial class TodoSummaryWindow : Window
     /// <summary>点「忽略」：不设提醒（编辑内容早在保存时就已落盘）</summary>
     private void BtnSuggestIgnore_Click(object sender, RoutedEventArgs e) => HideSuggestBar();
 
+    // ═══════════════ AI 整理（2026-09-26）═══════════════
+
+    /// <summary>同一时间只允许整理一条（按钮禁用 + 本标志双保险）—— 防连点发出多个请求、回来时行已不在。</summary>
+    private bool _tidyRunning;
+
+    /// <summary>
+    /// 「AI」按钮：文字小按钮 + 悬停说明（与灵感速览行尾那个同款口径）。
+    /// 只读态与编辑态各建一个实例 —— 同一个控件不能同时挂在两个父容器上。
+    /// </summary>
+    private Button MakeTidyButton(NoteEntry e)
+    {
+        var btn = MakeButton("AI", Color.FromRgb(0x4C, 0xAF, 0x50));
+        btn.ToolTip = "AI 整理：把这一大段理成有条理的内容（先出预览，再决定改不改）";
+        btn.Click += async (_, _) => await RunTidyAsync(e, btn);
+        return btn;
+    }
+
+    /// <summary>
+    /// 整理一条待办。内容取自「正在编辑就用编辑框里的、否则用展示内容」——
+    /// 用户在编辑态点它，期待整理的是自己刚写的那版，而不是已落盘的旧文本。
+    /// 落库口径（替换原文 / 另存新笔记 / 复制）全部收在 <see cref="AiTidyFlow"/>，
+    /// 与灵感速览面板、全屏编辑窗共用一份，防三处行为漂移。
+    /// </summary>
+    private async Task RunTidyAsync(NoteEntry e, Button btn)
+    {
+        if (_tidyRunning) return;
+
+        if (ImmersiveSessionService.IsLocked(e.Timestamp))
+        {
+            System.Windows.MessageBox.Show(this, "沉浸式输入进行中，暂不可整理", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var ui = FindRowUi(e);
+        var text = ui != null && ReferenceEquals(_editingRow, ui)
+            ? ui.EditBox.Text
+            : (e.EditedContent ?? e.Content);
+
+        _tidyRunning = true;
+        var original = btn.Content;
+        btn.IsEnabled = false;
+        btn.Content = "…";
+        try
+        {
+            var result = await AiTidyFlow.RunAsync(this, _notes, _settings, _aiProvider, e, text);
+            // 只有「替换原文」才重载列表：另存出来的是一条普通笔记，本面板只显示待办、不会出现它；
+            // 而重载会顺手把编辑态连同用户没保存的草稿一起丢掉。
+            if (result?.Choice == TidyChoice.Replace) ReloadFromNotes();
+        }
+        finally
+        {
+            _tidyRunning = false;
+            btn.IsEnabled = true;
+            btn.Content = original;
+        }
+    }
+
+    /// <summary>按条目找它当前那一行的 UI 引用（列表重建后行引用会换，不能缓存）。</summary>
+    private RowUi? FindRowUi(NoteEntry e)
+    {
+        foreach (var host in new[] { ReadList, PendingList, OverdueList })
+        {
+            foreach (var child in host.Children)
+            {
+                if (child is Border b && b.Tag is RowUi ui && ReferenceEquals(ui.Entry, e)) return ui;
+            }
+        }
+        return null;
+    }
+
     // ═══════════════ 右键菜单 ═══════════════
 
     /// <summary>
@@ -463,17 +588,7 @@ public partial class TodoSummaryWindow : Window
     /// <summary>右键「编辑」：找到该条目当前那一行，走与双击同一条入口。</summary>
     private void BeginEditByEntry(NoteEntry e)
     {
-        foreach (var host in new[] { ReadList, PendingList, OverdueList })
-        {
-            foreach (var child in host.Children)
-            {
-                if (child is Border b && b.Tag is RowUi ui && ReferenceEquals(ui.Entry, e))
-                {
-                    EnterEdit(ui);
-                    return;
-                }
-            }
-        }
+        if (FindRowUi(e) is { } ui) EnterEdit(ui);
     }
 
     /// <summary>右键「复制」：与灵感速览 CtxCopy_Click 同一条路径（标记自复制 + SafeClipboard 容错，绝不抛）。

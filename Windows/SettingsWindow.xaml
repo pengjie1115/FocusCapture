@@ -477,6 +477,45 @@
                             </Grid>
                         </Border>
                     </DockPanel>
+
+                    <!-- AI 整理模型（2026-09-26 新增）：与上面的「默认模型」同一套交互 ——
+                         点框弹已配置模型列表、点中即生效（不弹确认框）。它决定「AI 整理」按钮用哪个模型；
+                         不选（列表第一项「跟随当前模型」）就与聊天共用同一个模型。
+                         宽度同样 258，与「默认模型」框左缘对齐（视觉上是一列）。 -->
+                    <DockPanel x:Name="TidyModelRowHost" Width="258" Margin="0,10,0,0" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" Text="AI 整理模型" Foreground="#B8B8B8"
+                                   VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Border x:Name="TidyModelRow" Height="30"
+                                Padding="10,0"
+                                Background="#3A3A3A" BorderBrush="#555555" BorderThickness="1"
+                                CornerRadius="4" Cursor="Hand"
+                                MouseLeftButtonUp="TidyModelRow_Click"
+                                ToolTip="点一下弹出下拉，指定「AI 整理」用哪个模型（默认跟随当前模型）">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <!-- 与上方按钮/默认模型框同款悬停反馈，否则框看着是"死"的 -->
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#505050"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="AiTidyModelText" Grid.Column="0" Text=""
+                                           Foreground="#E0E0E0"
+                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                <Path Grid.Column="1" Data="M0,0 L4,4 L8,0"
+                                      Stroke="#9A9A9A" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </DockPanel>
                 </StackPanel>
 
                 <!-- ── 板块 2：AI 功能（原「AI 模型」板块里除供应商/模型之外的设置，2026-09-23 拆出） ── -->

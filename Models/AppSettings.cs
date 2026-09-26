@@ -103,6 +103,18 @@ public class AppSettings
     /// </summary>
     public string DefaultModelKey { get; set; } = "";
 
+    /// <summary>
+    /// <b>AI 整理专用模型</b>（2026-09-26 新增），格式同 <see cref="ActiveModelKey"/>。
+    ///
+    /// <para>设置 → AI 模型 → 「AI 整理模型」里点选，点中即生效（不弹确认框）。
+    /// 整理是"读一整段笔记再重写"的重活，用户可能想让它走一个更擅长写作 / 更长上下文的模型，
+    /// 而不是跟聊天共用一个 —— 这就是本字段存在的理由。</para>
+    ///
+    /// <para><b>为空 = 跟随当前活跃模型</b>（与翻译/搜索/时间识别一致）；键失效或那家供应商没填 Key
+    /// 也一律回落活跃模型 —— 一个过期键不该把「AI 整理」锁死，用户看到的是"点了没反应"这种最难查的病。</para>
+    /// </summary>
+    public string AiTidyModelKey { get; set; } = "";
+
     // ── AI 问答界面（2026-09-23 重构：侧边栏 / 起手页）──
 
     /// <summary>用户在 AI 问答里的昵称。驱动两处：起手页欢迎语里的称呼、侧边栏底部用户区。

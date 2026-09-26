@@ -1429,7 +1429,7 @@ public partial class QuickViewWindow : Window
         vm.CancelEdit();
 
         var win = new NoteEditWindow(_noteService, vm,
-            $"编辑笔记 · {vm.Entry.Timestamp:yyyy-MM-dd HH:mm}", _aiProvider)
+            $"编辑笔记 · {vm.Entry.Timestamp:yyyy-MM-dd HH:mm}", _aiProvider, _settings)
         { Owner = this };
 
         if (win.ShowDialog() == true)
@@ -1712,6 +1712,48 @@ public partial class QuickViewWindow : Window
     {
         foreach (var vm in _viewModels) vm.IsSelected = !vm.IsSelected;
         UpdateSelectionUI();
+    }
+
+    // ── v3.11（2026-09-26）：行尾「AI 整理」按钮 ──
+
+    /// <summary>同一时间只允许整理一条（按钮禁用 + 本标志双保险）—— 避免连点发出多个请求、回来时列表已被重建。</summary>
+    private bool _tidyRunning;
+
+    /// <summary>
+    /// 行尾「AI」按钮：把这条内容交给大模型整理，先出预览对照窗再决定改不改。
+    /// 行内编辑态下整理的是**编辑框里正在改的内容**（不是已落盘的旧文本），否则用户会看到"我改了它却按旧内容整理"。
+    /// 落库口径（替换原文 / 另存新笔记 / 复制）全部收在 AiTidyFlow，与本面板之外的另两个入口共用一份，防行为漂移。
+    /// </summary>
+    private async void BtnAiTidy_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not NoteEntryViewModel vm) return;
+        if (_tidyRunning) return;
+
+        if (ImmersiveSessionService.IsLocked(vm.Entry.Timestamp))
+        {
+            System.Windows.MessageBox.Show("沉浸式输入进行中，暂不可整理", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var text = vm.IsEditing ? vm.EditText : vm.Content;
+
+        _tidyRunning = true;
+        var originalContent = btn.Content;
+        btn.IsEnabled = false;
+        btn.Content = "…";
+        try
+        {
+            var result = await AiTidyFlow.RunAsync(this, _noteService, _settings, _aiProvider, vm.Entry, text);
+            // 只有真的改了数据（替换原文 / 另存新笔记）才刷新；复制不改数据，刷新反而会打断正在进行的编辑
+            if (result?.DataChanged == true) Refresh();
+        }
+        finally
+        {
+            _tidyRunning = false;
+            btn.IsEnabled = true;
+            btn.Content = originalContent;   // 列表可能已被 Refresh 重建，此时改的是废弃实例，无害
+        }
     }
 
     private void BtnDeleteOne_Click(object sender, RoutedEventArgs e)

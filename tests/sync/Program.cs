@@ -120,6 +120,7 @@ internal static partial class Program
             Run("深色滚动条与标题栏", TestDarkUiChrome);     // 全局 ScrollBar 样式 + DWM 深色标题栏（2026-09-21）
             Run("AI 分组与批量 UI", TestAiChatGroupUi);      // 进分组不收起 / 分组三点 / 批量条 / 标题栏底色 / 默认模型框（2026-09-26）
             Run("AI 模型配置", TestAiModelConfig);          // 老配置迁移 / 三级解析 / 源生成 JSON / max_tokens 规则（2026-09-23）
+            await RunAsync("AI 整理", TestAiTidy);          // 整理模型解析 / 三道闸 / 回包清洗 / 三入口接线契约（2026-09-26）
             Run("会话分组", TestChatGroups);                 // 收藏保留分区 / 查重 / 改名时间戳 / 删除顺序 / 跨端合并裁决 / 全文搜索（2026-09-23）
             await RunAsync("会话同步生命周期", TestChatSyncLifecycle);   // 构造不订阅 / 分组钩子发射 / Dispose 幂等 / 停用后无副作用（2026-09-24）
             Run("运行时下载", TestRuntimeRecipes);           // 下载配方 + 打包契约（下载器流程由快层 [10] 守，2026-09-21）
@@ -1890,6 +1891,191 @@ print(json.dumps({
         }
     }
 
+    // ══════════════════ AI 整理（2026-09-26） ══════════════════
+    //
+    // 守三件事：
+    //   ① 「AI 整理模型」的解析优先级 —— 没选跟随活跃模型 / 选了必须用它 / 键失效回落。
+    //      这三条错法的表现全是「点了没反应」或「我选的模型不生效」这类最难查的病（界面不报任何错）。
+    //   ② 出餐前的三道闸 —— 空内容 / 超长 / 未配模型，一律不发请求并给人话。
+    //      未配 Key 还发请求 = 让用户白等一次超时；超长照发 = 要么 400，要么只整理了前半段（后者更糟）。
+    //   ③ 回包清洗后才交给界面 —— ``` 围栏与「以下是整理后的内容：」一旦写进用户笔记就是不可逆的脏数据。
+    //
+    // 另外守三个入口的接线契约：它们必须共用 AiTidyFlow 这一份落库口径，不许各自实现一遍。
+    private static async Task TestAiTidy()
+    {
+        static string Short(string? v) => v is null ? "(null)" : (v.Length <= 60 ? v : v[..60] + "…");
+        static int CountOf(string src, string token)
+            => System.Text.RegularExpressions.Regex.Matches(src, System.Text.RegularExpressions.Regex.Escape(token)).Count;
+
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+
+        // ── 1. 模型解析优先级 ──
+        var s = new AppSettings { ActiveModelKey = "pA/mA1" };
+        s.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pA", Name = "A", BaseUrl = "https://a.example/v1", ApiKey = "kA",
+            Models =
+            {
+                new AiModelEntry { Id = "mA1", DisplayName = "聊天模型" },
+                new AiModelEntry { Id = "mA2", DisplayName = "整理模型" },
+            },
+        });
+
+        Check(NoteTidyService.ResolveModel(s)?.ModelId == "mA1",
+              "没指定整理模型 → 跟随当前活跃模型（与翻译 / 搜索 / 时间识别同一口径）",
+              "跟随链路断了 → 用户没做任何配置时功能直接不可用，而他明明配好了模型");
+
+        s.AiTidyModelKey = "pA/mA2";
+        Check(NoteTidyService.ResolveModel(s)?.ModelId == "mA2",
+              "指定了整理模型 → 必须用它，而不是活跃模型",
+              "用错了 = 用户在设置里选的模型根本不生效，界面还不会报任何错");
+
+        s.AiTidyModelKey = "pA/已被删掉的模型";
+        Check(NoteTidyService.ResolveModel(s)?.ModelId == "mA1",
+              "整理模型键失效（供应商 / 模型被删）→ 回落活跃模型，不让一个过期键把功能锁死");
+
+        var noKeySettings = new AppSettings();
+        noKeySettings.AiModelProviders.Add(new AiProviderEntry
+        {
+            Id = "pX", Name = "X", BaseUrl = "https://x.example/v1", ApiKey = "",
+            Models = { new AiModelEntry { Id = "mX" } },
+        });
+        noKeySettings.AiTidyModelKey = "pX/mX";
+        var active = new StubChatProvider("不该被用到的回包");
+        Check(ReferenceEquals(NoteTidyService.ResolveProvider(active, noKeySettings), active),
+              "整理模型那家没填 Key → 回落活跃 provider（用户刚配好的模型明明能用，不能点了却说没配）");
+
+        // ── 2. 三道闸：全部必须「不发请求 + 给人话」──
+        var called = 0;
+        var counting = new StubChatProvider("x", onCall: () => called++);
+
+        var empty = await NoteTidyService.TidyAsync(counting, "   ");
+        Check(!empty.Ok && called == 0,
+              "空内容 → 直接拒绝，一个请求都不发");
+
+        var tooLong = await NoteTidyService.TidyAsync(counting, new string('中', NoteTidyPrompt.MaxInputChars + 1));
+        Check(!tooLong.Ok && called == 0 && (tooLong.Error ?? "").Contains(NoteTidyPrompt.MaxInputChars.ToString()),
+              "超长 → 拒绝并说明上限（不做截断、不做分段；2026-09-26 用户拍板）",
+              "照发过去要么被服务商 400，要么只整理了前半段 —— 后者更糟：用户会以为后半段也整理过了");
+
+        var noModel = await NoteTidyService.TidyAsync(null, "随便一段");
+        Check(!noModel.Ok && (noModel.Error ?? "").Contains("AI 模型"),
+              "未配模型 → 短路不发请求，并把用户指到设置页",
+              "空 Key 发出去必然 401，用户白等一次超时才知道要配 Key");
+
+        var emptyKey = await NoteTidyService.TidyAsync(new StubChatProvider("x", apiKey: ""), "随便一段");
+        Check(!emptyKey.Ok,
+              "provider 存在但 Key 为空（老配置残留）→ 同样短路");
+
+        // ── 3. 回包清洗后才交给界面 ──
+        var fenced = new StubChatProvider("```markdown\n好的，以下是整理后的内容：\n- 要点一\n- 要点二\n```");
+        var ok = await NoteTidyService.TidyAsync(fenced, "一段原始文字");
+        Check(ok.Ok && ok.Text == "- 要点一\n- 要点二",
+              "返回必须剥掉「``` 围栏 + 开场白」再交给界面",
+              $"实际「{Short(ok.Text)}」—— 这些字符会原样写进用户笔记，且不可逆");
+
+        var blank = await NoteTidyService.TidyAsync(new StubChatProvider("   "), "一段原始文字");
+        Check(!blank.Ok,
+              "模型回空 → 按失败处理（绝不能把用户的内容替换成空白）");
+
+        var boom = await NoteTidyService.TidyAsync(new StubChatProvider("", throwOnCall: true), "一段原始文字");
+        Check(!boom.Ok && (boom.Error ?? "").Length > 0,
+              "网络 / 接口异常 → 返回人话错误而不是抛出去（界面动作不因外部成败崩）");
+
+        // ── 4. 三个入口的接线契约 ──
+        var quickXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "QuickViewWindow.xaml"));
+        var quickCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "QuickViewWindow.xaml.cs"));
+        var todoCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "TodoSummaryWindow.xaml.cs"));
+        var editXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "NoteEditWindow.xaml"));
+        var editCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "NoteEditWindow.xaml.cs"));
+        var flowCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AiTidyFlow.cs"));
+        var setXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml"));
+        var setCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml.cs"));
+
+        Check(quickXaml.Contains("x:Name=\"BtnAiTidy\"") && quickXaml.Contains("Click=\"BtnAiTidy_Click\"")
+              && quickCs.Contains("AiTidyFlow.RunAsync"),
+              "灵感速览行尾必须有 AI 按钮，且点击接的是共用流程");
+
+        Check(quickXaml.IndexOf("x:Name=\"BtnAiTidy\"", StringComparison.Ordinal)
+              < quickXaml.IndexOf("Click=\"BtnDeleteOne_Click\"", StringComparison.Ordinal),
+              "AI 按钮必须排在 × 删除之前（2026-09-26 用户指定位置）",
+              "顺序反了不报错、只是与用户要的位置不同 —— 只有出图或读源码才看得出");
+
+        Check(todoCs.Contains("MakeTidyButton") && todoCs.Contains("AiTidyFlow.RunAsync"),
+              "待办汇总面板必须有 AI 入口（只读态与编辑态都要有）");
+
+        Check(editXaml.Contains("x:Name=\"BtnAiTidy\"") && editCs.Contains("AiTidyFlow.RunAsync"),
+              "全屏编辑窗必须有 AI 整理入口（长文正在那里编辑，正是最需要它的场景）");
+
+        Check(CountOf(quickCs, "AiTidyFlow.RunAsync") == 1
+              && CountOf(todoCs, "AiTidyFlow.RunAsync") == 1
+              && CountOf(editCs, "AiTidyFlow.RunAsync") == 1,
+              "三个入口各自只准调用一次共用流程（多个调用点 = 又分叉出第二套落库口径）",
+              $"实际调用次数：速览 {CountOf(quickCs, "AiTidyFlow.RunAsync")} / 汇总 {CountOf(todoCs, "AiTidyFlow.RunAsync")} / 全屏 {CountOf(editCs, "AiTidyFlow.RunAsync")}");
+
+        Check(flowCs.Contains("TidyChoice.Copy") && flowCs.Contains("SaveNote") && flowCs.Contains("SaveEdited"),
+              "共用流程里三个出口必须都在（复制 / 另存为新笔记 / 替换原文）");
+        Check(!flowCs.Contains("AppendToNote"),
+              "刻意不做「追加为 AI 子条目」（2026-09-26 用户拍板：预览窗只留三个出口）",
+              "加上去就得动 NoteService 的标记行解析与挂靠，慢层那 20 条断言全要跟着改 —— 本次范围外");
+
+        // ── 5. 待办汇总：点编辑框以外自动保存退出（2026-09-26 用户报的毛病）──
+        Check(todoCs.Contains("OnEditBoxLostFocus") && todoCs.Contains("IsFocusInRow")
+              && todoCs.Contains("DispatcherPriority.Background"),
+              "待办汇总面板必须支持「点编辑框以外自动保存退出」",
+              "缺了它，用户改完内容必须回去点保存/取消 —— 这正是用户报的那个毛病");
+
+        Check(todoCs.Contains("string.IsNullOrWhiteSpace(ui.EditBox.Text)") && todoCs.Contains("ExitEdit(ui)"),
+              "点外面时内容为空 → 直接取消退出、丢弃改动（不弹「内容不能为空」把无感保存打断）");
+
+        // ── 6. 设置页：AI 整理模型选择框 ──
+        Check(setXaml.Contains("x:Name=\"TidyModelRow\"") && setXaml.Contains("TidyModelRow_Click")
+              && setCs.Contains("ApplyTidyModel") && setCs.Contains("AiTidyModelKey"),
+              "设置页必须有可点选的「AI 整理模型」框（点中即生效、不弹确认框）");
+        Check(setCs.Contains("\"跟随当前模型\""),
+              "模型列表第一项必须是「跟随当前模型」（不选 = 与聊天共用一个模型）");
+    }
+
+    /// <summary>
+    /// 慢层专用假 provider：不联网。用来验证「出餐前的闸门」与「回包清洗」——
+    /// 真发请求的路径要联网、耗时长，属于「自动化证明不了」的类别，交人工验收；
+    /// 但闸门与清洗是纯本地逻辑，必须由机器守住。
+    /// </summary>
+    private sealed class StubChatProvider : IChatProvider
+    {
+        private readonly string _reply;
+        private readonly Action? _onCall;
+        private readonly bool _throwOnCall;
+
+        public StubChatProvider(string reply, string apiKey = "sk-stub", Action? onCall = null, bool throwOnCall = false)
+        {
+            _reply = reply;
+            ApiKey = apiKey;
+            _onCall = onCall;
+            _throwOnCall = throwOnCall;
+        }
+
+        public string Model => "stub-model";
+        public string BaseUrl => "https://stub.example/v1";
+        public string ApiKey { get; }
+
+        public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+        {
+            _onCall?.Invoke();
+            if (_throwOnCall) throw new InvalidOperationException("模拟网络失败");
+            return Task.FromResult(_reply);
+        }
+
+        public async IAsyncEnumerable<string> StreamAsync(IReadOnlyList<ChatMessage> messages,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public Task<bool> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult(true);
+    }
+
     private static void TestAiModelConfig()
     {
         // ── 迁移：真配过的老配置 → 恰好一条供应商 ──
@@ -2016,6 +2202,14 @@ print(json.dumps({
             AppJsonContext.Default.AppSettings);
         Check(keyBack != null && keyBack.DefaultModelKey == "snap/m1",
               "DefaultModelKey 必须进 AppJsonContext 序列化往返（漏注册 = 用户存一次设置就丢默认模型）");
+
+        // 2026-09-26 新增：AI 整理模型键同样要能往返（同一条理由，源生成漏注册只在用户存设置那一刻炸）
+        withNew.AiTidyModelKey = "snap/tidy";
+        var tidyKeyBack = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(withNew, AppJsonContext.Default.AppSettings),
+            AppJsonContext.Default.AppSettings);
+        Check(tidyKeyBack != null && tidyKeyBack.AiTidyModelKey == "snap/tidy",
+              "AiTidyModelKey 必须进 AppJsonContext 序列化往返（漏注册 = 用户选一次整理模型就丢）");
 
         // ── 三级解析回退 ──
         var three = new AppSettings { ActiveModelKey = "pA/mA1" };
