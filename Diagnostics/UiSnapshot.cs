@@ -16,9 +16,20 @@ namespace FocusCapture.Diagnostics;
 /// 界面快照工具（2026-09-13 引入）：把窗口渲染成 PNG，供开发期自查 UI 问题
 /// （控件溢出 / 文字对比度 / 图标对齐 / 字形残缺 / 裁切）。
 ///
-/// 用法：<c>FocusCapture.exe --snapshot [--out &lt;目录&gt;]</c>
+/// 用法：<c>FocusCapture.exe --snapshot [--out &lt;目录&gt;] [--only &lt;关键字&gt;] [--list]</c>
 /// 输出：默认 <c>%TEMP%\fc-ui-snapshot\</c>，文件名形如 <c>01-灵感速览面板.png</c>，
 ///       同时写一份 <c>snapshot.log</c> 记录每个窗口的实际像素尺寸（尺寸异常 = 布局异常的第一信号）。
+///
+/// <b>按需出图（2026-09-26 新增）</b>：45 个场景全量跑一遍约 1 分钟，改一个板块时大半的图是白跑的。
+/// <c>--list</c> 只把「将要渲染的场景名」落盘成 <c>scenes.txt</c>（不构造窗口，毫秒级完成）；
+/// <c>--only 03b,10</c> 只渲染名字里含这些子串的场景 —— <b>建议用编号</b>（<c>03</c> / <c>10b</c>），
+/// 拿中文板块名当关键字会被后续改名甩掉（如 <c>03d-设置-AI 问答界面</c> 名字里根本没有「AI 功能」）。
+/// 两者可叠加：<c>--list --only 03</c> = 只看 03 这一批有哪些场景。
+/// <b>从 PowerShell / dev.ps1 调用时，值必须加引号</b>（<c>-Only '03d,10e'</c>）：不加引号时
+/// PowerShell 会把 <c>03d</c> 当 decimal 后缀吃成 <c>3</c>，静默匹配到一堆无关场景（2026-09-26 实测踩到）。
+///
+/// <b>关键字一个都没匹配到时必须失败退出（退出码 2）</b>：按需出图的致命失败模式是
+/// 「漏了图却不知道」—— 安静地出 0 张等于把整个判读环节骗过去，比全量慢危险得多。
 ///
 /// 设计约束（改动本文件前务必先读）：
 /// - <b>数据隔离</b>：强制把 <see cref="FocusCapturePaths.RootOverride"/> 指向临时沙箱，
@@ -35,6 +46,27 @@ internal static class UiSnapshot
 
     private const string OutFlag = "--out";
 
+    /// <summary>只列清单不渲染（<c>--list</c>）。清单落盘成 <c>scenes.txt</c>，给 dev.ps1 读。</summary>
+    private const string ListFlag = "--list";
+
+    /// <summary>按关键字过滤场景（<c>--only &lt;关键字&gt;</c>，逗号分隔可给多个）。</summary>
+    private const string OnlyFlag = "--only";
+
+    /// <summary>本次是否只列清单（<c>--list</c>）。</summary>
+    private static bool _listOnly;
+
+    /// <summary>场景过滤关键字；空数组 = 全量出图（保持改造前的行为）。</summary>
+    private static string[] _filters = Array.Empty<string>();
+
+    /// <summary>入选（将要渲染）的场景名，顺序即渲染顺序。</summary>
+    private static readonly List<string> _selected = new();
+
+    /// <summary>被 Capture 调用过的场景总数 —— 用来算「入选 n / 共 m」，不硬编码 45。</summary>
+    private static int _total;
+
+    /// <summary>通过过滤的场景数。<c>--only</c> 下为 0 时要失败退出（见 Run 收尾）。</summary>
+    private static int _matched;
+
     /// <summary>命令行是否请求了快照模式。</summary>
     public static bool IsRequested(string[] args) =>
         args.Any(a => a.Equals(Flag, StringComparison.OrdinalIgnoreCase));
@@ -43,6 +75,8 @@ internal static class UiSnapshot
     public static void Run(string[] args)
     {
         var outDir = ResolveOutDir(args);
+        _listOnly = args.Any(a => a.Equals(ListFlag, StringComparison.OrdinalIgnoreCase));
+        _filters = ResolveFilters(args);
         Directory.CreateDirectory(outDir);
 
         // 隔离沙箱：所有落盘路径改道，绝不触碰真实数据
@@ -56,6 +90,7 @@ internal static class UiSnapshot
         log.AppendLine($"沙箱目录: {sandbox}");
         log.AppendLine();
 
+        var exitCode = 0;
         try
         {
             var settings = AppSettings.Load();
@@ -445,8 +480,28 @@ internal static class UiSnapshot
             Capture("30-AI 整理预览窗", () => new AiTidyPreviewWindow(
                 "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
                 "- **供应商沟通**\n  - 价格与交期：都还行\n  - 加急：要加钱\n"
-                + "- **待办**\n  - 上周的会议纪要还没发给他（明天 10:00 前处理掉）",
+                +                 "- **待办**\n  - 上周的会议纪要还没发给他（明天 10:00 前处理掉）",
                 "Agnes 3.0 Flash"), outDir, log);
+
+            // ── 收尾（2026-09-26 按需出图）──
+            // ⚠ 必须写在 finally 落 snapshot.log 之前，否则这两条结论进不了日志、排障时看不见。
+            log.AppendLine();
+            log.AppendLine($"场景入选 {_matched} / 共 {_total}" +
+                           (_filters.Length > 0 ? $"（--only {string.Join(",", _filters)}）" : "（未过滤）"));
+
+            if (_listOnly)
+            {
+                // 清单只能落文件：WPF 是 GUI 子系统程序，stdout 拿不到（`& exe` 连退出码都不给）。
+                File.WriteAllLines(Path.Combine(outDir, "scenes.txt"), _selected, Encoding.UTF8);
+                log.AppendLine($"清单模式：{_selected.Count} 个场景入选、一个窗口都没构造 -> scenes.txt");
+            }
+            else if (_filters.Length > 0 && _matched == 0)
+            {
+                // 按需出图的致命失败 = 漏图而不自知。这里必须失败退出，不能安静地出 0 张。
+                exitCode = 2;
+                log.AppendLine($"!! --only「{string.Join(",", _filters)}」未匹配到任何场景 —— " +
+                               "先跑 `dev.ps1 snap -List` 拿清单，关键字建议用编号（如 03b / 10）");
+            }
         }
         catch (Exception ex)
         {
@@ -460,8 +515,10 @@ internal static class UiSnapshot
             catch { /* 日志写不出也别卡住 */ }
         }
 
-        // 快照模式下不创建主窗口，显式退出
-        Application.Current?.Shutdown();
+        // 快照模式下不创建主窗口，显式退出。
+        // 退出码 2 =「--only 一个都没匹配上」，其余一律 0 —— dev.ps1 靠它区分
+        //「关键字写错了」和「渲染全失败」，这两种失败一个该改参数、一个该改代码。
+        Application.Current?.Shutdown(exitCode);
     }
 
     /// <summary>
@@ -509,6 +566,24 @@ internal static class UiSnapshot
     private static void Capture(string name, Func<Window> factory, string outDir, StringBuilder log,
         Action<Window>? afterShow = null, int scale = 1)
     {
+        // ── 按需出图的守门员（2026-09-26）──
+        // 不匹配的场景**连窗口都不构造**，两个理由：
+        //   ① 快 —— --list 下整轮毫秒级（不构造窗口就没有布局与渲染开销）；
+        //   ② 少串扰 —— settings 是同一份实例，场景 11/13/29 都会改它（宽度、标题栏、欢迎语），
+        //      少跑一个场景就少一份"意外改到共享状态"的机会。
+        _total++;
+        if (!IsSelected(name))
+        {
+            log.AppendLine($"{name}: 跳过（不匹配 --only）");
+            return;
+        }
+        _matched++;
+        if (_listOnly)
+        {
+            _selected.Add(name);
+            return;
+        }
+
         Window? win = null;
         try
         {
@@ -619,6 +694,29 @@ internal static class UiSnapshot
             log.AppendLine("  角标边界读取失败：" + ex.Message);
         }
     }
+
+    /// <summary>解析 <c>--only</c>：逗号分隔可给多个关键字，子串匹配（不区分大小写）。</summary>
+    private static string[] ResolveFilters(string[] args)
+    {
+        var list = new List<string>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(OnlyFlag, StringComparison.OrdinalIgnoreCase)) continue;
+            // 只给开关不给值 = 忽略（退回全量）。刻意不报错：参数的笔误不该变成「一张图都没有」，
+            // 失败方向要偏向「多出图」而不是「漏图」—— 漏图是无声的，多出图只是慢。
+            if (i + 1 >= args.Length) break;
+            foreach (var piece in args[i + 1].Split(',',
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                list.Add(piece);
+            }
+        }
+        return list.ToArray();
+    }
+
+    /// <summary>场景名是否入选：没给过滤 = 全选；给了 = 名字里含任一关键字。</summary>
+    private static bool IsSelected(string name) =>
+        _filters.Length == 0 || _filters.Any(f => name.Contains(f, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>解析输出目录：<c>--out &lt;dir&gt;</c> 优先，否则 %TEMP%\fc-ui-snapshot。</summary>
     private static string ResolveOutDir(string[] args)

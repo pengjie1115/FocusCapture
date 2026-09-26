@@ -34,7 +34,19 @@ param(
 
     # start 的起点（2026-09-21 补）：原先写死从 main 开，而分支链场景（后一个 feature 从前一个开出）
     # 只能手敲 git —— 脚本能力与实际用法脱节。默认仍是 main，老用法不变。
-    [string]$From = 'main'
+    [string]$From = 'main',
+
+    # snap 的按需出图（2026-09-26 新增）：45 个场景全量跑一遍约 1 分钟，而改一个板块时大半的图是白跑的。
+    # -List 只拿清单（不渲染，毫秒级）、-Only 只出选中的场景。可单独用，也可叠加：
+    # `snap -List -Only 03` = 只看 03 这一批有哪些场景。
+    #
+    # ⚠ 必须是 [string[]] 而非 [string]（2026-09-26 实测踩到）：PowerShell 把**逗号解析成数组分隔符**，
+    # `-Only 03b,03c,03d` 传进来是三个元素的数组，绑给 [string] 会**参数绑定失败** ——
+    # 脚本压根不执行、零输出，而 $LASTEXITCODE 还保留着上一次的值（看着像成功了）。
+    # 本文件 help 里推荐的就是「多个用逗号」，照文档写反而静默失败，所以这里收数组再自己 join。
+    [string[]]$Only,
+
+    [switch]$List
 )
 
 # 注意：这里【不要】设 [Console]::OutputEncoding = UTF8。
@@ -102,7 +114,9 @@ function Invoke-External {
     #
     # 注：git 的界面消息以英文为主，按 UTF-8 解也正常；仓库内容（commit message）本就是 UTF-8，
     #     这也正是 Get-Git 用同一套做法的原因。
-    param([string]$FilePath, [string[]]$Arguments)
+    # ③ -Quiet（2026-09-26 补）：成功时不打印输出（给「只关心成不成」的场合用，如 snap 的前置编译）；
+    #    失败时**照样全部打印** —— 静默的失败是排查灾难，安静只允许发生在成功路径上。
+    param([string]$FilePath, [string[]]$Arguments, [switch]$Quiet)
     $oldEnc = [Console]::OutputEncoding
     $captured = @()
     try {
@@ -112,7 +126,9 @@ function Invoke-External {
     } finally {
         [Console]::OutputEncoding = $oldEnc
     }
-    foreach ($line in $captured) { Write-Host $line }
+    if (-not $Quiet -or $code -ne 0) {
+        foreach ($line in $captured) { Write-Host $line }
+    }
     return $code
 }
 
@@ -525,45 +541,122 @@ function Invoke-Recover {
 # ────────────────────────── 6. snap ──────────────────────────
 
 function Invoke-Snap {
+    param([string[]]$Only, [switch]$ListScenes)
     Write-Head 'snap 界面快照'
-    $debugDir = Join-Path $RepoRoot 'bin\Debug'
-    $exe = $null
-    if (Test-Path -LiteralPath $debugDir) {
-        $found = Get-ChildItem -LiteralPath $debugDir -Filter 'FocusCapture.exe' -Recurse -ErrorAction SilentlyContinue
-        if ($found.Count -gt 0) { $exe = $found[0].FullName }
-    }
-    # 不硬编码 net8.0-windows 版本号 —— 上面用通配查找，框架升级也不用改脚本
-    if ($null -eq $exe) {
-        Write-Host '  未找到已编译的 exe，先编译 ...'
-        $c = Invoke-Build
-        if ($c -ne $ExOk) { return $c }
-        $found = Get-ChildItem -LiteralPath $debugDir -Filter 'FocusCapture.exe' -Recurse -ErrorAction SilentlyContinue
-        if ($found.Count -eq 0) {
-            Write-Fail 'snap 定位 exe' 'bin\Debug 下存在 FocusCapture.exe' '没找到' '确认已编译；若框架版本变了本脚本无需改（用的是通配查找）' $ExScriptFail
-            return $ExScriptFail
-        }
-        $exe = $found[0].FullName
+
+    # ── 取值防呆（2026-09-26 实测踩到，务必保留）──
+    # PowerShell 的数字后缀语法会把 `03d` 解析成 decimal 3（`d` 就是 decimal 后缀），
+    # 于是 `-Only 03d` 传进来的其实是「3」—— 它照样匹配得到一堆场景（13/23/30 名字里都有 3），
+    # 脚本「成功」退出、出了一堆无关的图，全程没有任何报错。**典型的静默错误。**
+    # 本项目场景编号是 `01`~`30` 加 `03a`/`10j` 这种，**不存在一位数编号**，
+    # 所以「单个数字」必然是被数值化的产物 —— 这里报错是零误伤。
+    # （此判据依赖编号体系：哪天真出现一位数编号，这条要跟着放掉或改写。）
+    $badOnly = @($Only | Where-Object { $_ -match '^\d$' })
+    if ($badOnly.Count -gt 0) {
+        Write-Fail 'snap -Only 取值' '编号形如 03b / 10e / 10' "收到「$($badOnly[0])」（单个数字）" `
+            "值必须加引号：tools\dev.ps1 snap -Only '03d,10e' —— 不加引号时 PowerShell 把 03d 当 decimal 后缀吃成 3" $ExTaskFail
+        return $ExTaskFail
     }
 
-    $outDir = Join-Path $env:TEMP 'fc-ui-snapshot'
+    # -Only 收的是数组（PowerShell 把逗号解析成数组分隔符）→ 自己 join 成 UiSnapshot 认的逗号串。
+    # 两种写法都通：`-Only 03b,10`（数组）与 `-Only '03b,10'`（单串）。
+    $onlyArg = $Only -join ','
+
+    # ① 先增量编译（2026-09-26 修）
+    # 原实现是「bin\Debug 下有 exe 就直接用」，于是改完代码直接 snap，出的是**旧二进制**的画面：
+    # 图的时间戳是新的、内容却是改之前的。这种错最难发现 —— 图看着「有内容」，就是不对；
+    # 而按需出图会让它更隐蔽（只出 3 张，更没人去逐张比对）。增量编译约 2~3 秒，换掉一个无声错误，划算。
+    Repair-BuildEnv
+    Push-Location $RepoRoot
+    try {
+        $buildCode = Invoke-External 'dotnet' @('build', '-c', 'Debug', '--nologo', '-v', 'q') -Quiet
+    } finally {
+        Pop-Location
+    }
+    if ($buildCode -ne 0) {
+        Write-Fail 'snap 前置编译' '退出码 0' "退出码 $buildCode" `
+            '编译没过就出图 = 拍到旧二进制的画面，所以这里直接停下；看上面的编译错误' $ExTaskFail
+        return $ExTaskFail
+    }
+
+    # 不硬编码 net8.0-windows 版本号 —— 用通配查找，框架升级也不用改脚本
+    $debugDir = Join-Path $RepoRoot 'bin\Debug'
+    $found = @(Get-ChildItem -LiteralPath $debugDir -Filter 'FocusCapture.exe' -Recurse -ErrorAction SilentlyContinue)
+    if ($found.Count -eq 0) {
+        Write-Fail 'snap 定位 exe' 'bin\Debug 下存在 FocusCapture.exe' '编译成功但没找到' `
+            '确认产物路径（框架版本变了本脚本无需改，用的是通配查找）' $ExScriptFail
+        return $ExScriptFail
+    }
+    $exe = $found[0].FullName
+
+    # ② 输出目录带时间戳（2026-09-26 新增）
+    # 原实现每次都把整个 %TEMP%\fc-ui-snapshot 清空重建 —— 于是本脚本自己打印的建议
+    #「对比法最有效（改动前后各跑一次）」根本执行不了：第二遍跑完，第一遍的基线图已经没了。
+    # 现在一次一个 yyyyMMdd-HHmmss 子目录，改动前后各跑一次即可直接并排比。
+    $rootDir = Join-Path $env:TEMP 'fc-ui-snapshot'
+    if (-not (Test-Path -LiteralPath $rootDir)) { New-Item -ItemType Directory -Path $rootDir -Force | Out-Null }
+    $outDir = Join-Path $rootDir (Get-Date -Format 'yyyyMMdd-HHmmss')
     if (Test-Path -LiteralPath $outDir) { Remove-Item -LiteralPath $outDir -Recurse -Force }
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
+    # 清理只保留最近 5 次。**目录名必须严格匹配 yyyyMMdd-HHmmss 才在清理范围内** ——
+    # %TEMP% 里可能有手工建的目录或别的工具的产物，通配删除是红线；这里只删本脚本自己的命名模式。
+    $keep = 5
+    $olds = @(Get-ChildItem -LiteralPath $rootDir -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^\d{8}-\d{6}$' } |
+              Sort-Object -Property Name -Descending)
+    if ($olds.Count -gt $keep) {
+        $stale = @($olds[$keep..($olds.Count - 1)])
+        foreach ($d in $stale) { Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+        Write-Host "  已清理 $($stale.Count) 个更早的快照目录（保留最近 $keep 次）"
+    }
+
+    $exeArgs = @('--snapshot', '--out', $outDir)
+    if (-not [string]::IsNullOrWhiteSpace($onlyArg)) { $exeArgs += @('--only', $onlyArg) }
+    if ($ListScenes) { $exeArgs += '--list' }
+
     Write-Host "  用 exe：$exe"
+    if ($ListScenes) { Write-Host '  模式：只列清单（不渲染）' -ForegroundColor Cyan }
+    elseif (-not [string]::IsNullOrWhiteSpace($onlyArg)) { Write-Host "  模式：按需出图 --only $onlyArg" -ForegroundColor Cyan }
+    else { Write-Host '  模式：全量出图（未过滤）' -ForegroundColor Cyan }
+
     # 必须用 Start-Process -Wait（两个原因，都实测过）：
     #   ① FocusCapture.exe 是 GUI 子系统程序，用 `& exe` 调用时 PowerShell 不会等它跑完 ——
     #      实测脚本立刻去查目录是空的，而图是在脚本结束之后才写完的（25 张，时间戳对得上）；
-    #   ② 这类程序的退出码不可靠（$LASTEXITCODE 为空），所以【不看退出码，看产物】：
+    #   ② 这类程序的退出码不可靠（`& exe` 时 $LASTEXITCODE 为空），所以【主判据看产物】：
     #      出图目录里出现 PNG 才算成功。能用产物证明的，就不信「声明的退出码」。
-    $proc = Start-Process -FilePath $exe -ArgumentList @('--snapshot', '--out', $outDir) -Wait -PassThru
-    if ($null -ne $proc -and $proc.ExitCode -ne 0) {
-        Write-Host "  程序退出码：$($proc.ExitCode)（仅参考 —— GUI 程序退出码未必可靠，以下面的产物为准）" -ForegroundColor Yellow
+    # 注：Start-Process -PassThru 拿到的 ExitCode 是可靠的，这里把它当**辅助判据** ——
+    #     退出码 2 专表「--only 没匹配到任何场景」，它与「渲染全失败」必须分开报（处置方式不同）。
+    $proc = Start-Process -FilePath $exe -ArgumentList $exeArgs -Wait -PassThru
+
+    # ③ --list：清单只能走文件（GUI 子系统程序拿不到 stdout）
+    if ($ListScenes) {
+        $sceneFile = Join-Path $outDir 'scenes.txt'
+        if (-not (Test-Path -LiteralPath $sceneFile)) {
+            Write-Fail 'snap -List' '生成 scenes.txt' "找不到 $sceneFile" `
+                '清单没落盘；看上面的程序输出与 snapshot.log' $ExTaskFail
+            return $ExTaskFail
+        }
+        $scenes = @(Get-Content -LiteralPath $sceneFile -Encoding UTF8 | Where-Object { $_.Trim() -ne '' })
+        Write-Host ''
+        Write-Host "  共 $($scenes.Count) 个场景（顺序 = 渲染顺序）：" -ForegroundColor Green
+        $i = 0
+        foreach ($s in $scenes) { $i++; Write-Host ("    {0,3}. {1}" -f $i, $s.Trim()) }
+        Write-Host ''
+        Write-Host "  挑好编号后用：tools\dev.ps1 snap -Only '03b,10'（多个用逗号；**值要加引号**，否则 03d 会被 PowerShell 吃成 3）" -ForegroundColor Yellow
+        Write-Host "  清单目录：$outDir"
+        return $ExOk
     }
 
     $pngs = @(Get-ChildItem -LiteralPath $outDir -Filter '*.png' -File -ErrorAction SilentlyContinue)
     if ($pngs.Count -eq 0) {
+        if ($null -ne $proc -and $proc.ExitCode -eq 2) {
+            Write-Fail 'snap 过滤' "关键字「$onlyArg」至少匹配到一个场景" '一个都没匹配上' `
+                '关键字写错了？先跑 tools\dev.ps1 snap -List 看清单，用编号（如 03b / 10e）做关键字' $ExTaskFail
+            return $ExTaskFail
+        }
         Write-Fail 'FocusCapture.exe --snapshot' '出图目录里出现 PNG' "一张图都没生成（$outDir）" `
-            '看上面的程序输出；可能是窗口初始化失败' $ExTaskFail
+            '看上面的程序输出与 snapshot.log；可能是窗口初始化失败' $ExTaskFail
         return $ExTaskFail
     }
     Write-Host "  已生成 $($pngs.Count) 张图" -ForegroundColor Green
@@ -576,7 +669,7 @@ function Invoke-Snap {
         Get-Content -LiteralPath $log | ForEach-Object { Write-Host "  $_" }
     }
     Write-Host ''
-    Write-Host '  判读提醒：不要只看缩略图，图标偏移/字形残缺要放大裁剪再看；对比法最有效（改动前后各跑一次）。' -ForegroundColor Yellow
+    Write-Host '  判读提醒：不要只看缩略图，图标偏移/字形残缺要放大裁剪再看；对比法最有效（改动前后各跑一次，目录带时间戳互不覆盖）。' -ForegroundColor Yellow
     return $ExOk
 }
 
@@ -812,7 +905,10 @@ function Show-Help {
     Write-Host '  merge                 把当前分支 ff-only 合并到 main（合并后自动校验索引）'
     Write-Host '  push                  推 main 到双远程（origin=Gitee, github）'
     Write-Host '  recover               诊断 git 索引异常（默认只诊断+备份，加 -Apply 才恢复）'
-    Write-Host '  snap                  出界面快照到 %TEMP%\fc-ui-snapshot 并打印尺寸表'
+    Write-Host '  snap                  全量出界面快照（45 张）到 %TEMP%\fc-ui-snapshot\<时间戳>，并打印尺寸表'
+    Write-Host '  snap -List             只列场景清单（不渲染，毫秒级）—— 看有哪些图可出'
+    Write-Host "  snap -Only '03b,10'    只出名字含这些编号的图（没匹配到会报错退出）"
+    Write-Host '                         ⚠ 值必须加引号：不加引号时 03d 会被 PowerShell 当 decimal 后缀吃成 3'
     Write-Host '  commit                提交（从 .git\FC_COMMIT_MSG 读信息，避免中文走命令行）'
     Write-Host '  help                  显示本帮助'
     Write-Host ''
@@ -840,7 +936,7 @@ try {
         'check-docs' { $final = Invoke-CheckDocs }
         'push'    { $final = Invoke-Push }
         'recover' { $final = Invoke-Recover }
-        'snap'    { $final = Invoke-Snap }
+        'snap'    { $final = Invoke-Snap -Only $Only -ListScenes:$List }
         'status'  { $final = Invoke-Status }
         'start'   { $final = Invoke-Start -Name $Arg1 }
         'merge'   { $final = Invoke-Merge }

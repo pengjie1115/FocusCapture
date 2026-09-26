@@ -601,6 +601,53 @@ Check(NoteTidyPrompt.CleanResult("  只有一段话，没有围栏也没有开�
 
 Mark("[13]-[17] AI 解析 / 裁剪 / 搜索匹配 / 整理清洗");
 
+// ── [18] 界面快照的按需出图契约（2026-09-26）──
+// 起因两条，都是「开发工具自己的坑」：
+//   ① 45 个场景全量出图约 1 分钟，改一个板块时大半的图白跑 —— 而按需出图**光加过滤是不够的**：
+//      场景名与代码板块的映射只活在 UiSnapshot.cs 的注释里，纯子串匹配会静默漏图
+//      （改「AI 功能」板块时 03d-设置-AI 问答界面 名字里根本没这四个字）→ 所以必须配 --list 拿清单。
+//   ② 脚本自己打印的建议「对比法最有效（改动前后各跑一次）」根本执行不了：
+//      每次 snap 都清空输出目录，第二遍跑完基线图就没了 —— 建议与实现互相打脸。
+// 四条断言读源码守（与 [11] 里那条 DueTimeDialog 场景断言同一风格）：
+Console.WriteLine("[18] 界面快照的按需出图契约");
+
+Check(snapCs.Contains("--only") && snapCs.Contains("--list"),
+      "界面快照必须支持按需出图（--only 过滤 + --list 清单）",
+      "UiSnapshot.cs 里找不到 --only / --list —— 又退回「只能 45 张全量」了");
+
+Check(snapCs.Contains("_matched == 0") && snapCs.Contains("Shutdown(exitCode)"),
+      "「--only 一个都没匹配」必须失败退出（退出码 2），不许安静地出 0 张图",
+      "找不到未匹配即失败的逻辑 —— 按需出图的致命失败是「漏了图却不知道」，"
+      + "安静地出 0 张等于把整个判读环节骗过去，比全量慢危险得多");
+
+var devPs1Path = Path.Combine(uiRepoRoot, "tools", "dev.ps1");
+var devPs1 = File.Exists(devPs1Path) ? File.ReadAllText(devPs1Path) : "";
+var snapIdx = devPs1.IndexOf("function Invoke-Snap", StringComparison.Ordinal);
+var nextFnIdx = snapIdx >= 0 ? devPs1.IndexOf("\nfunction ", snapIdx + 1, StringComparison.Ordinal) : -1;
+var snapBody = snapIdx >= 0 && nextFnIdx > snapIdx ? devPs1.Substring(snapIdx, nextFnIdx - snapIdx) : "";
+Check(snapBody.Contains("Invoke-External 'dotnet'"),
+      "snap 出图前必须先增量编译（原实现「有 exe 就直接用」拍到的是旧二进制的画面：时间戳新、内容旧）",
+      snapIdx < 0
+          ? "dev.ps1 里找不到 Invoke-Snap 函数"
+          : "Invoke-Snap 里没有编译动作 —— 改完代码直接 snap 会出旧图，且按需出图让它更隐蔽");
+
+Check(snapBody.Contains("yyyyMMdd-HHmmss"),
+      "snap 出图必须落在带时间戳的子目录（否则每次清空，改动前后的基线图无法并排对比）",
+      "Invoke-Snap 里找不到时间戳目录命名（yyyyMMdd-HHmmss）");
+
+// 这一条守的是两个**只在 PowerShell 层才会发生**的静默错误（2026-09-26 两个都实测踩到了）：
+//   ① `-Only 03b,03c` 不加引号 → 逗号被当数组分隔符 → 绑给 [string] 直接参数绑定失败：
+//      脚本压根不执行、**零输出**，而 $LASTEXITCODE 还保留着上一次的值（看着像成功）。
+//   ② `-Only 03d` 不加引号 → `d` 是 PowerShell 的 decimal 数字后缀 → 值变成「3」，
+//      照样匹配得到一堆无关场景（13/23/30 里都有 3），脚本报「已生成 N 张图」成功退出。
+// 两条都是「照文档写反而静默出错」，所以参数类型与示例引号都得钉死。
+Check(devPs1.Contains("[string[]]$Only") && devPs1.Contains("-Only '"),
+      "dev.ps1 的 snap -Only：参数必须收 [string[]]、示例必须带引号",
+      "改回 [string] 或丢掉引号 —— 照文档写 `-Only 03d,10e` 会静默出错（参数绑定失败零输出 / "
+      + "03d 被 decimal 后缀吃成 3 却报成功）");
+
+Mark("[18] 界面快照的按需出图契约");
+
 Console.WriteLine();
 Console.WriteLine($"=== 各组耗时（按耗时降序）| 纯逻辑集 | 墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");
 foreach (var g in groupMs.OrderByDescending(x => x.Ms))

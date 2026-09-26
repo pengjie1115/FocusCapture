@@ -109,7 +109,7 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **109** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-26 加 AI 整理 13 条后约 0.5~0.7 秒） | **每次代码改动后** |
+| **快层** | `tests/` | **114** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-26 加 AI 整理 13 条 + 快照按需出图契约 5 条后实测 **0.48 秒**） | **每次代码改动后** |
 | **慢层** | `tests/sync/` | **709** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`** 时**；交付前 |
 
 > **2026-09-25 物理分层（读本节前必知）**：原快层住着 6 个「真做事」的检查组 —— `[5]` 剪贴板容错、`[6]` Skill 目录扫描、
