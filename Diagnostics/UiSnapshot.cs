@@ -416,6 +416,37 @@ internal static class UiSnapshot
             {
                 if (win is TodoSummaryWindow w) w.SeedSuggestBarForSnapshot(1);
             });
+
+            // ── AI 整理（2026-09-26）──
+            // 为什么这两张必须出图：
+            //   ① 行尾新增的「AI」按钮与「× 删除」**并排**，还要与「绿底白字 AI 徽章」共处一列 ——
+            //      文字按钮会不会被挤出、和徽章会不会看混、长文本截断后按钮是否仍完整，静态代码看不出来；
+            //   ② 三个出口（替换原文 / 另存为新笔记 / 复制）挤在底部一行，窗口拉窄时会不会挤出边界，
+            //      只有出图才发现。
+            // 放在最后跑：本场景要往沙箱写真实数据，排后面免得污染前面那些"空态 / 固定样本"的场景。
+            Capture("29-灵感速览（行尾 AI 按钮）", () =>
+            {
+                // 显式按**默认宽度 620** 出图：宽面板验证不出"按钮被挤"，而 620 才是用户的实际默认
+                //（前面 11 号场景把宽度改成了 1200、还把标题栏配置成了"全功能"，且都没还原 ——
+                //  本图要的是"用户默认形态下行尾按钮长什么样"，不重置就把两种目的混在一张图里）
+                settings.QuickViewWidth = 620;
+                settings.QuickViewToolbarLeft = new List<string>();    // 空配置 → 回退默认布局（快层 [3] 已守）
+                settings.QuickViewToolbarRight = new List<string>();
+                notes.SaveNote(
+                    "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
+                    "浏览器");
+                var todo = notes.SaveNote("把整理好的方案发到项目群", "手动", NoteType.Todo, DateTime.Today.AddHours(21));
+                // AI 释义挂到待办上：两条数据是同一分钟创建的，而 ref 只有分钟精度（挂靠逻辑无法区分归属），
+                // 挂错行这张图就核验不了「绿底徽章与深底绿框按钮并存且不混淆」
+                if (todo != null) notes.AppendToNote(todo, "这段讲的是供应商沟通进展与两项待办安排");
+                return new QuickViewWindow(notes, settings);
+            }, outDir, log);
+
+            Capture("30-AI 整理预览窗", () => new AiTidyPreviewWindow(
+                "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
+                "- **供应商沟通**\n  - 价格与交期：都还行\n  - 加急：要加钱\n"
+                + "- **待办**\n  - 上周的会议纪要还没发给他（明天 10:00 前处理掉）",
+                "Agnes 3.0 Flash"), outDir, log);
         }
         catch (Exception ex)
         {
