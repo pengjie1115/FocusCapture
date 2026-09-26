@@ -12,6 +12,7 @@
 - 沙箱不把 `$env:PATH` 修改传子进程；中文路径进环境变量会乱码 → 探针纯 ASCII、路径进程内拼
 - 联网 git（push/ls-remote）走 bash；PowerShell git 出网 128+零输出 = 沙箱限制，别动凭据
 - shell 里用 `cat > 文件 <<EOF`（heredoc 写文件）会被安全策略判为 **LOLBin** 拦下 → 改用文件写入工具（例：写 `.git/FC_COMMIT_MSG`）
+- **（DSH 的 `pwsh` 工具）本项目中文路径上沙箱初始化失败**：任何命令一律返回 `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<项目根>)`，跑不起来。绕法：该条命令带 `sandbox_permissions=danger-full-access` 重试即成功（2026-09-26 实测 build / test / test -Slow / ready / git add / commit 全通）。**是沙箱给工作区设 ACL 失败，不是命令或项目问题** —— 别去改代码或路径来"修"它
 
 ## 工具行为
 - 写文件工具可能**假成功** → 落笔后 Grep 复核；同文件多 Edit 串行
