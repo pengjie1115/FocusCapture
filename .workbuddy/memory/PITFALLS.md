@@ -62,3 +62,26 @@ Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.wor
   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; & ".\tools\dev.ps1" ready`
 - 别试图从 bash 绕 —— 这是沙箱安全策略，不是执行策略问题（换了 `-ExecutionPolicy` 也没用）。
   与「日常动作走 dev.ps1」的红线不冲突，只是入口换成 PowerShell 工具。
+
+## git 认证失败（Gitee 403）的排查顺序 + 本机凭据位置（2026-09-27）
+
+- **根因**：Gitee「私人令牌」过期（错误原文 `Oauth: Access token is expired`）。已出现三次（09-27 凌晨 / 合并云端核对 / 合并语义检索）。
+- **判据**：**有输出**（`remote:` 行 + `403`）⇒ 真实凭据问题；「非零退出码 + **零输出**」才是沙箱限制。两者别混。
+- **本机凭据由 GCM 2.9.0 托管**，落在 **Windows 凭据管理器**（不是 `.git-credentials`，也没有 `~/.gcm` 目录）：
+  `credential.helper` = `~/.workbuddy/binaries/PortableGit/versions/1.2.0/mingw64/bin/git-credential-manager.exe`
+- **实测本机条目（`cmdkey /list`）—— Gitee 有两条，处理时必须两条都清**：
+
+  | 目标 | 用户名 |
+  |---|---|
+  | `git:https://gitee.com` | pj1115 |
+  | `git:https://pj1115@gitee.com` | pj1115 |
+
+  （GitHub 同样两条：`git:https://github.com`、`git:https://pengjie1115@github.com`）
+- **只读自查凭据是否存在**（不回显明文）：
+  `printf "protocol=https\nhost=gitee.com\n\n" | git credential fill | sed -E 's/^(password=).*/\1***/'`
+- **清除旧凭据**：`MSYS_NO_PATHCONV=1 cmdkey /delete:git:https://gitee.com`
+  **必须带 `MSYS_NO_PATHCONV=1`** —— 否则 Git Bash 把 `/delete:`、`/list` 当路径改写，cmdkey 直接报「命令行参数不正确」（看日志会误以为是 cmdkey 用法错）。
+- **中文输出要转码**：`cmdkey /list | iconv -f GBK -t UTF-8`，否则 grep 判为二进制、匹配不到条目。
+- **生成新令牌**：Gitee 头像 → 设置 → 安全设置 → 私人令牌 → 生成新令牌；
+  **权限必须勾 `projects`**（不勾推不上去），提交后输入登录密码验证，令牌**只显示一次**。
+  令牌不进聊天、不进任何文件。
