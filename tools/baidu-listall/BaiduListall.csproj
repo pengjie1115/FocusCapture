@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>FocusCapture.BaiduListall</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 验证《云端核对方案》的核心接口（listall 递归列目录）能否落地。
+         见 docs/2026-09-27-云端核对方案实施清单.md §8。
+         红线：全程只读 —— 只调 listall、只读本地元数据；不建目录、不上传、不删除、不写任何文件。
+         不属于检查点（要联网），故不放在 tests/ 下。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\FocusCapture.csproj" />
+  </ItemGroup>
+
+</Project>
