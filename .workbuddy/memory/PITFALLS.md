@@ -53,3 +53,12 @@ Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.wor
 - **绝不要杀用户正在跑的进程**。绕法：只构建目标子项目、复用主项目**已有产物**：
   `dotnet build <子项目>.csproj --no-dependencies`（前提：主项目此前编译过，`bin\Debug\net8.0-windows\` 里有 `FocusCapture.dll`）。
   本仓库 `tools/` 下的探针（baidu-diag / baidu-listall）都适用。
+
+## 沙箱禁止从 bash 调 PowerShell（2026-09-27）
+
+- 现象：从 bash 起 `powershell -ExecutionPolicy Bypass -File tools/dev.ps1 ready` 被直接拦下 ——
+  `Invoking PowerShell from Bash bypasses PowerShell security checks; use the PowerShell tool instead`。
+- 绕法：**用 PowerShell 工具跑**（同一条命令内先 Bypass 执行策略）：
+  `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; & ".\tools\dev.ps1" ready`
+- 别试图从 bash 绕 —— 这是沙箱安全策略，不是执行策略问题（换了 `-ExecutionPolicy` 也没用）。
+  与「日常动作走 dev.ps1」的红线不冲突，只是入口换成 PowerShell 工具。
