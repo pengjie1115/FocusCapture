@@ -934,13 +934,13 @@ print(json.dumps({
               "用户气泡跳过协议（用户原文原样显示，剥除只对 AI 回复生效）");
         Check(new AppSettings().ChatQuickPrompts is { Count: > 0 },
               "起手页快捷问法胶囊必须预置非空（用户没配置过也有得点）");
-        Check(aiXaml.Contains("Text=\"{Binding DisplayContent}\"")
+        Check(aiXaml.Contains("Text=\"{Binding DisplayContent, Mode=OneWay}\"")
               && aiXaml.Contains("Click=\"QuickOption_Click\"")
               && aiXaml.Contains("Click=\"WelcomePrompt_Click\"")
               && aiXaml.Contains("x:Name=\"WelcomePrompts\"")
               && aiCs.Contains("QuickActionViewModel"),
-              "气泡正文必须绑 DisplayContent（显示层剥标记）+ 气泡胶囊/起手胶囊两处点击接线",
-              "绑回 Content 会把 [[OPTIONS:...]] 裸露给用户");
+              "气泡正文必须绑 DisplayContent 且显式 Mode=OneWay（显示层剥标记）+ 气泡胶囊/起手胶囊两处点击接线",
+              "绑回 Content 会把 [[OPTIONS:...]] 裸露给用户；漏 Mode=OneWay 会在 TextBox 默认 TwoWay 下对只读属性抛 XamlParseException——每个气泡炸一次弹窗、发送链路被打断（2026-09-27 实测）");
         Check(settingsXaml.Contains("x:Name=\"ChatQuickPromptsInput\"") && settingsCs.Contains("ChatQuickPrompts_TextChanged"),
               "设置「AI 问答界面」板块必须有快捷问法编辑框（每行一条，用户可自定义增删）");
         Check(File.ReadAllText(Path.Combine(repoRoot, "Services", "ChatSessionService.cs")).Contains("QuickOptions.SystemPromptRules"),

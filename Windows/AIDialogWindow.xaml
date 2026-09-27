@@ -503,7 +503,7 @@
                                                  绑 DisplayContent 不绑 Content：[[OPTIONS:...]] 标记只在显示层剥除
                                                  （2026-09-27 快捷选项协议），会话历史保留原文 -->
                                             <TextBox x:Name="BubbleText"
-                                                     Text="{Binding DisplayContent}"
+                                                     Text="{Binding DisplayContent, Mode=OneWay}"
                                                      TextWrapping="Wrap"
                                                      IsReadOnly="True"
                                                      IsReadOnlyCaretVisible="False"
