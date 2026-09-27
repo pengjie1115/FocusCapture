@@ -20,17 +20,23 @@ public static class DarkTitleBar
     internal static readonly int[] DarkModeAttributes = { 19, 20 };
 
     /// <summary>在窗口句柄创建后生效；构造函数里调用即可，不必等 Loaded。</summary>
-    public static void Enable(Window window)
-        => window.SourceInitialized += (_, _) => Apply(window);
+    public static void Enable(Window window) => Enable(window, dark: true);
+
+    /// <summary>同上，但按 dark 决定申请深色还是还原系统浅色（2026-09-27 AI 问答明暗滑块用）。</summary>
+    public static void Enable(Window window, bool dark)
+        => window.SourceInitialized += (_, _) => Apply(window, dark);
 
     /// <summary>对句柄已存在的窗口直接生效（重复调用无害）。</summary>
-    public static void Apply(Window window)
+    public static void Apply(Window window) => Apply(window, dark: true);
+
+    /// <summary>显式开关深色标题栏（2026-09-27：AI 问答明暗滑块切到浅色端时要还原系统浅色标题栏）。</summary>
+    public static void Apply(Window window, bool dark)
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         if (hwnd == IntPtr.Zero) return;
         foreach (var attr in DarkModeAttributes)
         {
-            var on = 1;
+            var on = dark ? 1 : 0;
             // 返回码刻意忽略：不支持该属性的旧系统按原样回退，功能不受影响
             _ = DwmSetWindowAttribute(hwnd, attr, ref on, sizeof(int));
         }

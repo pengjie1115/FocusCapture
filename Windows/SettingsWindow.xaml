@@ -822,6 +822,21 @@
                                 ValueChanged="QuickViewOpacity_Changed"/>
                     </StackPanel>
 
+                    <!-- 2026-09-27 明暗两极：左端浅色（白底深字）右端深色（现状），中间两端色板插值。
+                         是「背景明暗」不是窗口透明度；AI 问答窗口开着时实时跟随。 -->
+                    <StackPanel Margin="0,4">
+                        <Grid>
+                            <TextBlock Text="AI 问答界面明暗（左浅 · 右深）" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ChatShadeLabel" Text="深色"
+                                       HorizontalAlignment="Right"/>
+                        </Grid>
+                        <Slider x:Name="ChatShadeSlider"
+                                Minimum="0" Maximum="1.0" SmallChange="0.05"
+                                Value="1.0"
+                                Margin="0,4,0,12"
+                                ValueChanged="ChatShade_Changed"/>
+                    </StackPanel>
+
                     <!-- ── 悬浮球拖放保存（2026-09-16 新增；默认关）──
                          板块落位说明（实施时发现设计稿与实际不符，已按"可验证锚点"落地）：
                          设计稿原写"放「外观」板块（PanelAppearance）"，但**实际三个透明度滑块都在

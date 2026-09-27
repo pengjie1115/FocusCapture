@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:FocusCapture.Windows.Controls"
              FontFamily="Microsoft YaHei UI" FontSize="13"
-             Background="#1E1E1E"
+             Background="{DynamicResource Chat_1E1E1E}"
              Loaded="ChatSidebar_Loaded" Unloaded="ChatSidebar_Unloaded">
     <!-- AI 问答侧边栏（2026-09-23 重构，取代历史抽屉）。
          分区自上而下：新对话 / 新分组 →（收藏 · 各分组）→ 置顶 → 最近 → 用户区。
@@ -21,15 +21,15 @@
         <StackPanel Grid.Row="0" Margin="10,10,10,4">
             <Button x:Name="BtnNewChat" Click="BtnNewChat_Click"
                     HorizontalContentAlignment="Left" Padding="10,7"
-                    Background="#2A2A2A" Foreground="#E0E0E0"
-                    BorderBrush="#3A3A3A" BorderThickness="1"
+                    Background="{DynamicResource Chat_2A2A2A}" Foreground="{DynamicResource Chat_E0E0E0}"
+                    BorderBrush="{DynamicResource Chat_3A3A3A}" BorderThickness="1"
                     Cursor="Hand" ToolTip="开一个不属于任何分组的新对话">
                 <TextBlock Text="＋  新对话"/>
             </Button>
             <Button x:Name="BtnNewGroup" Click="BtnNewGroup_Click"
                     HorizontalContentAlignment="Left" Padding="10,7" Margin="0,6,0,0"
-                    Background="#2A2A2A" Foreground="#C8C8C8"
-                    BorderBrush="#3A3A3A" BorderThickness="1"
+                    Background="{DynamicResource Chat_2A2A2A}" Foreground="{DynamicResource Chat_C8C8C8}"
+                    BorderBrush="{DynamicResource Chat_3A3A3A}" BorderThickness="1"
                     Cursor="Hand" ToolTip="建一个带指令的分组（进分组后说的指令默认都对着它）">
                 <TextBlock Text="＋  新分组"/>
             </Button>
@@ -42,7 +42,7 @@
                     <!-- 纯分区标题（置顶 / 最近）-->
                     <DataTemplate DataType="{x:Type local:SidebarSectionHeader}">
                         <TextBlock Text="{Binding Name}"
-                                   Foreground="#7A7A7A" FontSize="11"
+                                   Foreground="{DynamicResource Chat_7A7A7A}" FontSize="11"
                                    Margin="8,12,8,4"/>
                     </DataTemplate>
 
@@ -59,19 +59,19 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding DisplayName}"
-                                           Foreground="#D0D0D0" TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource Chat_D0D0D0}" TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center"/>
                                 <!-- 置顶标记（2026-09-24）：置顶的分组排到列表最前，这里给个可见记号 ——
                                      否则用户点完「置顶此分组」只看到它换了位置，不确定是真生效还是眼花 -->
                                 <Border x:Name="PinBadge" Grid.Column="1" Margin="6,0,0,0"
-                                        Padding="4,0" CornerRadius="3" Background="#2E3A2E"
+                                        Padding="4,0" CornerRadius="3" Background="{DynamicResource Chat_2E3A2E}"
                                         VerticalAlignment="Center" Visibility="Collapsed">
-                                    <TextBlock Text="置顶" FontSize="10" Foreground="#7A9E7A"/>
+                                    <TextBlock Text="置顶" FontSize="10" Foreground="{DynamicResource Chat_7A9E7A}"/>
                                 </Border>
                                 <!-- 三点：仅鼠标悬停时出现（2026-09-23，参照千问）-->
                                 <Button x:Name="GroupMore" Grid.Column="2" Content="⋮"
                                         Width="20" Height="20" Padding="0"
-                                        Background="Transparent" Foreground="#9A9A9A"
+                                        Background="Transparent" Foreground="{DynamicResource Chat_9A9A9A}"
                                         BorderThickness="0" Cursor="Hand"
                                         Visibility="Collapsed"
                                         Tag="{Binding}" Click="GroupMore_Click"
@@ -85,7 +85,7 @@
                                  滚动区外壳 Border 上 —— 结果是鼠标进列表任意位置，所有条目一起高亮
                                  （2026-09-24 用户实测：悬停任一条目全员高亮 + 切换时闪屏）。 -->
                             <Trigger SourceName="GroupRow" Property="IsMouseOver" Value="True">
-                                <Setter TargetName="GroupRow" Property="Background" Value="#2E2E2E"/>
+                                <Setter TargetName="GroupRow" Property="Background" Value="{DynamicResource Chat_2E2E2E}"/>
                                 <Setter TargetName="GroupMore" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <DataTrigger Binding="{Binding IsPinned}" Value="True">
@@ -118,20 +118,20 @@
                                           Margin="0,0,8,0" VerticalAlignment="Center"
                                           Tag="{Binding}" Click="BatchCheck_Click"/>
                                 <TextBlock x:Name="SessionTitle" Grid.Column="1"
-                                           Text="{Binding Title}" Foreground="#C8C8C8"
+                                           Text="{Binding Title}" Foreground="{DynamicResource Chat_C8C8C8}"
                                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                                            ToolTip="{Binding Preview}"/>
                                 <!-- 最后聊天时间（2026-09-26 用户要求改**相对时间**：
                                      刚刚 / N分钟前 / N小时前 / N天前，由 ChatSidebar 的分钟定时器重算）。
                                      分组视图与搜索窗仍绑 TimeText（日期 + 详细时间），保持原样。 -->
                                 <TextBlock Grid.Column="2" Text="{Binding RelativeTimeText}"
-                                           Foreground="#6E6E6E" FontSize="11"
+                                           Foreground="{DynamicResource Chat_6E6E6E}" FontSize="11"
                                            Margin="6,0,0,0" VerticalAlignment="Center"/>
                                 <!-- 会话的三点：重命名 / 置顶 / 收藏 / 分组到… / 导出 / 删除。
                                      换控件不能丢功能 —— 这些入口原先散在旧抽屉的菜单里。 -->
                                 <Button x:Name="SessionMore" Grid.Column="3" Content="⋮"
                                         Width="20" Height="20" Padding="0" Margin="2,0,0,0"
-                                        Background="Transparent" Foreground="#9A9A9A"
+                                        Background="Transparent" Foreground="{DynamicResource Chat_9A9A9A}"
                                         BorderThickness="0" Cursor="Hand"
                                         Visibility="Collapsed"
                                         Tag="{Binding}" Click="SessionMore_Click"
@@ -141,12 +141,12 @@
                         <DataTemplate.Triggers>
                             <!-- 同分组行：必须 Trigger SourceName，禁止 RelativeSource AncestorType=Border（原因见分组行注释） -->
                             <Trigger SourceName="SessionRow" Property="IsMouseOver" Value="True">
-                                <Setter TargetName="SessionRow" Property="Background" Value="#2E2E2E"/>
+                                <Setter TargetName="SessionRow" Property="Background" Value="{DynamicResource Chat_2E2E2E}"/>
                                 <Setter TargetName="SessionMore" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <!-- 批量选中的高亮（带品牌绿的底色，与普通悬停区分）；放悬停之后 = 选中态优先 -->
                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                <Setter TargetName="SessionRow" Property="Background" Value="#33422E"/>
+                                <Setter TargetName="SessionRow" Property="Background" Value="{DynamicResource Chat_33422E}"/>
                             </DataTrigger>
                             <!-- 批量模式：三点让位给复选框（后定义者覆盖悬停 Trigger 的显隐） -->
                             <DataTrigger Binding="{Binding IsBatchMode}" Value="True">
@@ -162,7 +162,7 @@
              改版前是「计数提示语 + 删除/移入分组/取消」；现在与分组视图的批量条同款：
              左 = 全选勾选框 + 已选计数（不设上限 →「已选 n」）；右 = 取消 / 移入分组 / 删除（红底）。
              原「点会话选中，再选下面的操作」提示语按用户要求删除。 -->
-        <Border x:Name="BatchBar" Grid.Row="2" BorderBrush="#2E2E2E" BorderThickness="0,1,0,0"
+        <Border x:Name="BatchBar" Grid.Row="2" BorderBrush="{DynamicResource Chat_2E2E2E}" BorderThickness="0,1,0,0"
                 Padding="10,6" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -173,17 +173,17 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <CheckBox x:Name="BatchSelectAll" Grid.Column="0" Content="全选"
-                          Foreground="#C8C8C8" FontSize="12" VerticalAlignment="Center"
+                          Foreground="{DynamicResource Chat_C8C8C8}" FontSize="12" VerticalAlignment="Center"
                           Cursor="Hand" Click="BatchSelectAll_Click"/>
                 <TextBlock x:Name="BatchCount" Grid.Column="1" Text="已选 0"
-                           Foreground="#9A9A9A" FontSize="11" Margin="8,0,0,0"
+                           Foreground="{DynamicResource Chat_9A9A9A}" FontSize="11" Margin="8,0,0,0"
                            VerticalAlignment="Center"/>
                 <Button x:Name="BtnBatchCancel" Grid.Column="2" Content="取消" Click="BtnBatchCancel_Click"
                         Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
-                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                        Background="{DynamicResource Chat_2A2A2A}" Foreground="{DynamicResource Chat_C8C8C8}" BorderBrush="{DynamicResource Chat_3A3A3A}" BorderThickness="1"/>
                 <Button x:Name="BtnBatchGroup" Grid.Column="3" Content="移入分组" Click="BtnBatchGroup_Click"
                         Padding="8,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
-                        Background="#2A2A2A" Foreground="#C8C8C8" BorderBrush="#3A3A3A" BorderThickness="1"/>
+                        Background="{DynamicResource Chat_2A2A2A}" Foreground="{DynamicResource Chat_C8C8C8}" BorderBrush="{DynamicResource Chat_3A3A3A}" BorderThickness="1"/>
                 <Button x:Name="BtnBatchDelete" Grid.Column="4" Content="删除" Click="BtnBatchDelete_Click"
                         Padding="10,3" Margin="6,0,0,0" FontSize="12" Cursor="Hand"
                         Background="#C0392B" Foreground="#FFFFFF" BorderThickness="0"/>
@@ -191,7 +191,7 @@
         </Border>
 
         <!-- ── 底部用户区（头像 + 昵称）── -->
-        <Border Grid.Row="3" BorderBrush="#2E2E2E" BorderThickness="0,1,0,0" Padding="10,8">
+        <Border Grid.Row="3" BorderBrush="{DynamicResource Chat_2E2E2E}" BorderThickness="0,1,0,0" Padding="10,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -203,8 +203,8 @@
                          2026-09-26：头像按用户要求裁成**圆形** —— 方图此前直接摆着就是方角。
                          Clip 用绝对坐标（圆心 13,13 / 半径 13 = 26×26 的一半）；
                          改这个 Grid 尺寸时半径与圆心必须同步改。 -->
-                    <Ellipse Fill="#3A4A6A"/>
-                    <TextBlock x:Name="AvatarInitial" Text="" Foreground="#D8E0F0" FontSize="12"
+                    <Ellipse Fill="{DynamicResource Chat_3A4A6A}"/>
+                    <TextBlock x:Name="AvatarInitial" Text="" Foreground="{DynamicResource Chat_D8E0F0}" FontSize="12"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     <Image x:Name="AvatarImage" Stretch="UniformToFill" Visibility="Collapsed">
                         <Image.Clip>
@@ -213,13 +213,13 @@
                     </Image>
                 </Grid>
                 <TextBlock x:Name="UserNickname" Grid.Column="1" Margin="8,0,0,0"
-                           Foreground="#B8B8B8" VerticalAlignment="Center"
+                           Foreground="{DynamicResource Chat_B8B8B8}" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
                 <!-- 回收站入口（2026-09-23）：旧抽屉头部那个「回收站」按钮随抽屉一起退场了，
                      功能不能丢 —— 挪到用户区右侧。放这里而不是顶部：它不是高频动作。 -->
                 <Button x:Name="BtnRecycleBin" Grid.Column="2" Content="回收站"
                         Padding="6,2" FontSize="11"
-                        Background="Transparent" Foreground="#7A9E7A"
+                        Background="Transparent" Foreground="{DynamicResource Chat_7A9E7A}"
                         BorderThickness="0" Cursor="Hand"
                         Click="BtnRecycleBin_Click"
                         ToolTip="已删除的会话（还能从这里恢复）"/>

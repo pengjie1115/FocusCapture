@@ -34,6 +34,11 @@ public class AppSettings
     public double FloatBallOpacity { get; set; } = 0.85;
     public double QuickViewOpacity { get; set; } = 0.80;
 
+    // ── AI 问答界面明暗（2026-09-27 新增）──
+    // 0 = 浅色（白底深字），1 = 深色（现状默认）；中间值两端色板插值。
+    // 注意：这是「背景明暗」不是窗口透明度 —— 窗口始终不透明，由 ChatThemeService 统一换色。
+    public double ChatShade { get; set; } = 1.0;
+
     // ── 输入框圆角（2026-09-23 新增；可调四角弧度，0=纯直角，默认 10 = 改造前现状）──
     // 落「显示」板块；窗口 Background 改透明后，此值才真正露出圆角（见 InputWindow.xaml）
     public double InputBorderRadius { get; set; } = 10;

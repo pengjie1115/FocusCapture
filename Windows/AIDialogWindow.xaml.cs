@@ -259,6 +259,10 @@ public partial class AIDialogWindow : Window
         // 2026-09-23 多供应商改造：改走统一解析入口（配置 → provider 的唯一映射点）
         _provider = AiModelResolver.CreateProvider(settings);
         InitializeComponent();
+        // 明暗主题（2026-09-27）：XAML 色值已全部资源化，这里按设置的 shade 灌一次角色色
+        // （shade=1 = 现状深色；设置窗口滑块变化时也会实时调 Apply，窗口开着立即跟随）
+        ChatThemeService.Apply(_settings.ChatShade);
+        DarkTitleBar.Enable(this, _settings.ChatShade > 0.5);   // 浅色端还原系统浅色标题栏（句柄建好后生效）
         SearchPanel.OwnerWindow = this;   // 搜索面板 XAML 常驻实例化（默认构造），owner 在此注入
         DarkTitleBar.Enable(this);   // 2026-09-21：主动申请深色原生标题栏（WPF 默认白底，不申请就靠系统心情）
         ApplyHeaderLayout(false);    // 标题栏起始态 = 收起（构造函数里还没开侧边栏；默认展开走下面的 Loaded）
@@ -722,6 +726,9 @@ public partial class AIDialogWindow : Window
         ApplyAssistantName();
         UpdateWelcomeContent();
         Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
+        // 明暗滑块（2026-09-27）：窗口开着时拖滑块 → 资源色重灌（幂等）+ 标题栏深浅实时切
+        ChatThemeService.Apply(_settings.ChatShade);
+        DarkTitleBar.Apply(this, _settings.ChatShade > 0.5);
     }
 
     /// <summary>把键盘焦点落到输入框。窗口是非模态弹出的，WPF 不会自动聚焦任何控件，必须显式调</summary>
@@ -1587,7 +1594,7 @@ public partial class AIDialogWindow : Window
         {
             Text = ChatAttachmentViewModel.ChipLabel(att),
             FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            Foreground = ChatThemeService.Brush("Chat_CCCCCC", _settings.ChatShade),
             VerticalAlignment = VerticalAlignment.Center,
         };
 
@@ -1605,7 +1612,7 @@ public partial class AIDialogWindow : Window
                 Text = "×",
                 FontSize = 13,
                 Margin = new Thickness(6, 0, 0, 0),
-                Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+                Foreground = ChatThemeService.Brush("Chat_999999", _settings.ChatShade),
                 VerticalAlignment = VerticalAlignment.Center,
                 Cursor = Cursors.Hand,
                 ToolTip = "移除该附件",
@@ -1616,10 +1623,8 @@ public partial class AIDialogWindow : Window
 
         var chip = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
-            BorderBrush = new SolidColorBrush(isImage
-                ? Color.FromRgb(0x37, 0x8A, 0xDD)
-                : Color.FromRgb(0x88, 0x87, 0x80)),
+            Background = ChatThemeService.Brush("Chat_2D2D2D", _settings.ChatShade),
+            BorderBrush = ChatThemeService.Brush(isImage ? "Chat_378ADD" : "Chat_888780", _settings.ChatShade),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6, 1, 6, 1),
@@ -2880,7 +2885,7 @@ public partial class AIDialogWindow : Window
         var deleteItem = new MenuItem
         {
             Header = "删除对话",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x80, 0x80)),
+            Foreground = ChatThemeService.Brush("Chat_E08080", _settings.ChatShade),
         };
         deleteItem.Click += (_, _) => HandleItemAction(item, ChatItemAction.Delete, null);
         menu.Items.Add(deleteItem);

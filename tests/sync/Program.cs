@@ -808,6 +808,7 @@ print(json.dumps({
         var sideXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "Controls", "ChatSidebar.xaml"));
         var sideCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "Controls", "ChatSidebar.xaml.cs"));
         var settingsXaml = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml"));
+        var settingsCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "SettingsWindow.xaml.cs"));
         var snapshotSrc = File.ReadAllText(Path.Combine(repoRoot, "Diagnostics", "UiSnapshot.cs"));
 
         // 按钮必须按用户给的顺序落位，且一个都不能少（IndexOf<0 会被下面的顺序判断误放行，先各自断言在场）
@@ -862,9 +863,47 @@ print(json.dumps({
               "侧边栏三点菜单文案统一为「批量管理」（原「批量操作」退场，与分组视图同口径）");
 
         // ── 4. 标题栏底色与正文统一 ──
-        Check(aiXaml.Contains("Grid.ColumnSpan=\"3\" Background=\"#1E1E1E\""),
-              "标题栏底色必须是 #1E1E1E（= 正文区底色；2026-09-26 用户要求两块统一）",
-              "标题栏还是更深的底色（原 #252525），标题栏与正文看上去两种材质");
+        // 2026-09-27 明暗主题改造：色值资源化后不再断言字面量 #1E1E1E，改断言标题栏与正文
+        // 引用同一个角色色 key —— 「两块底色统一」的意图由 key 相同保证（shade=1 时插值恒等于原值）。
+        Check(aiXaml.Contains("Grid.ColumnSpan=\"3\" Background=\"{DynamicResource Chat_1E1E1E}\"")
+              && aiXaml.Contains("Background=\"{DynamicResource Chat_1E1E1E}\""),
+              "标题栏底色必须与正文区同一角色色（DynamicResource Chat_1E1E1E；2026-09-26 用户要求两块统一）",
+              "标题栏若回退到独立色值（原 #252525），标题栏与正文看上去又是两种材质");
+
+        // ── 4b. AI 问答明暗主题（2026-09-27：设置滑块 ChatShade，0=浅色 / 1=深色=改造前现状）──
+        // 核心承诺：shade=1 时渲染与改造前逐像素一致 —— 所以「深色端 == key 后六位」必须逐角色成立。
+        var themeBad = ChatThemeService.Palette
+            .Where(kv => kv.Value.Dark != (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#" + kv.Key[5..]))
+            .Select(kv => $"{kv.Key}(深端{kv.Value.Dark})")
+            .ToList();
+        Check(themeBad.Count == 0,
+              "明暗色板每个角色的深色端必须等于 key 后六位（shade=1 = 改造前现状，逐像素不漂移）",
+              $"深色端漂移的角色：{string.Join("、", themeBad)}");
+        var themeFlat = ChatThemeService.Palette.Where(kv => kv.Value.Light == kv.Value.Dark).Select(kv => kv.Key).ToList();
+        Check(themeFlat.Count == 0,
+              "明暗色板每个角色必须真有两极（浅端≠深端，恒等色不该进色板）",
+              $"浅深相同的角色：{string.Join("、", themeFlat)}");
+        Check(ChatThemeService.ClampShade(-0.5) == 0 && ChatThemeService.ClampShade(1.5) == 1
+              && new AppSettings().ChatShade == 1.0,
+              "ChatShade 必须钳制在 [0,1] 且默认 1.0（深色 = 现状，老用户升级后界面不变）");
+        var midBrush = ChatThemeService.Brush("Chat_1E1E1E", 0.5);
+        Check(midBrush.Color == (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#8A8A8A"),
+              "明暗插值必须走中点线性（窗底 1E1E1E↔F6F6F6 的 50% = 8A8A8A）",
+              $"实际中点 {midBrush.Color} —— Lerp 公式或端点被人改动");
+        // XAML 契约：中性色必须走角色资源，只许功能性字面量保留（两端恒定色）
+        var literalAllowed = new HashSet<string> { "4CAF50", "FFFFFF", "C0392B", "66000000" };
+        foreach (var (file, xaml) in new[] { ("AI窗口", aiXaml), ("侧边栏", sideXaml) })
+        {
+            var literals = System.Text.RegularExpressions.Regex.Matches(xaml, "=\"#([0-9A-Fa-f]{6,8})\"")
+                .Select(m => m.Groups[1].Value.ToUpperInvariant()).Distinct().ToList();
+            var stray = literals.Where(c => !literalAllowed.Contains(c)).ToList();
+            Check(stray.Count == 0,
+                  $"{file} XAML 中性色必须走 Chat_ 角色资源（字面量只许 {string.Join("/", literalAllowed)}）",
+                  $"出现未登记的字面量色 {string.Join("/", stray)} —— 要么进 ChatThemeService.Palette 随明暗插值，要么确认两端恒定并加进白名单");
+        }
+        Check(settingsXaml.Contains("x:Name=\"ChatShadeSlider\"") && settingsCs.Contains("ChatThemeService.Apply"),
+              "设置「显示」板块必须有「AI 问答界面明暗」滑块且拖动实时 Apply（DynamicResource 全窗跟随）",
+              "滑块缺失或拖动不生效 = 明暗调节没接通");
 
         // ── 5. 设置页「默认模型」框 ──
         Check(settingsXaml.Contains("x:Name=\"DefaultModelRow\"") && settingsXaml.Contains("DefaultModelRow_Click"),

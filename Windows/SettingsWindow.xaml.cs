@@ -334,6 +334,9 @@ public partial class SettingsWindow : Window
         QuickViewOpacityLabel.Text = $"{(int)(_settings.QuickViewOpacity * 100)}%";
         InputBorderRadiusSlider.Value = _settings.InputBorderRadius;
         InputBorderRadiusLabel.Text = $"{(int)Math.Round(_settings.InputBorderRadius)}";
+        // AI 问答界面明暗（2026-09-27）：滑块回显 + 标签定性
+        ChatShadeSlider.Value = _settings.ChatShade;
+        ChatShadeLabel.Text = _settings.ChatShade >= 0.75 ? "深色" : _settings.ChatShade <= 0.25 ? "浅色" : $"{(int)Math.Round(_settings.ChatShade * 100)}%";
         // 悬浮球拖放保存（2026-09-16）：开关 + 浮层不透明度 + 小条停留秒数
         DragToSaveCheck.IsChecked = _settings.DragToSaveEnabled;
         DropActionOpacitySlider.Value = Math.Clamp(_settings.DropActionOpacity, 0.3, 1.0);
@@ -1115,6 +1118,23 @@ public partial class SettingsWindow : Window
     { if (_suppressEvents) return; _settings.QuickViewOpacity = e.NewValue; QuickViewOpacityLabel.Text = $"{(int)(e.NewValue * 100)}%"; _settings.Save(); _onChanged?.Invoke(); }
     private void InputBorderRadius_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (_suppressEvents) return; _settings.InputBorderRadius = e.NewValue; InputBorderRadiusLabel.Text = $"{(int)Math.Round(e.NewValue)}"; _settings.Save(); _onChanged?.Invoke(); }
+
+    // AI 问答界面明暗（2026-09-27）：实时刷应用级角色色（DynamicResource 全窗跟随）+ 保存。
+    // 标签只报两端的定性名，中间值报百分比 —— 拖动时可预期。
+    private void ChatShade_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_suppressEvents) return;
+        _settings.ChatShade = ChatThemeService.ClampShade(e.NewValue);
+        ChatShadeLabel.Text = _settings.ChatShade switch
+        {
+            <= 0.25 => "浅色",
+            >= 0.75 => "深色",
+            < 0.5 => $"偏浅 {(int)Math.Round(_settings.ChatShade * 100)}%",
+            _ => $"偏深 {(int)Math.Round(_settings.ChatShade * 100)}%",
+        };
+        ChatThemeService.Apply(_settings.ChatShade);
+        _settings.Save();
+    }
 
     // 悬浮球拖放保存（2026-09-16）。_onChanged 里会让已打开的小条/卡片实时跟手，
     // 否则「拖完再调滑块」看不到变化，会被当成功能坏了。
