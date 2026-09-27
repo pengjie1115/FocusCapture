@@ -54,11 +54,25 @@ public static class CloudStates
     /// <summary>待清理：已到期，但云端那份**还在**（删除失败 / 没联网 / 未授权）。需要补删。</summary>
     public const string CleanupPending = "cleanup-pending";
 
+    /// <summary>
+    /// 云端已不存在（2026-09-27 新增，配合「与云端核对」）。
+    ///
+    /// 与 <see cref="Expired"/> 的区别：Expired 是**我们按期主动清掉**的（预期内）；
+    /// 这个是「核对时发现网盘里已经没有它了」—— 用户直接在网盘里删了，或从未上传成功。
+    ///
+    /// **刻意不打墓碑**（同 Expired 的理由）：记录留着，用户与 Agent 才看得到「它去哪了」；
+    /// 打墓碑等于让文件在列表里凭空消失，用户会以为记录丢了。
+    ///
+    /// 会被自动撤销的两种时机：① 下次核对时云端又有了；② 该文件重传成功（见 FileRepository.RecordUploadResult）。
+    /// </summary>
+    public const string Missing = "missing";
+
     /// <summary>翻成人话（空状态返回空串，调用方自己决定要不要显示）。</summary>
     public static string Label(string? state) => state switch
     {
         Expired => "云端已到期清理",
         CleanupPending => "云端待清理",
+        Missing => "云端已不存在",
         _ => "",
     };
 }

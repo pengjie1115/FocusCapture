@@ -62,6 +62,19 @@ public sealed class BaiduCloudStorage : ICloudStorage
     public async Task EnsureDirectoryAsync(string netDir, CancellationToken ct)
         => await Client().EnsureDirectoryAsync(netDir, ct).ConfigureAwait(false);
 
+    /// <summary>
+    /// 递归列文件（只读，核对用）。目录条目在这里就滤掉 —— 上层（比对）只关心"云端有没有这个文件"，
+    /// 让每个调用方各写一遍过滤是早晚要漏的（同 FileRepository.NetDirOf 的教训）。
+    /// </summary>
+    public async Task<List<CloudEntry>> ListAllAsync(string netDir, CancellationToken ct)
+    {
+        var entries = await Client().ListAllAsync(netDir, ct).ConfigureAwait(false);
+        return entries
+            .Where(e => !e.IsDir)
+            .Select(e => new CloudEntry { Path = e.Path, Size = e.Size })
+            .ToList();
+    }
+
     // ── 供设置面板使用的授权动作（不走 ICloudStorage，属初始化流程） ──
 
     /// <summary>

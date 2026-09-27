@@ -63,6 +63,11 @@
          它们错了的后果**全是静默的**：超长正文照发（用户等半天拿到 400 或半截结果）、
          回包里的 ``` 围栏与「以下是整理后的内容：」原样写进笔记、提示词漏约束则模型开始自由发挥。 -->
     <Compile Include="..\Services\AI\NoteTidyPrompt.cs" Link="Src\NoteTidyPrompt.cs" />
+    <!-- 云端核对的判定纯函数（2026-09-27）：刻意零项目依赖（只吃 BCL 类型，不用 AppLog、
+         不碰配置、不引 FileMetadata —— 输入用自带的 LocalRecord 扁平结构），所以能在这层秒级测。
+         它错了的后果**全是静默的**：本该标「云端已不存在」的记录漏标（用户以为文件还在网盘上，
+         取回时才发现空了），或把「还没传上去」误标成「被删了」（用户白折腾一轮）。两种都不报错。 -->
+    <Compile Include="..\Services\Files\CloudVerify.cs" Link="Src\CloudVerify.cs" />
   </ItemGroup>
 
 </Project>

@@ -14,7 +14,7 @@
 > **别通读本文件。** 按三步走，只读你要的那几段。
 
 1. **判级 + 定层** → §一 枢纽清单（L0/L1/L2）+ §二 触发表（这次要不要跑慢层）。
-2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（136 条，秒级）/ 慢层 `test -Slow`（740 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
+2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（148 条，秒级）/ 慢层 `test -Slow`（740 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
 3. **人工清单** → 按改动位置查下表；若动了 §一 里的 **L2** 文件，再走 §三 A 级全量。
 
 | 动了什么 | 人工清单 |
@@ -109,7 +109,7 @@
 
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
-| **快层** | `tests/` | **136** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-27 规则化再加 11 条后实测 **0.5 秒**） | **每次代码改动后** |
+| **快层** | `tests/` | **148** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-27 规则化 +11 条、云端核对判定 +12 条后实测 **0.58 秒**） | **每次代码改动后** |
 | **慢层** | `tests/sync/` | **740** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Models/TidyRule.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`** 时**；交付前 |
 
 > **2026-09-25 物理分层（读本节前必知）**：原快层住着 6 个「真做事」的检查组 —— `[5]` 剪贴板容错、`[6]` Skill 目录扫描、
@@ -414,7 +414,7 @@
 
 ### B-14 网盘文件存取（百度网盘本地缓存，2026-09-16 新增）
 
-> 覆盖 `Services/Baidu/`（设备码授权 + 上传/取回/列举/删除）、`Services/Files/`（元数据、缓存账本、上传队列、淘汰器、附件到期清理、文件句柄）、`Services/AI/ChatAttachmentService`（附件登记钩子）、`Windows/SettingsWindow`（「文件与网盘」板块）、`Windows/AIDialogWindow`（「选择文件」入口 + 句柄卡片 + 云文件卡片）、`MainWindow`（仓库装配）、`Services/Sync/FileStoreSync`（文件清单同步）。
+> 覆盖 `Services/Baidu/`（设备码授权 + 上传/取回/列举/删除 + **listall 递归列目录**）、`Services/Files/`（元数据、缓存账本、上传队列、淘汰器、附件到期清理、文件句柄、**与云端核对 CloudVerify / CloudVerifyService**）、`Services/AI/ChatAttachmentService`（附件登记钩子）、`Windows/SettingsWindow`（「文件与网盘」板块）、`Windows/CloudVerifyWindow`（**核对报告与清理出口**）、`Windows/AIDialogWindow`（「选择文件」入口 + 句柄卡片 + 云文件卡片）、`MainWindow`（仓库装配）、`Services/Sync/FileStoreSync`（文件清单同步）。
 >
 > **前置**：需要百度网盘开放平台的「个人使用」应用凭据（AppKey / SecretKey），由用户在设置面板自行填写。
 > **没有凭据时，整块功能自动降级为「只存本地」，不影响任何既有功能。**
@@ -470,6 +470,13 @@
 | 云同步页关掉「同步网盘文件清单」 ⚠ | 清单不再上传/下载；笔记与会话同步照常 |
 | 设置里看「当前数据目录」+ 点「打开当前目录」 | 显示实际数据根；能打开 |
 | **改数据目录到一个全新空文件夹** ⚠ | 先弹确认（含文件数与大小）→ 复制 → 校验 → 写指针 → 提示重启；**原目录一个字节都没改** |
+| **设置 →「与云端核对」**（2026-09-27 新增）⚠ | 拉云端实际清单（**一轮只发 1 次请求**）→ 报告窗口列出差异。**核对本身不写任何东西**，要用户点「应用标注」才写回 |
+| 核对后看被标记录 ⚠ | 标「云端已不存在」的记录**仍留在列表里**（不打墓碑、不删记录）；AI 问到时如实说「网盘里已经没有它了」，**绝不许**说「还在网盘上 / 可以取回」 |
+| 核对报告里点「应用标注」 | 只改记录的云端状态字段；文件本体、云端内容、记录条数都不动；关窗后设置页显示「上次核对：…」 |
+| 核对报告里点「移除选中记录」 ⚠ | 二次确认后打墓碑（记录从列表消失）；**本机文件必须还在**（云端已无，本机可能是唯一副本，删了就真没了）；多设备同步后一并撤掉 |
+| 核对发现「云端多出」的文件 | **只列在报告里**，不自动登记成记录、不改动它们（可能是另一台设备刚上传、清单还在同步路上） |
+| 未授权 / 清单正在同步 / 冷却期内点「与云端核对」 | 直接显示人话原因，**不许**「点了没反应」 |
+| 核对过程中某文件刚好重传成功 ⚠ | 该记录的「云端已不存在」标注**自动清除**（回到正常态），不留下自相矛盾的状态 |
 | 改数据目录时选盘符根 / `C:\Windows` / 网络路径 / 当前目录的子目录 ⚠ | 逐项被拒绝并给出人话原因，且不写入任何文件 |
 | 改数据目录到已有内容的文件夹 ⚠ | 明确提示「将直接使用该目录现有内容，不再复制」，需二次确认 |
 | 迁移后重启程序 | 新目录生效，笔记/待办/对话/附件/文件区都在 |

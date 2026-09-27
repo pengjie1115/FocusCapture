@@ -755,6 +755,9 @@ public partial class MainWindow : Window
     {
         FileRepository.Cloud = new BaiduCloudStorage(_settings.BaiduNetRoot);
         FileRepository.AttachmentRetentionDays = Math.Clamp(_settings.BaiduAttachmentRetentionDays, 0, 3650);
+        // 与云端核对（2026-09-27）：注入设置，用于跨会话冷却期 + 记录「最后核对时刻」。
+        // 必须在装配处给（而不是等用户打开设置窗口）—— 否则设置页会一直显示「尚未核对过」。
+        CloudVerifyService.Settings = _settings;
 
         CacheEvictor.Enabled = _settings.LocalCacheEvictEnabled;
         CacheEvictor.MaxBytes = (long)(Math.Clamp(_settings.LocalCacheMaxGb, 0.5, 1024) * 1024 * 1024 * 1024);

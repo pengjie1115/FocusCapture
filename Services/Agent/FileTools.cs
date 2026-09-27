@@ -87,7 +87,14 @@ internal static class FileToolSupport
         // 然后对用户说"两个文件都已经上传成功，网盘上都能看到了" —— 而那批文件在账本里全是 failed
         // （2026-09-16 实测踩到：用户去网盘一看，网盘是空的，信任当场归零）。
         // 措辞由 UploadStates.Label 统一给，避免各处自己发挥。
-        parts.Add(UploadStates.Label(entry?.UploadState));
+        //
+        // ⚠️ 顺序要紧：**先看云端状态，再看本机账本状态**（2026-09-27 补充）。
+        // 账本只说"我们这边传成功过"，与"云端此刻还在不在"是两码事 —— 用户在网盘里手动删掉之后，
+        // 账本仍然是 uploaded，这里就会输出「云端已就绪」，而 Agent 读到的正是它，
+        // 转头就对用户说"文件还在网盘上、可以取回"（用户取回时才发现是空的）。
+        // 所以「与云端核对」标出的云端状态必须排在账本状态之前。
+        var cloudLabel = CloudStates.Label(m.CloudState);
+        parts.Add(cloudLabel.Length > 0 ? cloudLabel : UploadStates.Label(entry?.UploadState));
         return string.Join("  ", parts);
     }
 }
@@ -269,7 +276,10 @@ public class FindCloudFilesTool : AgentTool
         "返回结果每行开头的中括号里是编号，后续用 fetch_cloud_file / read_cloud_file 时把它作为 file_id 传入。\n" +
         "⚠️ 这里查的是**本机记录**，不等于文件已经到了网盘 —— 每行末尾标着真实上传状态：" +
         "只有「云端已就绪」才算真的在网盘上；「等待上传 / 正在上传 / 上传失败」都表示**云端还没有这个文件**。" +
-        "这种时候**绝不许**对用户说「已上传成功」「网盘上能看到」，只能说「还没传上去」并提示去「设置 → 文件与网盘」看原因。";
+        "这种时候**绝不许**对用户说「已上传成功」「网盘上能看到」，只能说「还没传上去」并提示去「设置 → 文件与网盘」看原因。\n" +
+        "⚠️ 另有两类状态：「云端已不存在」「云端已到期清理」—— 它们的含义是**网盘里已经没有这份文件了**，" +
+        "本地记录只是留着让用户看得到「它去哪了」。遇到这两类，**绝不许**说「文件还在网盘上」或「可以取回」；" +
+        "照实说「网盘里已经没有它了，本地还留着这条记录」，并请用户到「设置 → 文件与网盘 → 与云端核对」重新核对。";
 
     public override string ParametersJson =>
         """{"type":"object","properties":{"keyword":{"type":"string","description":"文件名或标签关键词，模糊匹配"},"type":{"type":"string","description":"可选：artifact=AI产出 / upload=用户上传 / attachment=对话附件；也可填 图片 / 文档"},"tag":{"type":"string","description":"可选，按标签过滤"},"recent_days":{"type":"number","description":"可选，最近 N 天内新增（用户说「上周」填 7，「最近三天」填 3）"},"from_date":{"type":"string","description":"可选，起始日期 yyyy-MM-dd"},"to_date":{"type":"string","description":"可选，结束日期 yyyy-MM-dd"},"limit":{"type":"number","description":"可选，最多返回几条，默认 20"}},"required":[]}""";

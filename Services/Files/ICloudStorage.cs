@@ -28,4 +28,17 @@ public interface ICloudStorage
 
     /// <summary>确保云端目录存在（逐级创建）。</summary>
     Task EnsureDirectoryAsync(string netDir, CancellationToken ct);
+
+    /// <summary>
+    /// 递归列出云端目录下**所有层级**的文件（只读，「与云端核对」用）。2026-09-27 新增。
+    ///
+    /// <b>为什么契约上必须有这一条</b>：对话附件按月分子目录，用逐目录列的话一轮核对要
+    /// 「列 files + 列 attachments + 逐个月份」十几次调用 —— 在"未上线审核应用 10 次/每小时"的
+    /// 配额下等于一跑就撞限流。递归一次拉全是唯一可用的形态（实测 1 次调用拿全，见
+    /// <c>BaiduNetdiskClient.ListAllAsync</c>）。
+    ///
+    /// 返回的条目只含**文件**（目录由实现层过滤掉）：核对只关心"云端有没有这个文件"。
+    /// <c>Path</c> 必须与 <see cref="FileMetadata.NetPath"/> 同一口径（同一字符串），否则整套比对失效。
+    /// </summary>
+    Task<List<CloudEntry>> ListAllAsync(string netDir, CancellationToken ct);
 }

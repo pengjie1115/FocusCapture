@@ -1261,6 +1261,21 @@
                     <TextBlock x:Name="CacheStatusText"
                                Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
 
+                    <!-- 与云端核对（2026-09-27）：本地记录只增不减，过去从不与云端核对 ——
+                         用户在网盘里手动删了文件，本机仍标着「云端已就绪」，AI 据此说错话。
+                         这行是核对入口；报告窗口里的「移除记录」就是清理出口。 -->
+                    <DockPanel Margin="0,16,0,0">
+                        <Button x:Name="BtnCloudVerify" Content="与云端核对"
+                                Width="110" Height="30" HorizontalAlignment="Left"
+                                ToolTip="读取网盘里的实际清单，找出本地记录里「云端已经没有」的那些。只读：不下载、不上传、不改动任何文件"
+                                Click="BtnCloudVerify_Click"/>
+                        <TextBlock x:Name="CloudVerifyStatusText" Text="尚未核对过"
+                                   Foreground="#999999" FontSize="11" VerticalAlignment="Center"
+                                   Margin="10,0,0,0" TextWrapping="Wrap"/>
+                    </DockPanel>
+                    <TextBlock Text="核对只向网盘发 1 次请求、不消耗下载流量；发现的问题会先在报告里列出来，你确认后才写回记录"
+                               Foreground="#999999" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+
                     <DockPanel Margin="0,16,0,0">
                         <TextBlock Text="对话附件上传" Width="150" VerticalAlignment="Center"/>
                         <CheckBox x:Name="AttachmentUploadCheck"

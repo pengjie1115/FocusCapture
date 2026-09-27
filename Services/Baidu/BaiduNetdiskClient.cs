@@ -284,21 +284,91 @@ public class BaiduNetdiskClient
         {
             foreach (var item in arr.EnumerateArray())
             {
-                var path = Str(item, "path");
-                if (path.Length == 0) continue;
-                list.Add(new BaiduFileEntry
-                {
-                    FsId = LongOr(item, "fs_id"),
-                    Path = path,
-                    Name = Str(item, "server_filename"),
-                    Size = LongOr(item, "size"),
-                    IsDir = IntOr(item, "isdir") == 1,
-                    Md5 = Str(item, "md5"),
-                    ModifiedAt = FromUnix(IntOr(item, "server_mtime")),
-                });
+                var entry = ParseEntry(item);
+                if (entry != null) list.Add(entry);
             }
         }
         return list;
+    }
+
+    /// <summary>
+    /// 递归列出沙箱内**所有层级**的条目（2026-09-27 新增，「与云端核对」用它一次拉全清单）。
+    ///
+    /// <b>为什么必须用它、而不是逐目录调 <see cref="ListAsync"/></b>：对话附件按月分子目录，
+    /// 逐目录要「列 files 1 次 + 列 attachments 1 次 + 逐个月份各 1 次」，攒几个月就是十几次调用；
+    /// 本接口带 <c>recursion=1</c>，**一次调用**就能拿到整个 <c>/apps/{appname}</c> 下的全部条目
+    /// （2026-09-27 实测：23 个条目 / 1 次调用 / 737ms）。在"未上线审核的应用只有 10 次/每小时"
+    /// 这一配额现实下，这个差别就是「能用」与「一跑就撞限流」的差别。
+    ///
+    /// 三条实测契约（均与官方文档一致）：
+    /// 1. 仅支持 <c>/apps/{appname}</c>，越界返回 42213 —— 与 <see cref="ListAsync"/> 共用同一把守卫；
+    /// 2. 翻页必须用响应里的 <c>cursor</c> 作下一次 <c>start</c>，**不能自行累加固定步长**；
+    /// 3. <c>list[].md5</c> 官方注明「非文件真实 MD5」（2026-09-27 实测 11 条样本与本地内容 MD5
+    ///    相等 0 条）→ **调用方不得拿它做内容比对**，只能按 path 匹配。
+    /// </summary>
+    public async Task<List<BaiduFileEntry>> ListAllAsync(string netPath, CancellationToken ct)
+    {
+        // 列目录是只读，放行沙箱根（同 ListAsync 的理由：沙箱根本身就是合法目标）
+        EnsureSandboxed(netPath, allowSandboxRoot: true);
+        var token = await EnsureAccessTokenAsync(ct).ConfigureAwait(false);
+
+        var all = new List<BaiduFileEntry>();
+        var start = 0;
+
+        // 页数上限只是防呆：正常规模远到不了；真撞上说明数据异常，宁可少列也不能无限打平台
+        for (var page = 0; page < 50; page++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var url = $"{XpanMultimediaUrl}?method=listall&access_token={Uri.EscapeDataString(token)}" +
+                      $"&path={Uri.EscapeDataString(netPath)}&recursion=1&order=name&desc=0" +
+                      $"&start={start}&limit=1000&web=0";
+            var json = await GetJsonAsync(url, ct, treatMissingAsEmpty: true).ConfigureAwait(false);
+
+            var errno = IntOr(json, "errno", 0);
+            // 目录不存在：沙箱目录尚未创建时是常态，按"空目录"处理（同 ListAsync）
+            if (errno is -9 or 31066) return all;
+            if (errno != 0) throw new BaiduApiException(errno, DescribeErrNo(errno));
+
+            if (json.TryGetProperty("list", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    var entry = ParseEntry(item);
+                    if (entry != null) all.Add(entry);
+                }
+            }
+
+            if (IntOr(json, "has_more") != 1) break;
+
+            // 官方明文：has_more=1 时必须用响应里的 cursor 作下一次 start，不要自行累加固定步长
+            var cursor = IntOr(json, "cursor", -1);
+            if (cursor <= start) break;   // 游标没前进 = 平台行为异常，停在这里，不死循环
+            start = cursor;
+        }
+
+        AppLog.Info("Baidu", $"listall 递归列目录完成：{netPath} 共 {all.Count} 条");
+        return all;
+    }
+
+    /// <summary>
+    /// 把 <c>list</c> / <c>listall</c> 的一个条目解析成 <see cref="BaiduFileEntry"/>。
+    /// 两个接口的条目字段同构，共用一份解析避免将来只改一处（无 path 的条目返回 null，调用方跳过）。
+    /// </summary>
+    private static BaiduFileEntry? ParseEntry(JsonElement item)
+    {
+        var path = Str(item, "path");
+        if (path.Length == 0) return null;
+        return new BaiduFileEntry
+        {
+            FsId = LongOr(item, "fs_id"),
+            Path = path,
+            Name = Str(item, "server_filename"),
+            Size = LongOr(item, "size"),
+            IsDir = IntOr(item, "isdir") == 1,
+            Md5 = Str(item, "md5"),
+            ModifiedAt = FromUnix(IntOr(item, "server_mtime")),
+        };
     }
 
     /// <summary>

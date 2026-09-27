@@ -2288,8 +2288,65 @@ public partial class SettingsWindow : Window
             ? "当前使用自定义目录；改回默认目录时把指针文件 data_root.txt 删掉即可。"
             : "当前使用默认目录（%AppData%\\FocusCapture）。";
 
+        CloudVerifyService.Settings = _settings;   // 核对完成后要记「最后核对时刻」
         RefreshBaiduStatus();
         RefreshCacheStatus();
+        RefreshCloudVerifyStatus();
+    }
+
+    /// <summary>
+    /// 与云端核对（2026-09-27）：拉云端实际清单 → 与本地记录比对 → 出报告让用户决定。
+    ///
+    /// 全程**只读**：云端不写、本地在本步也不写；写回标注发生在报告窗口里、由用户点。
+    /// 前置条件（未授权 / 清单还在同步 / 冷却期内）先问 <see cref="CloudVerifyService.CanRun"/>，
+    /// 直接把原因显示出来 —— 否则用户看到的就是「点了没反应」。
+    /// </summary>
+    private async void BtnCloudVerify_Click(object sender, RoutedEventArgs e)
+    {
+        var blocked = CloudVerifyService.CanRun();
+        if (blocked != null)
+        {
+            CloudVerifyStatusText.Text = blocked;
+            return;
+        }
+
+        BtnCloudVerify.IsEnabled = false;
+        try
+        {
+            var (report, error) = await CloudVerifyService.RunAsync(
+                new Progress<string>(s => CloudVerifyStatusText.Text = s));
+
+            RefreshCloudVerifyStatus();
+
+            if (report == null)
+            {
+                CloudVerifyStatusText.Text = error ?? "核对未能完成。";
+                return;
+            }
+
+            // 真对话框：用户看完、点完就关（与"长驻面板必须用 Show()"那类不是一回事）
+            var win = new CloudVerifyWindow(report) { Owner = this };
+            win.ShowDialog();
+            RefreshCacheStatus();   // 标注可能改变了列表状态
+        }
+        catch (Exception ex)
+        {
+            // UI 事件里的外部资源操作自己 try 住、不弹模态框（界面铁律：模态框会吃掉后续点击）
+            CloudVerifyStatusText.Text = "核对失败：" + ex.Message;
+        }
+        finally
+        {
+            BtnCloudVerify.IsEnabled = true;
+        }
+    }
+
+    /// <summary>刷新核对状态文案（显示最后核对时刻 —— 结论会过期，新鲜度必须可见）。</summary>
+    private void RefreshCloudVerifyStatus()
+    {
+        var at = CloudVerifyService.LastRunAt();
+        CloudVerifyStatusText.Text = at.HasValue
+            ? $"上次核对：{at.Value:yyyy-MM-dd HH:mm}"
+            : "尚未核对过";
     }
 
     private void RefreshBaiduStatus()

@@ -534,6 +534,7 @@ public static class FileRepository
     /// <summary>记录一次上传结果。</summary>
     public static void RecordUploadResult(string id, bool ok, string? error)
     {
+        var clearedMissing = false;
         lock (Gate)
         {
             EnsureLoaded();
@@ -543,6 +544,18 @@ public static class FileRepository
             {
                 e.UploadState = UploadStates.Uploaded;
                 e.UploadRetry = 0;
+
+                // 重传成功 → 云端又有了 → 顺带清掉「云端已不存在」标注（2026-09-27）。
+                // 不清的话会出现自相矛盾的状态：文件刚传上去，列表里还标着"云端已不存在"，
+                // 而 Agent 读的正是这个标注 —— 那句话又会反过来骗用户。
+                var m = _metadata!.FirstOrDefault(x => x.Id == id);
+                if (m != null && m.CloudState == CloudStates.Missing)
+                {
+                    m.CloudState = CloudStates.Ok;
+                    m.UpdatedAt = DateTime.Now;   // 必须更新：合并规则与"是否需要推送"都靠它看出这条变了
+                    PersistMetadataLocked();
+                    clearedMissing = true;
+                }
             }
             else
             {
@@ -551,6 +564,7 @@ public static class FileRepository
             }
             PersistLedgerLocked();
         }
+        if (clearedMissing) RaiseMetadataChanged();
         if (!ok && !string.IsNullOrEmpty(error))
             AppLog.Warn("Files", $"上传失败（{id}）：{error}");
     }
@@ -641,6 +655,18 @@ public static class FileRepository
     /// <summary>标记「云端待清理」：已到期但云端那份还在（删除失败 / 没联网 / 未授权）。</summary>
     public static void MarkCleanupPending(string id) => SetCloudState(id, CloudStates.CleanupPending);
 
+    /// <summary>
+    /// 标注「云端已不存在」（与云端核对发现网盘里已经没有它了）。2026-09-27 新增。
+    ///
+    /// **刻意不打墓碑**（同 <see cref="MarkCloudExpired"/> 的理由）：记录留着，
+    /// 用户与 Agent 才看得到「它去哪了」。会被自动撤销的两种时机：
+    /// ① 下次核对时云端又有了；② 该文件重传成功（见 <see cref="RecordUploadResult"/>）。
+    /// </summary>
+    public static void MarkCloudMissing(string id) => SetCloudState(id, CloudStates.Missing);
+
+    /// <summary>清除「云端已不存在」标注（云端又有了 / 重传成功）→ 回到正常态。</summary>
+    public static void MarkCloudOk(string id) => SetCloudState(id, CloudStates.Ok);
+
     private static void SetCloudState(string id, string state)
     {
         lock (Gate)
@@ -668,6 +694,38 @@ public static class FileRepository
             m.UpdatedAt = DateTime.Now;
             PersistMetadataLocked();
         }
+    }
+
+    /// <summary>
+    /// 移除一条本地记录（**用户显式操作，只给用户、不给 AI**）。2026-09-27 新增，
+    /// 是「与云端核对」报告窗口的清理出口。
+    ///
+    /// 语义 = 打墓碑：多设备同步会把这台设备上的这条一并撤掉（与 <see cref="DeletePermanentlyAsync"/> 终态一致）。
+    /// 与 <see cref="MarkCloudMissing"/> 的区别：那个只标注"云端没了"，记录仍留在列表里看得见；
+    /// 这个是把记录本身撤掉，用于「我看过了、这条不要了」。
+    ///
+    /// <b>⚠️ 两条边界，改之前先想清楚</b>：
+    /// 1. <b>不删本机文件</b>。出口只对"云端已不存在"的记录开放 —— 那种情况下本机副本很可能
+    ///    是**唯一幸存的一份**，删了就真没了。用户要的是"从列表里去掉"，不是"销毁文件"。
+    /// 2. <b>不调云端删除</b>。云端本来就没这东西（否则不会被标 Missing），没有可删的对象。
+    ///
+    /// 顺带说明：这里带了 <see cref="RaiseMetadataChanged"/> 而 <see cref="MarkDeleted"/> 没带 ——
+    /// 后者缺通知是既有的不一致（打完墓碑不推同步，别端看不到）。本次刻意不顺手改它，
+    /// 免得动摇既有检查点语义；要统一请另开一次改动。
+    /// </summary>
+    public static bool RemoveRecord(string id)
+    {
+        lock (Gate)
+        {
+            EnsureLoaded();
+            var m = _metadata!.FirstOrDefault(x => x.Id == id);
+            if (m == null) return false;
+            m.Deleted = true;
+            m.UpdatedAt = DateTime.Now;
+            PersistMetadataLocked();
+        }
+        RaiseMetadataChanged();
+        return true;
     }
 
     /// <summary>

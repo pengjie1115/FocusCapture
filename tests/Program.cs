@@ -20,6 +20,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using FocusCapture.Services;
+using FocusCapture.Services.Files;
 using FocusCapture.Services.Sync;
 
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
@@ -718,6 +719,106 @@ Check(devPs1.Contains("[string[]]$Only") && devPs1.Contains("-Only '"),
       + "03d 被 decimal 后缀吃成 3 却报成功）");
 
 Mark("[18] 界面快照的按需出图契约");
+
+// ── [19] 云端核对判定 CloudVerify（2026-09-27）──
+// 这块错了的后果**全是静默的**：漏标 → 用户以为文件还在网盘上，取回时才发现是空的；
+// 误标 → 明明还在后台上传的文件被说成"云端已不存在"，用户白折腾一轮。两种都不报错、只发作。
+// 判定表逐条对应 docs/2026-09-27-云端核对方案实施清单.md §5.2（含 2026-09-27 实机修正）。
+Console.WriteLine("[19] 云端核对判定 CloudVerify");
+
+var vNow = new DateTime(2026, 9, 27, 12, 0, 0);
+var vOpts = new CloudVerifyOptions { Now = vNow, FreshWindow = TimeSpan.FromHours(1) };
+var vOld = vNow.AddDays(-1);
+var vFresh = vNow.AddMinutes(-5);
+
+LocalRecord LR(string id, string path, bool deleted = false, string state = "",
+               bool hasLedger = false, bool uploaded = false, DateTime? created = null)
+    => new()
+    {
+        Id = id, NetPath = path, Deleted = deleted, CloudState = state,
+        HasLedgerEntry = hasLedger, WasUploaded = uploaded, CreatedAt = created ?? vOld,
+    };
+CloudEntry CE(string path) => new() { Path = path };
+
+var v1 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: true, uploaded: true) },
+    new[] { CE("/apps/F/files/1.md") }, vOpts);
+Check(v1.Hit == 1 && v1.MarkMissing.Count == 0,
+      "本地有 + 云端有 → 命中，不标注",
+      $"命中 {v1.Hit} / 待标 {v1.MarkMissing.Count}");
+
+var v2 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: true, uploaded: true) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v2.MarkMissing.Count == 1 && v2.MarkMissing[0] == "a",
+      "本地有 + 云端无 + 账本记过上传成功 → 标「云端已不存在」（最初要修的就是这种失真）",
+      $"待标 {v2.MarkMissing.Count} 条");
+
+var v3 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: true, uploaded: false) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v3.MarkMissing.Count == 0 && v3.SkipNotUploaded == 1,
+      "本地有 + 云端无 + 账本存在但没传成功 → 不标注（云端本该就没有）",
+      $"待标 {v3.MarkMissing.Count} / 跳过·未上传 {v3.SkipNotUploaded}");
+
+var v4 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: false, created: vOld) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v4.MarkMissing.Count == 1,
+      "本地有 + 云端无 + 无账本证据但记录够旧 → 标（2026-09-27 修正规则：实机测得 61% 的失真落在这里，"
+      + "原规则「无账本一律不标」会把它们全部漏掉）",
+      $"待标 {v4.MarkMissing.Count} 条");
+
+var v5 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: false, created: vFresh) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v5.MarkMissing.Count == 0 && v5.SkipTooFresh == 1,
+      "本地有 + 云端无 + 记录很新（安全窗口内）→ 不标注（防「他端刚传、清单先到、云端还在收」）",
+      $"待标 {v5.MarkMissing.Count} / 跳过·太新 {v5.SkipTooFresh}");
+
+var v6 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", deleted: true, hasLedger: true, uploaded: true) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v6.MarkMissing.Count == 0 && v6.SkipTombstone == 1, "墓碑记录 → 跳过（用户已彻底删除）");
+
+var v7 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/attachments/2026-09/1.jpg", state: "expired", hasLedger: true, uploaded: true) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v7.MarkMissing.Count == 0 && v7.SkipCloudExpired == 1,
+      "云端已到期清理 → 跳过（如期清理，不是意外消失）");
+
+var v8 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", state: "cleanup-pending", hasLedger: true, uploaded: true) },
+    Array.Empty<CloudEntry>(), vOpts);
+Check(v8.MarkMissing.Count == 0 && v8.SkipCloudPending == 1, "云端待清理 → 跳过（交给清理器补删）");
+
+var v9 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", hasLedger: true, uploaded: true) },
+    new[] { CE("/apps/F/files/1.md"), CE("/apps/F/files/other.md") }, vOpts);
+Check(v9.CloudOnly.Count == 1 && v9.CloudOnly[0] == "/apps/F/files/other.md" && v9.MarkMissing.Count == 0,
+      "云端有 + 本地无记录 → 只进「云端多出」报告，不产生任何标注（绝不自动入账）",
+      $"云端多出 {v9.CloudOnly.Count} 条");
+
+var v10 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md/", hasLedger: true, uploaded: true) },
+    new[] { CE("/apps/F/files/1.md") }, vOpts);
+Check(v10.Hit == 1, "路径尾部斜杠差异 → 规范化后视为命中");
+
+var v11 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/ABC.md", hasLedger: true, uploaded: true) },
+    new[] { CE("/apps/F/files/abc.md") }, vOpts);
+Check(v11.Hit == 0 && v11.MarkMissing.Count == 1,
+      "路径大小写不同 → 视为**不**命中（百度网盘路径大小写敏感）",
+      $"命中 {v11.Hit} / 待标 {v11.MarkMissing.Count}");
+
+var v12 = CloudVerify.Compare(
+    new[] { LR("a", "/apps/F/files/1.md", state: "missing", hasLedger: true, uploaded: true) },
+    new[] { CE("/apps/F/files/1.md") }, vOpts);
+Check(v12.ClearMissing.Count == 1 && v12.ClearMissing[0] == "a",
+      "此前标过「云端已不存在」、这次核对发现云端又有了 → 撤销标注",
+      $"待撤销 {v12.ClearMissing.Count} 条");
+
+Mark("[19] 云端核对判定 CloudVerify");
 
 Console.WriteLine();
 Console.WriteLine($"=== 各组耗时（按耗时降序）| 纯逻辑集 | 墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");

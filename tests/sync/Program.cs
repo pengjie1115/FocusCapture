@@ -3651,6 +3651,12 @@ print(json.dumps({
 
         public Task EnsureDirectoryAsync(string netDir, CancellationToken ct) => Task.CompletedTask;
 
+        /// <summary>核对用的递归清单：由检查点自行填充（默认空 = 云端什么都没有）。</summary>
+        public List<CloudEntry> CloudEntries { get; } = new();
+
+        public Task<List<CloudEntry>> ListAllAsync(string netDir, CancellationToken ct)
+            => Task.FromResult(CloudEntries.ToList());
+
         public Task DeleteAsync(IEnumerable<string> netPaths, CancellationToken ct)
         {
             foreach (var p in netPaths)
