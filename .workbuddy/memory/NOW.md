@@ -1,7 +1,7 @@
 # NOW — 当前状态（唯一活文件）
 
 > **谁干活谁覆盖更新；并行开发按分支分节；旧状态被覆盖即自动作废。** 硬上限 40 行。
-> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-27（chat-ui-polish 已合并回 main；+ experiment/baidu-listall-verify 验证中）
+> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-27（chat-ui-polish 与 experiment/baidu-listall-verify 均已合并回 main）
 
 ## 当前：`feature/chat-ui-polish` 已合并回 main（用户验收通过，ff-only），分支已按「合并即删」删除
 
@@ -17,10 +17,10 @@
   （不再每次布局重建胶囊容器）。快照 InputHitTest 命中链实测走通（方法论记 2026-09-27 事件账）
 - 检查点：快层 136 / 慢层 **740**（REGRESSION.md 已同步）；合并前 ready 全绿
 
-## 进行中：`experiment/baidu-listall-verify`（云端核对，**已实施待验收，未合并**）
+## 当前：`experiment/baidu-listall-verify` 云端核对**已 ff 合并回 main**（`55d04aa`；分支保留未删）
 
-- `cb2d5fe` 验证三件套（只读探针 / 实机报告 / 实施清单）→ `c994268` **按用户拍板实施**：新增 `CloudVerify`（纯函数判定）+ `CloudVerifyService`（编排：手动 + 10 分钟冷却 + 首轮同步未完成不许跑）+ `CloudStates.Missing` + `BaiduNetdiskClient.ListAllAsync` + 设置页「与云端核对」+ `CloudVerifyWindow`（双出口：应用标注 / 移除记录）
-- 快层 **136 → 148**（新增 [19] 组 12 条）、慢层 740 不变、**ready 全绿**
+- `cb2d5fe` 验证三件套（只读探针 / 实机报告 / 实施清单）→ `c994268` 实施（19 文件 / +1078 行）：`CloudVerify` 纯函数判定 + `CloudVerifyService` 编排 + `CloudStates.Missing` + `BaiduNetdiskClient.ListAllAsync` + 设置页「与云端核对」+ `CloudVerifyWindow`（双出口：应用标注 / 移除记录）
+- 快层 **136 → 148**（新增 [19] 组 12 条）、慢层 740 不变、**ready 全绿**；推送：**GitHub 成功**，**Gitee 403 token 过期**（待用户更新凭据）
 - 两个关键决定：核对 = **1 次** `listall` 递归调用（化解配额风险）；判定规则按实测**修正**（原「无账本证据不标注」会漏报 **61%** 失真 → 按时间窗口分级）
 - ⚠ **人工验收项**（需真机 + 真网盘，见 REGRESSION.md B-14 末 7 条）：设置页核对全流程；报告窗口两个出口；核对后被标记录问 AI 时是否如实说「网盘里已经没有它了」
 - 还欠：翻页（>1000 文件）未实测；应用是否已过上线审核未知（关系到限流口径）
