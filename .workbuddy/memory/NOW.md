@@ -23,7 +23,7 @@
 
 ## 分支
 
-- `feature/ai-tidy-rules` —— **已合并，按规范可删**（删除操作留给用户）；`feature/chat-restore-cross-device` 未并入，保留
+- `feature/ai-tidy-rules` —— 已按「合并即删」删除（git log 即归档）；`feature/chat-restore-cross-device` 未并入，保留
 
 ## 遗留
 
