@@ -25,12 +25,16 @@
 3. **llms.txt 的「核心事实速查」是全站事实锚点** —— 版本号、价格、平台等变化先改这里，再改各页。
 4. **faq.md 新增问答**：html 里加 `<details>` 块，md 里加一段加粗问题 + 答案，顺序保持一致。
 5. **changelog 发新版时**：html 里加 `<h2>` 段落，md 里加 `##` 段落，内容取自仓库 CHANGELOG.md 的当期发版段。
+6. **联系方式是全站唯一的「散布式内容」**：邮箱写在**每个 html 的 `<footer>`** 与**每个 md 的文末**（共 10 处）。
+   改联系方式必须 10 个文件一起改 —— 只改一处 = 页面上同时存在新旧两个联系方式。
+7. **下载页的构建日期与文件大小**：按当次 exe 的真实值填（字节数 ÷ 1024 ÷ 1024 取整，当前 261460291 ≈ 249 MB）。
 
 ## 部署前必查
 
-- [ ] sitemap.xml 和 robots.txt 里的 `REPLACE-AFTER-DEPLOY` 已替换为真实域名
-- [ ] download 页的版本号、文件大小已替换为真实值
-- [ ] exe 已放进 downloads/
+- [ ] sitemap.xml / robots.txt 里的域名是真实站点地址（现为 focuscapture.app.workbuddy.host）
+- [ ] download 页的构建日期与文件大小已替换为当次真实值
+- [ ] downloads/FocusCapture.exe 已替换为当次发布的 exe（该文件被 `.gitignore` 排除、不进仓库，发布时随目录一起走）
+- [ ] 页脚与各页 md 文末的联系方式一致（10 处）
 
 ## 统计（浏览量可查）
 

@@ -5,7 +5,26 @@
 
 本项目所有重要变更都记录在此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.3.0] - 2026-09-27
+
+### Added
+- **AI 问答界面重构**：侧边栏会话列表（分组 / 置顶 / 批量操作）、历史消息全局搜索（命中处逐词高亮）、起手页快捷问法胶囊、会话级模型选择、界面明暗两极可调、昵称 / 头像 / 自定义欢迎语
+- **AI 整理**：三入口一键理顺笔记与待办；规则化（预置 4 条 + 自定义），改写前出非模态预览窗逐条确认，可从记录中提取待办并建成真待办
+- **AI 模型多供应商**：设置拆分为「AI 模型」与「AI 功能」；每家供应商独立保存 API 地址与密钥、各自带一组模型；可指定默认模型与整理专用模型
+- **Agent 工具**：AI 问答可调用工具查笔记 / 列待办 / 记灵感 / 推送云端；写操作确认、工具轮数上限与结果截断阈值可配
+- **与云端核对**（百度网盘）：只读比对网盘实际清单（单次 listall），标注「云端已不存在」并给出清理出口
+- 技能体系：内置技能随包分发 + 设置页「Skill 扩展」
+
+### Changed
+- 云同步：会话分组墓碑（删除即终态）、`GroupsChanged` 钩子接线与 `ChatSyncEngine.Dispose`
+- 检查点：快层物理分层为可读契约、慢层增设「真做事」组；新增分组 / 搜索 / 明暗主题 / 快捷按钮检查点
+
+### Fixed
+- AI 气泡正文绑定补 `Mode=OneWay` —— 修每个气泡抛 XamlParseException 的弹窗轰炸
+- 起手页快捷胶囊点击无反应（WelcomePanel 垫在滚动区之下造成的命中遮挡）
+- 输入区打字闪动（每键无条件播淡入动画改为幂等）、占位提示与光标重叠
+
+## [0.2.0] - 2026-09-22
 
 ### Added
 - 灵感速览标题栏可组装：八个功能按钮（时间筛选/上传/拉取/查找/刷新/AI 问答/导出/存）可由用户在设置里添加、移除、排序，最小化/最大化/关闭为固定铬区不占槽位；配置按像素预算准入（随面板宽度增减），手改配置文件自动清洗回退
@@ -89,5 +108,6 @@
 - 语音识别乱码问题
 - 剪贴板瞬态写入（"选中即复制"类工具）导致的误捕获
 
-[Unreleased]: https://github.com/pengjie1115/FocusCapture/compare/v0.1.0...HEAD
+[0.3.0]: https://github.com/pengjie1115/FocusCapture/releases/tag/v0.3.0
+[0.2.0]: https://github.com/pengjie1115/FocusCapture/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pengjie1115/FocusCapture/releases/tag/v0.1.0

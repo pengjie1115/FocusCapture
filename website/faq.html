@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>常见问题 · FocusCapture 专注力捕捉</title>
-<meta name="description" content="FocusCapture 常见问题：是否免费、是否需要安装、数据存哪、语音识别是否离线、AI 问答如何配置、与剪贴板历史的区别、如何同步与卸载。">
+<meta name="description" content="FocusCapture 常见问题：是否免费、是否需要安装、数据存哪、语音识别是否离线、AI 模型如何配置、AI 整理会不会改坏笔记、支持哪些网盘、如何同步与卸载。">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -37,7 +37,7 @@
 
   <details>
     <summary>我的数据会被上传吗？</summary>
-    <p>不会。笔记、配置、语音模型全部存储在你自己的电脑上（文档\FocusCapture\ 等本机目录），不上传任何服务器。唯一的例外是你主动开启的可选功能：WebDAV 云同步（端到端加密后存你自己的网盘）与 AI 问答（按模型服务的隐私政策处理）。</p>
+    <p>不会。笔记、配置、语音模型全部存储在你自己的电脑上（文档\FocusCapture\ 等本机目录），不上传任何服务器。唯一的例外是你主动开启或使用的可选功能：云同步（端到端加密后存你自己的网盘）、AI 问答（按模型服务的隐私政策处理）与得到大脑上传（你点上传时才发）。</p>
   </details>
 
   <details>
@@ -47,7 +47,22 @@
 
   <details>
     <summary>AI 问答需要配置什么？</summary>
-    <p>需要在设置中填入模型服务地址（OpenAI 兼容接口）、API Key 与模型名。API Key 只存储在你本机的配置文件中，不会上传。不配置 AI 问答不影响其他功能使用。</p>
+    <p>在「设置 → AI 模型」里添加模型供应商：填服务地址（OpenAI 兼容接口）、API Key，并选好要用的模型。可以同时添加多家供应商，各自独立保存密钥与模型组，还能指定默认模型和 AI 整理专用模型。API Key 只存在你本机的配置文件中，不会上传。不配置 AI 也不影响其他功能使用。</p>
+  </details>
+
+  <details>
+    <summary>AI 整理会不会改坏我的笔记？</summary>
+    <p>不会偷偷改。整理结果先弹出预览窗，逐条列出「原文 → 整理后」，你可以只采纳其中几条；也可以选择另存为新笔记，原文一个字不动。真要覆盖时，被替换的旧内容会先进回收站。</p>
+  </details>
+
+  <details>
+    <summary>AI 问答能直接操作我的笔记吗？</summary>
+    <p>可以，需要先在设置里打开「Agent 工具」。打开后 AI 能查笔记、列待办、记灵感、把内容推到云端；写入类操作默认会先在对话里征得你同意，删掉的内容也会进回收站。</p>
+  </details>
+
+  <details>
+    <summary>能给应用装技能（Skill）吗？</summary>
+    <p>能。「设置 → Skill 扩展」里给出了技能目录，把一个含 SKILL.md 的文件夹放进去即可，应用不会改写技能文件本身；内置技能随应用分发，你本地已有同名技能时不会被覆盖。</p>
   </details>
 
   <details>
@@ -57,7 +72,7 @@
 
   <details>
     <summary>支持云同步吗？会泄漏隐私吗？</summary>
-    <p>支持可选的 WebDAV 云同步（对接你自己的网盘），传输内容经 AES-256-GCM 端到端加密，授权码即解密钥匙。默认状态下云同步关闭，数据只在本地。</p>
+    <p>支持可选的云同步，两种方式任选：WebDAV（如坚果云）或百度网盘（需在百度网盘开放平台创建「个人使用」应用，填自己的 AppKey / SecretKey）。传输内容经 AES-256-GCM 端到端加密，授权码即解密钥匙。默认状态下云同步关闭，数据只在本地。</p>
   </details>
 
   <details>
@@ -67,18 +82,18 @@
 
   <details>
     <summary>如何卸载？会留残留吗？</summary>
-    <p>删除 exe 与本机数据目录即可完全清除：文档\FocusCapture\（笔记）、%AppData%\FocusCapture\（配置）、%LocalAppData%\FocusCapture\（语音模型）。无注册表残留。</p>
+    <p>删除 exe 与本机数据目录即可完全清除：文档\FocusCapture\（笔记与 AI 问答附件）、%AppData%\FocusCapture\（配置）、%LocalAppData%\FocusCapture\（语音模型）。无注册表残留。</p>
   </details>
 
   <details>
     <summary>遇到问题怎么反馈？</summary>
-    <p>通过仓库的 Issues 提交问题，描述现象与系统版本即可。</p>
+    <p>发邮件到 <strong>3097199704@qq.com</strong>，写清现象、复现步骤与系统版本即可。</p>
   </details>
 </main>
 
 <footer>
   <p>FocusCapture · 数据只存本机 · 当前版本免费</p>
-  <p><a href="faq.md">本页 Markdown 版</a></p>
+  <p>联系邮箱：3097199704@qq.com · <a href="faq.md">本页 Markdown 版</a></p>
 </footer>
 
 <button id="copy-for-ai" data-md="faq.md" title="复制本页 Markdown 原文，粘贴给 AI 助手">Copy for AI</button>

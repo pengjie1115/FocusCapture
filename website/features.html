@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>功能一览 · FocusCapture 专注力捕捉</title>
-<meta name="description" content="FocusCapture 功能详解：悬浮球、剪贴板自动捕获、离线语音识别、灵感速览、待办提醒、AI 问答、四格式导出、WebDAV 加密同步，全部数据存本机。">
+<meta name="description" content="FocusCapture 功能详解：悬浮球、剪贴板自动捕获、离线语音识别、灵感速览、待办提醒、AI 问答与 AI 整理、Agent 工具、四格式导出、WebDAV 与百度网盘加密同步，全部数据存本机。">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -71,7 +71,23 @@
   <div class="grid">
     <div class="card">
       <h3>AI 问答</h3>
-      <p>支持图文混排的 AI 对话窗口：截图直接 Ctrl+V 粘贴、Word/Markdown/PDF 文本自动抽取随消息发送。模型服务由用户自行配置（OpenAI 兼容接口），API Key 只存本机。</p>
+      <p>带侧边栏的对话窗口。会话可分组、置顶与批量整理；全局搜索能在全部历史消息里找词，命中处逐词高亮；起手页可以放常用问法，点一下就发出去。输入区支持图文混排——截图直接 Ctrl+V 粘贴、Word / Markdown / PDF 文本自动抽取随消息发送（附件只存本机）。界面明暗可调，名字、头像、欢迎语都能改。</p>
+    </div>
+    <div class="card">
+      <h3>AI 整理</h3>
+      <p>把一批笔记丢给它，一键理顺——去口水话、并同类、提要点；也能从零散记录里把待办提取出来直接建成真待办。预置 4 条常用规则、支持自定义；整理结果先出预览，你逐条确认后才写回，原文可原样保留。</p>
+    </div>
+    <div class="card">
+      <h3>AI 模型多供应商</h3>
+      <p>同时添加多家模型供应商，各自独立保存 API 地址与密钥，每家有自己的一组模型；可指定默认模型与整理专用模型。API Key 只存本机，不进日志与同步数据。</p>
+    </div>
+    <div class="card">
+      <h3>Agent 工具</h3>
+      <p>AI 问答能直接动手——查笔记、列待办、记灵感、把内容推到云端，不用自己复制粘贴；写操作可开启弹窗确认，改错了有回收站兜底。</p>
+    </div>
+    <div class="card">
+      <h3>Skill 扩展</h3>
+      <p>可以给应用装技能：把一个含 SKILL.md 的文件夹放进技能目录即可，不改写原技能文件；内置技能随应用分发。</p>
     </div>
     <div class="card">
       <h3>得到大脑集成</h3>
@@ -91,7 +107,7 @@
     </div>
     <div class="card">
       <h3>加密云同步（可选）</h3>
-      <p>支持 WebDAV 网盘同步笔记与待办，AES-256-GCM 端到端加密，授权码即钥匙。默认不同步，数据全本地。</p>
+      <p>支持 WebDAV（如坚果云）与百度网盘，把笔记与待办加密后存进你自己的网盘——AES-256-GCM 端到端加密，授权码即钥匙。附件按需上传、本地副本可设自动释放；「与云端核对」只读比对网盘里的实际文件，找出已经被删掉的记录并给出清理出口。默认不同步，数据全本地。</p>
     </div>
   </div>
 
@@ -104,6 +120,8 @@
     <tr><td><kbd>Ctrl+Alt+R</kbd></td><td>启动沉浸式语音输入</td></tr>
     <tr><td><kbd>Ctrl+Alt+A</kbd></td><td>唤起 AI 问答</td></tr>
     <tr><td><kbd>Ctrl+Alt+T</kbd></td><td>打开/收起 待办汇总面板</td></tr>
+    <tr><td><kbd>Ctrl+Alt+S</kbd></td><td>唤出设置面板</td></tr>
+    <tr><td><kbd>Ctrl+T</kbd></td><td>在输入框内切换「笔记 / 待办」</td></tr>
     <tr><td><kbd>Ctrl+S</kbd></td><td>语音输入窗内保存</td></tr>
   </table>
   <p class="dim small">以上热键均可在「设置 → 热键」中修改。</p>
@@ -114,13 +132,14 @@
     <tr><td>笔记库</td><td>文档\FocusCapture\</td></tr>
     <tr><td>配置文件</td><td>%AppData%\FocusCapture\settings.json</td></tr>
     <tr><td>语音模型</td><td>%LocalAppData%\FocusCapture\models\</td></tr>
+    <tr><td>AI 问答附件</td><td>文档\FocusCapture\chat_history\attachments\</td></tr>
   </table>
   <p class="dim small">所有数据均在本机；卸载或删除对应目录即完全清除（开启云同步的用户，网盘侧副本需自行删除）。</p>
 </main>
 
 <footer>
   <p>FocusCapture · 数据只存本机 · 当前版本免费</p>
-  <p><a href="features.md">本页 Markdown 版</a></p>
+  <p>联系邮箱：3097199704@qq.com · <a href="features.md">本页 Markdown 版</a></p>
 </footer>
 
 <button id="copy-for-ai" data-md="features.md" title="复制本页 Markdown 原文，粘贴给 AI 助手">Copy for AI</button>
