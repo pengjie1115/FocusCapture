@@ -1,35 +1,30 @@
 # NOW — 当前状态（唯一活文件）
 
 > **谁干活谁覆盖更新；并行开发按分支分节；旧状态被覆盖即自动作废。** 硬上限 40 行。
-> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-27（chat-ui-polish 与 experiment/baidu-listall-verify 均已合并回 main）
+> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-27（官网 v0.3.0 已上线）
 
-## 当前：`feature/chat-ui-polish` 已合并回 main（用户验收通过，ff-only），分支已按「合并即删」删除
+## 当前：官网已按最新 main 全面同步并重新发布（`e0bba50` / tag `v0.3.0`）
 
-- **phase1 打字闪动 + 占位重叠两修**（`2fe7127`）：闪动根因 = 每键 TextChanged →
-  ApplyComposerLayout 末尾无条件播 140ms 透明度淡入 → 改幂等；占位与光标重叠 5 处统一「光标起点+6px」
-- **phase2 界面明暗两极可调**（`de1cdb6`）：设置·显示板块滑块 ChatShade（0=浅白/1=深=现状默认），
-  `Services/ChatThemeService` 37 角色色插值；深端逐像素不漂移；已知妥协：全局滚动条/ContextMenu/ToolTip 浅色端仍深色
-- **phase3 快捷按钮**（`570850e`）：[[OPTIONS:a|b]] 协议 → 气泡胶囊点击即发送；错误「重试」；
-  起手页胶囊（ChatQuickPrompts ≤8 条，只存本机不进同步）
-- **验收期两修**（`5eca3b3` + `5132d3d`）：① BubbleText 绑只读 DisplayContent 漏 Mode=OneWay →
-  每气泡抛 XamlParseException 弹窗轰炸；② 胶囊真根因 = WelcomePanel 垫在透明但可命中的
-  MessagesScroll 下（Z 序），看得见点不到 —— 已挪到滚动区之后 + UpdateWelcomeContent 幂等化
-  （不再每次布局重建胶囊容器）。快照 InputHitTest 命中链实测走通（方法论记 2026-09-27 事件账）
-- 检查点：快层 136 / 慢层 **740**（REGRESSION.md 已同步）；合并前 ready 全绿
+- 线上 https://focuscapture.app.workbuddy.host/ 实测已更新：首页含「AI 整理」、FAQ 含联系邮箱、
+  下载页 `2026-09-27 / 约 249 MB`；线上 exe `Content-Length: 261460291`（≈249 MB）与本地
+  `bin/Release/net8.0-windows/win-x64/publish/` 产物**逐字节一致**
+- 网站 13 文件改动：首页 / 功能 / FAQ（10 → 13 条）/ 下载 / 更新日志 / llms.txt / website/AGENTS.md
+  （AGENTS.md 新增「联系方式是全站唯一散布式内容，改必 10 处同改」+ 部署前必查项重写）
+- 新能力已上站：AI 整理、AI 问答界面（分组·全局搜索·快捷胶囊·明暗可调）、AI 模型多供应商、
+  Agent 工具、Skill 扩展、百度网盘与「与云端核对」；另补两个漏登的默认热键（Ctrl+Alt+S、Ctrl+T）
+- 联系方式 = **邮箱 3097199704@qq.com**，全站 10 处（5 页脚 + 5 页 md 文末）；llms.txt 未加（用户未勾）
+- ⚠ 用户原话要「微信号」，但选项题实际答的是邮箱 → **微信号待补**；补了就改那 10 处
+- ⚠ 百度网盘与云端核对已按要求上站，但该功能**人工验收项仍未做**（REGRESSION.md B-14 末 7 条，需真机 + 真网盘）
 
-## 当前：`experiment/baidu-listall-verify` 云端核对**已 ff 合并回 main**（`55d04aa`；分支保留未删）
+## 待办
 
-- `cb2d5fe` 验证三件套（只读探针 / 实机报告 / 实施清单）→ `c994268` 实施（19 文件 / +1078 行）：`CloudVerify` 纯函数判定 + `CloudVerifyService` 编排 + `CloudStates.Missing` + `BaiduNetdiskClient.ListAllAsync` + 设置页「与云端核对」+ `CloudVerifyWindow`（双出口：应用标注 / 移除记录）
-- 快层 **136 → 148**（新增 [19] 组 12 条）、慢层 740 不变、**ready 全绿**；推送：**GitHub 成功**，**Gitee 403 token 过期**（待用户更新凭据）
-- 两个关键决定：核对 = **1 次** `listall` 递归调用（化解配额风险）；判定规则按实测**修正**（原「无账本证据不标注」会漏报 **61%** 失真 → 按时间窗口分级）
-- ⚠ **人工验收项**（需真机 + 真网盘，见 REGRESSION.md B-14 末 7 条）：设置页核对全流程；报告窗口两个出口；核对后被标记录问 AI 时是否如实说「网盘里已经没有它了」
-- 还欠：翻页（>1000 文件）未实测；应用是否已过上线审核未知（关系到限流口径）
+- **推送待用户确认**：本地 main 领先 origin（Gitee token 过期 403）；GitHub 待推；tag `v0.3.0` 未推送
+- 官网小账：README.md 第 109 行仍写「docs/ 官网落地页（GitHub Pages）」，与现状
+  （`website/` + WorkBuddy 自有托管 `focuscapture.app.workbuddy.host`）不符
+- `Resources/embed_icon.py` + csproj `EmbedAppIcon` target 是否清理（历史遗留、对 RID 发布无效）—— 待用户拍板
+- 慢层实测 ~35 秒 vs 锚点「约 170 秒」差异未查证；2 个 flaky（`[8]` 子进程流式读、Agent 工具时间前提）未隔离
 
 ## 分支
 
-- main（含上述全部）；`feature/chat-restore-cross-device` 未并入保留；`experiment/baidu-listall-verify` 验证中
-
-## 遗留
-
-- ⚠ Gitee 推送受阻（token 过期 403，修法见 PITFALLS）；本地 main 领先 origin 19+ 提交待推
-- 慢层实测 ~35 秒 vs 锚点「约 170 秒」差异未查证；2 个 flaky（`[8]` 子进程流式读、Agent 工具时间前提）未隔离
+- main（含官网 v0.3.0、云端核对、语义检索评估）；`feature/chat-restore-cross-device`、
+  `experiment/baidu-listall-verify`、`experiment/netdisk-semantic-eval` 保留未删

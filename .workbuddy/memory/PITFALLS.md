@@ -85,3 +85,16 @@ Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.wor
 - **生成新令牌**：Gitee 头像 → 设置 → 安全设置 → 私人令牌 → 生成新令牌；
   **权限必须勾 `projects`**（不勾推不上去），提交后输入登录密码验证，令牌**只显示一次**。
   令牌不进聊天、不进任何文件。
+
+## `embed_icon.py` 对 RID 发布流程永远无效（2026-09-27 实测）
+
+- 现象：`dotnet publish -r win-x64` 报 `warning MSB3073: 命令"python Resources\embed_icon.py"已退出，代码为 9009`（9009 = 找不到 python；沙箱 PATH 里没有，managed python 在 `~/.workbuddy/binaries/python/`）。
+- **实查结论：这条警告无害，别跟着它去"修"**。exe 图标由 csproj 的 `<ApplicationIcon>Resources\app.ico</ApplicationIcon>` 经 apphost 正确嵌入 —— PE 实测：`RT_ICON` id 1..5（与 app.ico 五帧 10976 字节逐帧吻合）+ `RT_GROUP_ICON` id **32512**（`IDI_APPLICATION`，.NET SDK 标准写法）+ `RT_VERSION` / `RT_MANIFEST` 齐全。
+- 脚本三处硬伤（发布流程里从未生效过，属历史遗留，是否清理待用户定）：
+  ① 路径写死 `bin/Release/net8.0-windows/FocusCapture.exe` —— RID 构建产物在 `win-x64/` 子目录下，**永远找不到**；
+  ② `UpdateResourceW(h, 3, 14, ...)` 把图标组数据写成了 `RT_ICON` 类型（lpType 应为 14），参数写错；
+  ③ 找不到 exe 时 `print("跳过") + exit 0`，配 `ContinueOnError="true"` = **完全静默**。
+- **探测 PE 图标资源的可靠手法**（`Add-Type` 被沙箱拦；Python 3.13 的 ctypes `WINFUNCTYPE` 回调会 `Fatal Python error: _PyThreadState_Attach` 直接崩）：
+  纯 Python 解析 PE 资源目录（DOS 头 `e_lfanew` → OptionalHeader DataDirectory[2] → 节表换算文件偏移 → `IMAGE_RESOURCE_DIRECTORY`）。
+  坑中坑：目录条目总数 = **`NumberOfNamedEntries`(off+12) + `NumberOfIdEntries`(off+14)**，只读 off+12 会得到空列表、看起来像"资源表是空的"。
+  只想判断「有没有图标」用 `ExtractIconEx`（返回 1 即有），但它区分不了「我们的图标」与「SDK 默认图标」，要区分必须列 RT_ICON 各帧字节数。
