@@ -27,6 +27,10 @@ namespace FocusCapture;
 [JsonSerializable(typeof(List<AiProviderEntry>))]
 [JsonSerializable(typeof(AiModelEntry))]
 [JsonSerializable(typeof(List<AiModelEntry>))]
+// 2026-09-27 AI 整理规则化：AppSettings.TidyRules 是 List<TidyRule>。
+// 漏注册 → 运行时抛 NotSupportedException（本文件注释里已踩过两次的坑）。
+[JsonSerializable(typeof(TidyRule))]
+[JsonSerializable(typeof(List<TidyRule>))]
 internal partial class AppJsonContext : JsonSerializerContext
 {
 }

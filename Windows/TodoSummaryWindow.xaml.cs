@@ -519,10 +519,14 @@ public partial class TodoSummaryWindow : Window
         btn.Content = "…";
         try
         {
-            var result = await AiTidyFlow.RunAsync(this, _notes, _settings, _aiProvider, e, text);
-            // 只有「替换原文」才重载列表：另存出来的是一条普通笔记，本面板只显示待办、不会出现它；
-            // 而重载会顺手把编辑态连同用户没保存的草稿一起丢掉。
-            if (result?.Choice == TidyChoice.Replace) ReloadFromNotes();
+            // 预览窗非模态（2026-09-27）：窗口打开后本方法即返回；落库发生在关窗时，经回调重载列表
+            await AiTidyFlow.RunAsync(this, _notes, _settings, _aiProvider, e, text,
+                result =>
+                {
+                    // 「替换原文」与「创建待办」要重载列表（本面板显示待办，新建的待办要露面）；
+                    // 另存出来的是一条普通笔记，本面板不显示它，重载反而会把编辑态连同用户没保存的草稿一起丢掉。
+                    if (result?.Choice is TidyChoice.Replace or TidyChoice.CreateTodos) ReloadFromNotes();
+                });
         }
         finally
         {

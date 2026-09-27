@@ -36,7 +36,7 @@ param(
     # 只能手敲 git —— 脚本能力与实际用法脱节。默认仍是 main，老用法不变。
     [string]$From = 'main',
 
-    # snap 的按需出图（2026-09-26 新增）：45 个场景全量跑一遍约 1 分钟，而改一个板块时大半的图是白跑的。
+    # snap 的按需出图（2026-09-26 新增）：46 个场景全量跑一遍约 1 分钟，而改一个板块时大半的图是白跑的。
     # -List 只拿清单（不渲染，毫秒级）、-Only 只出选中的场景。可单独用，也可叠加：
     # `snap -List -Only 03` = 只看 03 这一批有哪些场景。
     #
@@ -905,7 +905,7 @@ function Show-Help {
     Write-Host '  merge                 把当前分支 ff-only 合并到 main（合并后自动校验索引）'
     Write-Host '  push                  推 main 到双远程（origin=Gitee, github）'
     Write-Host '  recover               诊断 git 索引异常（默认只诊断+备份，加 -Apply 才恢复）'
-    Write-Host '  snap                  全量出界面快照（45 张）到 %TEMP%\fc-ui-snapshot\<时间戳>，并打印尺寸表'
+    Write-Host '  snap                  全量出界面快照（46 张）到 %TEMP%\fc-ui-snapshot\<时间戳>，并打印尺寸表'
     Write-Host '  snap -List             只列场景清单（不渲染，毫秒级）—— 看有哪些图可出'
     Write-Host "  snap -Only '03b,10'    只出名字含这些编号的图（没匹配到会报错退出）"
     Write-Host '                         ⚠ 值必须加引号：不加引号时 03d 会被 PowerShell 当 decimal 后缀吃成 3'

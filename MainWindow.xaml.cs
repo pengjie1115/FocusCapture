@@ -572,6 +572,20 @@ public partial class MainWindow : Window
     }
 
 
+    /// <summary>
+    /// 「AI 整理预览窗 → 自定义」入口（2026-09-27）：打开设置并定位到「整理规则」板块。
+    /// 设置窗本就是非模态单例（OpenSettings），预览窗保持打开，两边可同时操作。
+    /// </summary>
+    public void OpenSettingsToTidyRules()
+    {
+        OpenSettings();
+        if (_settingsWindow != null)
+        {
+            EnsureWindowVisible(_settingsWindow);
+            _settingsWindow.SelectSection("整理规则");
+        }
+    }
+
     private void OpenSettings()
     {
         // 已存在 → 直接前置（非模态后必须自己挡重入：连按热键会开出好几个设置窗口，用户改哪个都不知道）

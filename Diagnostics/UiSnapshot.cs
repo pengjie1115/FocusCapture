@@ -477,11 +477,36 @@ internal static class UiSnapshot
                 return new QuickViewWindow(notes, settings);
             }, outDir, log);
 
-            Capture("30-AI 整理预览窗", () => new AiTidyPreviewWindow(
-                "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
-                "- **供应商沟通**\n  - 价格与交期：都还行\n  - 加急：要加钱\n"
-                +                 "- **待办**\n  - 上周的会议纪要还没发给他（明天 10:00 前处理掉）",
-                "Agnes 3.0 Flash"), outDir, log);
+            // 30：文本流形态 —— 新增的底部规则条（预置 4 条 chips + 自定义入口）与原有出口并排，
+            // 规则多 / 窗口窄时会不会挤出边界、chips 与出口是否看混，只有出图才知道。
+            Capture("30-AI 整理预览窗（规则条）", () => new AiTidyPreviewWindow(new AiTidyPreviewWindow.TidyPreviewRequest
+            {
+                Original = "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
+                InitialTidied = "1. **供应商沟通**\n   价格与交期都还行；加急要加钱。\n2. **待办**\n   1. 上周的会议纪要发给他；\n   2. 明天上午 10:00 前处理掉。",
+                InitialRule = TidyRuleCatalog.ResolveDefaultRule(settings),
+                Rules = TidyRuleCatalog.ResolveVisible(settings),
+                ShowCustomEntry = settings.TidyShowCustomEntry,
+                ModelLabel = "Agnes 3.0 Flash",
+                Provider = null,   // 快照不联网：换规则重跑在快照环境不可用（点 chip 只会得到人话提示）
+                Settings = settings,
+            }), outDir, log);
+
+            // 30b：提取待办形态 —— 结果区切待办行列表（文字 + 行内日期 / 时间框 + 删行），
+            // 「创建待办」出口只在规则条选中「提取待办」时出现；日期框是系统控件、深色底下什么样子只有出图才知道。
+            Capture("30b-AI 整理预览窗（提取待办）", () => new AiTidyPreviewWindow(new AiTidyPreviewWindow.TidyPreviewRequest
+            {
+                Original = "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
+                InitialTidied = "【2026-09-27 10:00】把整理好的方案发到项目群\n给供应商回电话问加急费",
+                InitialRule = TidyRuleCatalog.ResolveDefaultRule(settings),
+                Rules = TidyRuleCatalog.ResolveVisible(settings),
+                ShowCustomEntry = settings.TidyShowCustomEntry,
+                ModelLabel = "Agnes 3.0 Flash",
+                Provider = null,
+                Settings = settings,
+            }), outDir, log, afterShow: win =>
+            {
+                if (win is AiTidyPreviewWindow p) p.SeedTodoModeForSnapshot();
+            });
 
             // ── 收尾（2026-09-26 按需出图）──
             // ⚠ 必须写在 finally 落 snapshot.log 之前，否则这两条结论进不了日志、排障时看不见。

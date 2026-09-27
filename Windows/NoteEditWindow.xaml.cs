@@ -97,16 +97,20 @@ public partial class NoteEditWindow : Window
         BtnAiTidy.Content = "…";
         try
         {
-            var result = await AiTidyFlow.RunAsync(this, _noteService, _settings, _provider, _vm.Entry, EditBox.Text);
-            if (result?.Choice != TidyChoice.Replace) return;
+            // 预览窗非模态（2026-09-27）：窗口打开后本方法即返回；落库发生在关窗时，经回调同步编辑框
+            await AiTidyFlow.RunAsync(this, _noteService, _settings, _provider, _vm.Entry, EditBox.Text,
+                result =>
+                {
+                    if (result?.Choice != TidyChoice.Replace) return;
 
-            // 替换已在 AiTidyFlow 里原地写盘；把编辑框与「行内编辑共享的 EditText」一起同步成整理结果，
-            // 用户可接着改（内容没再变时点保存等于无操作，不会重复写盘）
-            _vm.EditText = result.Text;
-            EditBox.Text = result.Text;
-            EditBox.CaretIndex = 0;
-            EditBox.ScrollToHome();
-            UpdateCharCount();
+                    // 替换已在 AiTidyFlow 里原地写盘；把编辑框与「行内编辑共享的 EditText」一起同步成整理结果，
+                    // 用户可接着改（内容没再变时点保存等于无操作，不会重复写盘）
+                    _vm.EditText = result.Text;
+                    EditBox.Text = result.Text;
+                    EditBox.CaretIndex = 0;
+                    EditBox.ScrollToHome();
+                    UpdateCharCount();
+                });
         }
         finally
         {

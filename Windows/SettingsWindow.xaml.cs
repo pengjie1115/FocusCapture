@@ -72,15 +72,28 @@ public partial class SettingsWindow : Window
     }
 
     private readonly List<SettingEntry> _searchIndex = new();
-    private readonly string[] _sectionNames = { "热键", "AI 模型", "AI 功能", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "文件与网盘", "通用" };
+    private readonly string[] _sectionNames = { "热键", "AI 模型", "AI 功能", "整理规则", "外观", "显示", "灵感速览", "输入框", "云同步", "待办与提醒", "文件与网盘", "通用" };
     private bool _navSuppress; // 程序化切换导航选中项时抑制事件
 
     /// <summary>板块面板列表，顺序与 _sectionNames / 左侧导航一一对应</summary>
     private StackPanel[] SectionPanels() => new[]
     {
-        PanelHotkey, PanelAiModel, PanelAi, PanelAppearance, PanelDisplay, PanelQuickView,
+        PanelHotkey, PanelAiModel, PanelAi, PanelTidyRules, PanelAppearance, PanelDisplay, PanelQuickView,
         PanelInput, PanelSync, PanelTodo, PanelFiles, PanelGeneral
     };
+
+    /// <summary>外部跳转到指定板块（按导航名，如「整理规则」）。找不到就不动 —— 调用方不必先判存在。</summary>
+    public void SelectSection(string title)
+    {
+        for (int i = 0; i < NavList.Items.Count; i++)
+        {
+            if ((NavList.Items[i] as ListBoxItem)?.Content as string == title)
+            {
+                NavList.SelectedIndex = i;   // 触发 NavList_SelectionChanged → ShowSection(i)
+                return;
+            }
+        }
+    }
 
     /*
      * ══ 新增设置项的写死规则（自动扫描约定）══
@@ -367,6 +380,7 @@ public partial class SettingsWindow : Window
         LoadFileSettings();
         LoadTodoSettings();
         LoadInputSettings();
+        LoadTidyRules();                  // 整理规则板块（2026-09-27）：规则列表 + 默认规则 + 自定义入口开关
         _suppressEvents = false;
         RefreshHotkeyWarning();           // v3.8：回显上次注册失败的键位（多为被其他程序占用）
         _ = LoadGetNoteTopicsQuietly();   // 凭证已配置时后台拉取知识库列表（不阻塞设置打开）
@@ -2716,4 +2730,227 @@ public partial class SettingsWindow : Window
     }
 
     private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
+
+    // ═══════════════ 整理规则（2026-09-27 AI 整理规则化） ═══════════════
+
+    /// <summary>正在编辑的自定义规则 Id（null = 编辑器里是"新增"）。空串 = 编辑器关闭。</summary>
+    private string? _tidyRuleEditingId;
+
+    /// <summary>重建规则列表行 + 默认规则下拉。增删 / 排序 / 显隐后都走这里，一次全刷。</summary>
+    private void LoadTidyRules()
+    {
+        // 默认规则下拉：列出全部规则（含隐藏的 —— 默认规则与显隐互不干涉）
+        _suppressEvents = true;
+        CmbTidyDefault.Items.Clear();
+        foreach (var r in _settings.TidyRules)
+            CmbTidyDefault.Items.Add(r.Name + (r.Visible ? "" : "（已隐藏）"));
+        var di = _settings.TidyRules.FindIndex(r => r.Id == _settings.TidyDefaultRuleId);
+        CmbTidyDefault.SelectedIndex = di >= 0 ? di : 0;
+        TidyShowCustomEntryCheck.IsChecked = _settings.TidyShowCustomEntry;
+        _suppressEvents = false;
+
+        TidyRulesHost.Children.Clear();
+        var rules = _settings.TidyRules;
+        for (int i = 0; i < rules.Count; i++)
+        {
+            var idx = i;
+            var r = rules[i];
+
+            var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var name = new TextBlock
+            {
+                Text = r.Name,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var tag = new TextBlock
+            {
+                Text = r.IsBuiltin ? "内置" : "自定义",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)),
+                FontSize = 10,
+                Margin = new Thickness(8, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var namePanel = new StackPanel { Orientation = Orientation.Horizontal };
+            namePanel.Children.Add(name);
+            namePanel.Children.Add(tag);
+            if (!r.Visible)
+                namePanel.Children.Add(new TextBlock
+                {
+                    Text = "（不显示在预览窗）",
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
+                    FontSize = 10,
+                    Margin = new Thickness(8, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            Grid.SetColumn(namePanel, 0);
+            row.Children.Add(namePanel);
+
+            var showCheck = new CheckBox
+            {
+                IsChecked = r.Visible,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = "是否显示在预览窗底部规则条（隐藏不影响它作为默认规则运行）",
+            };
+            showCheck.Checked += (_, _) => { if (!_suppressEvents) { r.Visible = true; _settings.Save(); LoadTidyRules(); } };
+            showCheck.Unchecked += (_, _) => { if (!_suppressEvents) { r.Visible = false; _settings.Save(); LoadTidyRules(); } };
+            var showPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            showPanel.Children.Add(new TextBlock
+            {
+                Text = "显示",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0),
+            });
+            showPanel.Children.Add(showCheck);
+            Grid.SetColumn(showPanel, 1);
+            row.Children.Add(showPanel);
+
+            var ops = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
+            Button MakeOp(string content, RoutedEventHandler onClick, string tip)
+            {
+                var b = new Button
+                {
+                    Content = content, FontSize = 11, Height = 24, Padding = new Thickness(8, 0, 8, 0),
+                    Margin = new Thickness(4, 0, 0, 0), Cursor = System.Windows.Input.Cursors.Hand,
+                    Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)), BorderThickness = new Thickness(1),
+                    ToolTip = tip,
+                };
+                b.Click += onClick;
+                return b;
+            }
+            if (idx > 0)
+                ops.Children.Add(MakeOp("↑", (_, _) => MoveTidyRule(idx, -1), "上移（预览窗底栏顺序）"));
+            if (idx < rules.Count - 1)
+                ops.Children.Add(MakeOp("↓", (_, _) => MoveTidyRule(idx, 1), "下移（预览窗底栏顺序）"));
+            if (r.IsBuiltin)
+            {
+                ops.Children.Add(MakeOp("复制", (_, _) => OpenTidyRuleEditor(null, r.Name + "（副本）", TidyRuleCatalog.Find(r.Id)?.Instruction ?? ""), "复制这条预置规则作为自定义规则的底稿（可改提示词）"));
+            }
+            else
+            {
+                ops.Children.Add(MakeOp("编辑", (_, _) => OpenTidyRuleEditor(r.Id, r.Name, r.Prompt), "修改这条自定义规则的名称与提示词"));
+                ops.Children.Add(MakeOp("删除", (_, _) => DeleteTidyRule(r.Id), "删除这条自定义规则（预置规则不可删）"));
+            }
+            Grid.SetColumn(ops, 2);
+            row.Children.Add(ops);
+            TidyRulesHost.Children.Add(row);
+        }
+
+        if (rules.Count == 0)
+            TidyRulesHost.Children.Add(new TextBlock
+            {
+                Text = "（规则列表是空的 —— 保存一次设置后会自动补回出厂预置规则）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
+                FontSize = 11,
+                Margin = new Thickness(0, 4, 0, 4),
+            });
+    }
+
+    private void MoveTidyRule(int index, int delta)
+    {
+        var rules = _settings.TidyRules;
+        (rules[index], rules[index + delta]) = (rules[index + delta], rules[index]);
+        _settings.Save();
+        LoadTidyRules();
+    }
+
+    /// <summary>打开行内编辑器。id=null 表示新增；baseName/basePrompt 是初稿（复制预置时带出指令正文）。</summary>
+    private void OpenTidyRuleEditor(string? id, string baseName, string basePrompt)
+    {
+        _tidyRuleEditingId = id;
+        _suppressEvents = true;
+        TidyRuleNameInput.Text = baseName;
+        TidyRulePromptInput.Text = basePrompt;
+        _suppressEvents = false;
+        TidyRuleEditorTag.Text = id == null ? "新增自定义规则" : "正在编辑这条自定义规则";
+        UpdateTidyRuleEditorHint();
+        TidyRuleEditor.Visibility = Visibility.Visible;
+        TidyRuleNameInput.Focus();
+    }
+
+    private void BtnTidyRuleAdd_Click(object sender, RoutedEventArgs e) => OpenTidyRuleEditor(null, "", "");
+
+    private void BtnTidyRuleCancel_Click(object sender, RoutedEventArgs e)
+    {
+        _tidyRuleEditingId = null;
+        TidyRuleEditor.Visibility = Visibility.Collapsed;
+    }
+
+    private void BtnTidyRuleSave_Click(object sender, RoutedEventArgs e)
+    {
+        var name = TidyRuleNameInput.Text.Trim();
+        var prompt = TidyRulePromptInput.Text.Trim();
+        if (name.Length == 0) { TidyRuleEditorHint.Text = "规则名称不能为空。"; return; }
+        if (prompt.Length == 0) { TidyRuleEditorHint.Text = "提示词不能为空 —— 这段话就是模型收到的全部指令。"; return; }
+        if (_settings.TidyRules.Any(r => !r.IsBuiltin && r.Id != _tidyRuleEditingId && r.Name == name))
+        { TidyRuleEditorHint.Text = "已有同名的自定义规则。"; return; }
+
+        if (_tidyRuleEditingId is { } editing && _settings.TidyRules.FirstOrDefault(r => r.Id == editing) is { } exist)
+        {
+            exist.Name = name;
+            exist.Prompt = prompt;
+        }
+        else
+        {
+            _settings.TidyRules.Add(new TidyRule
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Name = name,
+                Prompt = prompt,
+                IsBuiltin = false,
+                Visible = true,
+            });
+        }
+        _settings.Save();
+        _tidyRuleEditingId = null;
+        TidyRuleEditor.Visibility = Visibility.Collapsed;
+        LoadTidyRules();
+    }
+
+    private void DeleteTidyRule(string id)
+    {
+        var rule = _settings.TidyRules.FirstOrDefault(r => r.Id == id);
+        if (rule == null) return;
+        var confirm = System.Windows.MessageBox.Show(this, $"确认删除自定义规则「{rule.Name}」？", "删除确认",
+            MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+        _settings.TidyRules.Remove(rule);
+        if (_settings.TidyDefaultRuleId == id) _settings.TidyDefaultRuleId = TidyRuleCatalog.TidyId;   // 默认规则被删 → 回落理顺条理
+        _settings.Save();
+        LoadTidyRules();
+    }
+
+    private void CmbTidyDefault_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var i = CmbTidyDefault.SelectedIndex;
+        if (i < 0 || i >= _settings.TidyRules.Count) return;
+        _settings.TidyDefaultRuleId = _settings.TidyRules[i].Id;
+        _settings.Save();
+    }
+
+    private void TidyShowCustomEntry_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.TidyShowCustomEntry = TidyShowCustomEntryCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void TidyRulePrompt_TextChanged(object sender, TextChangedEventArgs e) => UpdateTidyRuleEditorHint();
+
+    private void UpdateTidyRuleEditorHint()
+    {
+        if (TidyRuleEditorHint == null) return;
+        TidyRuleEditorHint.Text = $"{TidyRulePromptInput.Text.Length} 字。写清三点最有效：要做什么 / 输出什么格式 / 不要什么。";
+    }
 }

@@ -546,20 +546,35 @@ Check(ChatSearchMatcher.CountMatches(null!, "a") == 0 && ChatSearchMatcher.Extra
       "null 正文必须安全返回（不抛）",
       "会话正文可能为 null（附件消息），搜索不能因此整体失败");
 
-// ── [17] AI 整理的提示词与结果清洗 NoteTidyPrompt（2026-09-26）──
+// ── [17] AI 整理的提示词 / 规则拼接 / 待办行解析 / 结果清洗 NoteTidyPrompt（2026-09-26；2026-09-27 规则化）──
 // 守的是三件"坏了不报错"的事：
 //   ① 长度闸门算错 → 超长正文照发：要么被服务商 400，要么只整理了前半段
 //      （后者更糟：用户会以为后半段也整理过了，而笔记里那半段还是乱的原样）；
 //   ② 结果清洗漏掉围栏 / 开场白 → 笔记里凭空多出 ``` 与「以下是整理后的内容：」，写进去就擦不掉；
-//   ③ 提示词漏掉「不新增事实 / 不翻译」→ 模型开始自由发挥，把用户的原始记录改写成另一件事。
+//   ③ 提示词拼错段 → 预置规则漏「不翻译」模型就顺手翻译；自定义规则若被偷偷拼了硬约束，
+//      用户写"输出成代码块"这类指令就会静默失效（2026-09-27 拍板：自定义整段替换）。
 Console.WriteLine("[17] AI 整理提示词与结果清洗 NoteTidyPrompt");
 
 var (tidySys, tidyUser) = NoteTidyPrompt.BuildMessages("  一段随手写的乱文字  ");
 Check(tidySys.Contains("不新增任何事实") && tidySys.Contains("不要翻译"),
-      "系统提示词必须同时锁死「不新增事实」与「不翻译」",
+      "默认系统提示词（理顺条理）必须同时锁死「不新增事实」与「不翻译」",
       "漏一条，模型就会替用户补全或顺手翻译 —— 产出不再是他的原始记录了");
+Check(tidySys.Contains("正常序号"),
+      "默认系统提示词必须要求层级用正常序号（1. 2. 3.）—— 旧版「只用 - 与 **」已按用户要求取消（结果难读）");
 Check(tidyUser == "一段随手写的乱文字",
       "送给模型的正文要去掉首尾空白", $"实际「{Cut(tidyUser)}」");
+
+var customSys = NoteTidyPrompt.BuildMessages("正文", "你是一个翻译腔很重的助手。").System;
+Check(customSys == "你是一个翻译腔很重的助手。",
+      "自定义规则的提示词必须整段生效，不许偷偷拼上预置的输出纪律或指令段",
+      "2026-09-27 拍板：自定义完全交给用户 —— 拼了就等于背着他改他的指令");
+
+Check(NoteTidyPrompt.OutputDiscipline.Contains("不要翻译") && NoteTidyPrompt.OutputDiscipline.Contains("代码块围栏"),
+      "预置规则共用的输出纪律必须锁「不翻译」与「无围栏无开场白」");
+Check(NoteTidyPrompt.ExtractTodoInstruction.Contains("【yyyy-MM-dd HH:mm】") && NoteTidyPrompt.ExtractTodoInstruction.Contains("未发现待办"),
+      "提取待办的指令必须约定行内时间戳格式与「未发现待办」空态标记（解析器按此机械解析）");
+Check(NoteTidyPrompt.ExplainInstruction.Contains("名词解释") && NoteTidyPrompt.ExplainInstruction.Contains("完整保留用户原文"),
+      "解释扩展必须「原文一字不改 + 末尾附注」—— 它是唯一允许新增内容的预置规则，边界收在附注区");
 
 Check(NoteTidyPrompt.CharCount("  abc  ") == 3, "字符数不计首尾空白");
 Check(!NoteTidyPrompt.IsTooLong(new string('中', NoteTidyPrompt.MaxInputChars)),
@@ -598,6 +613,24 @@ Check(NoteTidyPrompt.CleanResult(longHead) == longHead,
 
 Check(NoteTidyPrompt.CleanResult("  只有一段话，没有围栏也没有开场白。  ") == "只有一段话，没有围栏也没有开场白。",
       "既没有围栏也没有开场白时，原样返回（清洗不许画蛇添足）");
+
+// 提取待办的回包解析（2026-09-27）：解析错一行 = 静默少建一条待办或建出一条带时间戳文字的待办
+var todos = NoteTidyPrompt.ParseTodoLines(
+    "【2026-09-30 14:05】把方案发到项目群\n【2026-10-01】给供应商回电话\n- 1. 明天买打印纸\n\n");
+Check(todos.Count == 3, "逐行解析：非空行一条一个，空行跳过", $"实际 {todos.Count} 条");
+Check(todos[0].Text == "把方案发到项目群" && todos[0].Due == new DateTime(2026, 9, 30, 14, 5, 0),
+      "「【日期 时间】内容」→ 内容 + 当天该时刻", $"实际「{todos[0].Text}」@{todos[0].Due:yyyy-MM-dd HH:mm}");
+Check(todos[1].Text == "给供应商回电话" && todos[1].Due == new DateTime(2026, 10, 1),
+      "只有日期没有钟点 → 当天 00:00（创建待办时由此走「按日期不问钟点」的正常链路）");
+Check(todos[2].Text == "明天买打印纸" && todos[2].Due == null,
+      "没有【】的行 = 纯文字、无截止时间；行首的序号 / 分点符号（模型不守格式时）要剥掉",
+      $"实际「{todos[2].Text}」");
+
+Check(NoteTidyPrompt.IsNoTodoMarker("未发现待办") && !NoteTidyPrompt.IsNoTodoMarker("未发现待办事项"),
+      "「未发现待办」空态标记必须精确匹配 —— 误判会把这句话建成一条待办");
+
+Check(NoteTidyPrompt.ParseTodoLines("").Count == 0 && NoteTidyPrompt.ParseTodoLines(null).Count == 0,
+      "空回包解析出 0 条（调用方据此退回纯文本展示、创建待办置灰）");
 
 Mark("[13]-[17] AI 解析 / 裁剪 / 搜索匹配 / 整理清洗");
 

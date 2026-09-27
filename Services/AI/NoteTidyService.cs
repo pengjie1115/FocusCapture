@@ -56,11 +56,25 @@ public static class NoteTidyService
         "还没有配置可用的 AI 模型。\n\n请到 设置 → AI 模型 添加供应商并填好 Key；" +
         "想让它用某个特定模型，再到「AI 整理模型」里点选一个（不选就跟随当前模型）。";
 
+    /// <summary>按规则解析本次请求的系统提示词（预置 = 纪律 + 指令；自定义 = 整段替换；空 = 默认）。</summary>
+    private static string ResolveSystemPrompt(TidyRule? rule)
+    {
+        if (rule == null) return NoteTidyPrompt.DefaultSystem;
+        if (!rule.IsBuiltin) return (rule.Prompt ?? "").Trim();
+        var instruction = TidyRuleCatalog.Find(rule.Id)?.Instruction ?? NoteTidyPrompt.TidyInstruction;
+        return NoteTidyPrompt.OutputDiscipline + "\n" + instruction;
+    }
+
     /// <summary>
-    /// 整理一次。<b>顺序敏感</b>：先判空 → 再判超长 → 再判 Key（未配 Key 短路，不发必失败的请求）→ 才发请求。
+    /// 整理一次（2026-09-27 起支持指定规则）。<b>顺序敏感</b>：先判空 → 再判超长 → 再判 Key（未配 Key 短路，不发必失败的请求）→ 才发请求。
     /// 超长判定放在 Key 判定之前：内容太长是用户当场能改的事，先告诉他能改的那条。
     /// </summary>
-    public static async Task<TidyOutcome> TidyAsync(IChatProvider? provider, string? text, CancellationToken ct = default)
+    /// <param name="rule">
+    /// 本次用的整理规则：null = 默认（理顺条理，与旧版行为对齐）；预置 = 输出纪律 + 指令段拼接；
+    /// <b>自定义 = 用户提示词整段替换，不拼任何硬约束</b>（2026-09-27 用户拍板）——
+    /// 但 <see cref="NoteTidyPrompt.CleanResult"/> 仍无条件执行（纯机械清洗，与提示词无关）。
+    /// </param>
+    public static async Task<TidyOutcome> TidyAsync(IChatProvider? provider, string? text, TidyRule? rule = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text)) return TidyOutcome.Fail("这条内容是空的，没什么可整理的。");
 
@@ -71,7 +85,7 @@ public static class NoteTidyService
 
         try
         {
-            var (system, user) = NoteTidyPrompt.BuildMessages(text);
+            var (system, user) = NoteTidyPrompt.BuildMessages(text, ResolveSystemPrompt(rule));
             var messages = new[]
             {
                 new ChatMessage(ChatRoles.System, system),

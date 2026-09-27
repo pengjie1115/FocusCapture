@@ -2019,6 +2019,50 @@ print(json.dumps({
               "刻意不做「追加为 AI 子条目」（2026-09-26 用户拍板：预览窗只留三个出口）",
               "加上去就得动 NoteService 的标记行解析与挂靠，慢层那 20 条断言全要跟着改 —— 本次范围外");
 
+        // ── 4b. 规则驱动 + 非模态（2026-09-27 规则化改造）──
+        // 守三件"错了不报错"的事：
+        //   ① 预置规则漏拼输出纪律 → 模型顺手翻译 / 带围栏，脏数据写进笔记；
+        //   ② 自定义规则被偷偷拼上硬约束 → 用户写的指令静默失效（拍板过：自定义整段替换）；
+        //   ③ 默认规则与可见性被耦合 → 用户隐藏规则后发现"我设的默认怎么不生效了"。
+        var capBuiltin = new StubChatProvider("结果");
+        var builtinRule = new TidyRule { Id = TidyRuleCatalog.TidyId, Name = "理顺条理", IsBuiltin = true };
+        var okBuiltin = await NoteTidyService.TidyAsync(capBuiltin, "一段原文", builtinRule);
+        Check(okBuiltin.Ok && (capBuiltin.LastSystem ?? "").Contains("不要翻译")
+              && (capBuiltin.LastSystem ?? "").Contains("不新增任何事实"),
+              "预置规则 = 输出纪律 + 指令段拼接（理顺条理必须同时带「不翻译」与「不新增事实」）",
+              $"实际 system：「{Short(capBuiltin.LastSystem)}」");
+
+        var capCustom = new StubChatProvider("结果");
+        var customRule = new TidyRule { Id = "c1", Name = "我的规则", IsBuiltin = false, Prompt = "把每句话倒着说。" };
+        await NoteTidyService.TidyAsync(capCustom, "一段原文", customRule);
+        Check(capCustom.LastSystem == "把每句话倒着说。",
+              "自定义规则必须整段替换系统提示词（2026-09-27 拍板：完全交给用户，不拼任何硬约束）",
+              $"实际 system：「{Short(capCustom.LastSystem)}」—— 拼了 = 背着用户改他的指令");
+
+        var rulesSettings = new AppSettings();
+        TidyRuleCatalog.Normalize(rulesSettings.TidyRules);
+        var beforeCount = rulesSettings.TidyRules.Count;
+        TidyRuleCatalog.Normalize(rulesSettings.TidyRules);
+        Check(rulesSettings.TidyRules.Count == beforeCount && beforeCount >= 4,
+              "Normalize 必须幂等：补齐缺失的预置规则但不重复添加（升级版号时给老 settings 补新规则）");
+
+        Check(TidyRuleCatalog.ResolveDefaultRule(rulesSettings).Id == TidyRuleCatalog.TidyId,
+              "没设默认规则 → 回落理顺条理（与旧版行为对齐）");
+        rulesSettings.TidyDefaultRuleId = TidyRuleCatalog.ExplainId;
+        rulesSettings.TidyRules.First(r => r.Id == TidyRuleCatalog.ExplainId).Visible = false;
+        Check(TidyRuleCatalog.ResolveDefaultRule(rulesSettings).Id == TidyRuleCatalog.ExplainId,
+              "默认规则被隐藏仍照样生效（2026-09-27 拍板：可见性与默认规则互不干涉，全隐藏也不影响默认规则运行）");
+        var visible = TidyRuleCatalog.ResolveVisible(rulesSettings);
+        Check(visible.All(r => r.Id != TidyRuleCatalog.ExplainId) && visible.Count == rulesSettings.TidyRules.Count - 1,
+              "底栏可见规则列表照实过滤掉隐藏的（顺序保持设置里的列表顺序）");
+
+        Check(flowCs.Contains("preview.Show()") && !flowCs.Contains("ShowDialog"),
+              "预览窗必须非模态（2026-09-27 用户拍板：预览窗开着时灵感速览要能操作）",
+              "退回 ShowDialog = 面板被锁死，用户得先关预览窗才能动自己的笔记列表");
+
+        Check(flowCs.Contains("TidyChoice.CreateTodos") && flowCs.Contains("NoteType.Todo"),
+              "「创建待办」出口必须把提取结果落成真正的待办（NoteType.Todo），否则提取待办就是空壳子");
+
         // ── 5. 待办汇总：点编辑框以外自动保存退出（2026-09-26 用户报的毛病）──
         Check(todoCs.Contains("OnEditBoxLostFocus") && todoCs.Contains("IsFocusInRow")
               && todoCs.Contains("DispatcherPriority.Background"),
@@ -2055,6 +2099,9 @@ print(json.dumps({
             _throwOnCall = throwOnCall;
         }
 
+        /// <summary>最近一次请求里的 system 提示词（2026-09-27 规则化：守「预置拼接 / 自定义整段替换」的拼装契约）。</summary>
+        public string? LastSystem { get; private set; }
+
         public string Model => "stub-model";
         public string BaseUrl => "https://stub.example/v1";
         public string ApiKey { get; }
@@ -2063,6 +2110,7 @@ print(json.dumps({
         {
             _onCall?.Invoke();
             if (_throwOnCall) throw new InvalidOperationException("模拟网络失败");
+            LastSystem = messages.FirstOrDefault(m => m.Role == ChatRoles.System)?.Content;
             return Task.FromResult(_reply);
         }
 

@@ -115,6 +115,20 @@ public class AppSettings
     /// </summary>
     public string AiTidyModelKey { get; set; } = "";
 
+    // ── AI 整理规则（2026-09-27 规则化改造）──
+    /// <summary>
+    /// 整理规则列表（预置壳 + 自定义完整定义，统一一份、顺序即底栏顺序）。
+    /// 预置条目的指令正文在代码里（TidyRuleCatalog），升级提示词不需要迁移用户数据。
+    /// 老 settings 没有这个字段 → 空列表 → <see cref="TidyRuleCatalog.Normalize"/> 补齐出厂四条。
+    /// </summary>
+    public List<TidyRule> TidyRules { get; set; } = new();
+
+    /// <summary>默认规则 Id（预览窗打开时按它跑首整理）。<b>与规则可见性互不干涉</b>：隐藏的规则照样能当默认。</summary>
+    public string TidyDefaultRuleId { get; set; } = TidyRuleCatalog.TidyId;
+
+    /// <summary>预览窗底部是否显示「自定义」入口（默认开；关闭后只能去设置里增改自定义规则 —— 用户拍板）。</summary>
+    public bool TidyShowCustomEntry { get; set; } = true;
+
     // ── AI 问答界面（2026-09-23 重构：侧边栏 / 起手页）──
 
     /// <summary>用户在 AI 问答里的昵称。驱动两处：起手页欢迎语里的称呼、侧边栏底部用户区。
@@ -268,6 +282,8 @@ public class AppSettings
         // 若放进同一个 try，迁移里任何意外都会落进 catch → 返回 new AppSettings() → **用户配置全丢**。
         // 2026-09-23 当天刚出过一次「配置被静默清空」的事故，这类风险一律不冒。
         settings.MigrateLegacyAiConfig();
+        // 整理规则（2026-09-27）：补齐升级版号新增的预置规则（幂等；空列表整体回落出厂四条）
+        TidyRuleCatalog.Normalize(settings.TidyRules);
         return settings;
     }
 

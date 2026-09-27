@@ -1744,9 +1744,11 @@ public partial class QuickViewWindow : Window
         btn.Content = "…";
         try
         {
-            var result = await AiTidyFlow.RunAsync(this, _noteService, _settings, _aiProvider, vm.Entry, text);
-            // 只有真的改了数据（替换原文 / 另存新笔记）才刷新；复制不改数据，刷新反而会打断正在进行的编辑
-            if (result?.DataChanged == true) Refresh();
+            // 预览窗非模态（2026-09-27）：窗口打开后本方法即返回；落库发生在关窗时，经回调刷新列表。
+            // 预览窗开着时面板保持可操作 —— 用户可翻列表、编辑别的条目，甚至再开一个预览窗。
+            // 只有真的改了数据（替换原文 / 另存新笔记 / 创建待办）才刷新；复制不改数据，刷新反而会打断正在进行的编辑
+            await AiTidyFlow.RunAsync(this, _noteService, _settings, _aiProvider, vm.Entry, text,
+                result => { if (result?.DataChanged == true) Refresh(); });
         }
         finally
         {
