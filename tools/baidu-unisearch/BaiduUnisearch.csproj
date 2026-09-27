@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>FocusCapture.BaiduUnisearch</AssemblyName>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 与主项目一致：本机 git 用 reftable 存储后端，Microsoft.Build.Tasks.Git 不认该扩展会报错 -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- 验证《网盘语义检索可行性评估》的决定性未知数（U1~U4）。
+         见 docs/2026-09-27-网盘语义检索可行性评估.md §五。
+         红线：全程只读 —— 只调 unisearch 这一个只读搜索接口；不下载、不上传、不删除、不建目录、不写任何文件；
+              默认不刷新令牌；绝不打印 token；路径脱敏（只保留目录层级）。
+         不属于检查点（要联网），故不放在 tests/ 下。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\FocusCapture.csproj" />
+  </ItemGroup>
+
+</Project>
