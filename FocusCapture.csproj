@@ -32,23 +32,24 @@
     <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
   </PropertyGroup>
 
-  <!-- .NET 8 SDK 默认不自动嵌入 ApplicationIcon 到 apphost，用 PostBuildEvent 调用 UpdateResource 嵌入
-       路径：系统 PATH 上的 python 解释器（聚焦 .py 嵌入 ICO 到 bin/Release/.../FocusCapture.exe） -->
-  <Target Name="EmbedAppIcon" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' AND Exists('Resources\app.ico')">
-    <Exec Command="python Resources\embed_icon.py" ContinueOnError="true"/>
-  </Target>
-
   <!-- 构建后清理「非 win-x64」原生库（2026-09-17）。
        为什么需要：sherpa-onnx 包为 8 个平台各带一份原生库（osx-arm64/osx-x64/linux-arm64/
        linux-x64/android-arm64/win-arm64/win-x86），而**未指定 RID 的构建**会把它们全部复制
        到输出目录，合计约 251 MB —— 这些库在 Windows x64 上运行时永远不会被加载。
-       为什么不用 <RuntimeIdentifier>：那会让输出路径变成 ...\win-x64\ 子目录，从而
-       ① 让 Resources/embed_icon.py 里写死的 Release 路径失效（该脚本找不到 exe 时自行
-       print("跳过")+exit 0，配上 ContinueOnError=true 就是**静默不嵌图标**）；
-       ② 使 tests/sync 这类 ProjectReference 到本工程的 RID 无关工程产生 RID 目标不一致风险。
+       为什么不用 <RuntimeIdentifier>：那会让输出路径变成 ...\win-x64\ 子目录，从而使
+       tests/sync 这类 ProjectReference 到本工程的 RID 无关工程产生 RID 目标不一致风险。
        本方案不改 RID、不改任何输出路径，只在构建收尾删掉用不到的目录。
        保护：Condition 排除 RID 专用构建，即**排除 `dotnet publish -r win-x64` 那条发布流程**，
-       发布产物与图标嵌入完全不受影响。 -->
+       发布产物不受影响。
+
+       清账（2026-09-27）：本注释顶部原先还有一个「EmbedAppIcon」target 调
+       Resources/embed_icon.py 手动嵌图标，这段注释里也挂着对应理由「① 让该脚本写死的
+       Release 路径失效」—— target 与脚本已一并删除。理由：exe 图标本来就由上面的
+       <ApplicationIcon>Resources\app.ico</ApplicationIcon> 经 apphost 正确嵌入
+       （2026-09-27 实测 PE：RT_ICON ×5 帧与 app.ico 逐帧字节吻合 + RT_GROUP_ICON 齐全）；
+       而那个脚本自 2026-08-30 起就没在发布流程里生效过（RID 构建下 exe 在 win-x64/ 子目录、
+       脚本路径写死找不到就静默 exit 0，配上 ContinueOnError 全无痕迹），留着只会让每次
+       publish 都报一条 MSB3073 假警告、诱导人去"修"一个不需要修的东西。 -->
   <Target Name="TrimForeignRuntimes" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
     <ItemGroup>
       <_ForeignRuntimeDir Include="$(OutputPath)runtimes\android-arm64" />
