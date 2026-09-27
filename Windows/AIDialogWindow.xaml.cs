@@ -662,21 +662,28 @@ public partial class AIDialogWindow : Window
         WelcomePanel.Visibility = showingWelcome ? Visibility.Visible : Visibility.Collapsed;
         if (showingWelcome) UpdateWelcomeContent();
 
-        if (atBottom)
+        var targetRow = atBottom ? 1 : 0;
+        var targetAlignment = atBottom ? VerticalAlignment.Bottom : VerticalAlignment.Center;
+        var targetMargin = atBottom ? new Thickness(0, 0, 0, 16) : new Thickness(28, 0, 28, 0);
+        // 沉底时左下角要不要切平，取决于侧边栏开合（沿用原有规则，别改出分叉）；居中态四角都是圆的
+        var targetCorner = atBottom
+            ? (_drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6))
+            : new CornerRadius(6);
+
+        // 布局没变就什么都不做 —— UpdatePlaceholder 每次打字都会路过这里（TextChanged → RefreshComposerLayout），
+        // 下面那段淡入动画若无条件重播，就是"敲一个键输入板闪一次"的根因（2026-09-27 用户报告）。
+        if (Grid.GetRow(InputArea) == targetRow
+            && InputArea.VerticalAlignment == targetAlignment
+            && InputArea.Margin == targetMargin
+            && InputArea.CornerRadius == targetCorner)
         {
-            Grid.SetRow(InputArea, 1);
-            InputArea.VerticalAlignment = VerticalAlignment.Bottom;
-            InputArea.Margin = new Thickness(0, 0, 0, 16);
-            // 沉底时左下角要不要切平，取决于侧边栏开合（沿用原有规则，别改出分叉）
-            InputArea.CornerRadius = _drawerOpen ? new CornerRadius(0, 0, 0, 6) : new CornerRadius(0, 0, 6, 6);
+            return;
         }
-        else
-        {
-            Grid.SetRow(InputArea, 0);
-            InputArea.VerticalAlignment = VerticalAlignment.Center;
-            InputArea.Margin = new Thickness(28, 0, 28, 0);
-            InputArea.CornerRadius = new CornerRadius(6);   // 居中态四角都是圆的
-        }
+
+        Grid.SetRow(InputArea, targetRow);
+        InputArea.VerticalAlignment = targetAlignment;
+        InputArea.Margin = targetMargin;
+        InputArea.CornerRadius = targetCorner;
 
         // 短淡入：位置跳变时给一帧过渡（快照/无动画环境下 BeginAnimation 不影响终值）
         var fade = new DoubleAnimation(0.55, 1.0, TimeSpan.FromMilliseconds(140));

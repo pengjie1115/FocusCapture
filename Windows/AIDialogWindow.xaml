@@ -278,6 +278,7 @@
                                         <TextBlock x:Name="GroupSearchPlaceholder"
                                                    Text="搜索本分组内的消息内容…"
                                                    Foreground="#6A6A6A" FontSize="12"
+                                                   Margin="6,0,0,0"
                                                    VerticalAlignment="Center" IsHitTestVisible="False"/>
                                     </Grid>
                                 </Border>
@@ -747,11 +748,13 @@
                                                  VerticalScrollBarVisibility="Disabled"
                                                  PreviewKeyDown="InputBox_PreviewKeyDown"/>
                                 </ScrollViewer>
-                                <!-- 占位提示：输入区加高后空白区域需要一句引导，否则像个坏掉的框 -->
+                                <!-- 占位提示：输入区加高后空白区域需要一句引导，否则像个坏掉的框。
+                                     左 6px = 光标起点 + 间隙（2026-09-27 修"光标叠在引导语上"：占位与光标同起点会重叠） -->
                                 <TextBlock x:Name="InputPlaceholder"
                                            Text="输入问题，Ctrl+V 可粘贴图片，或把文件拖进来"
                                            Foreground="#7A7A7A"
                                            FontSize="13"
+                                           Margin="6,0,0,0"
                                            VerticalAlignment="Top"
                                            IsHitTestVisible="False"/>
                             </Grid>

@@ -240,12 +240,13 @@
                              Style="{StaticResource DarkTextBox}"
                              Padding="6,4,26,4"
                              TextChanged="SearchBox_TextChanged"/>
+                    <!-- 左 12 = 光标起点（Padding 左 6）+ 6 间隙（2026-09-27 统一修占位与光标重叠） -->
                     <TextBlock x:Name="SearchWatermark"
                                Text="搜索设置…"
                                Foreground="#777777"
                                IsHitTestVisible="False"
                                VerticalAlignment="Center"
-                               Margin="8,0,0,0"/>
+                               Margin="12,0,0,0"/>
                     <Button x:Name="BtnClearSearch"
                             Content="✕"
                             FontSize="11"

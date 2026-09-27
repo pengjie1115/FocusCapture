@@ -77,6 +77,7 @@
                 </TextBox.Resources>
             </TextBox>
 
+            <!-- 左 10 = 光标起点（Padding 左 4）+ 6 间隙（2026-09-27 统一修占位与光标重叠） -->
             <TextBlock x:Name="Placeholder" Grid.Row="0"
                        Text="记录你的灵感…（回车保存，Esc 取消）"
                        Foreground="#666666"
@@ -85,7 +86,7 @@
                        IsHitTestVisible="False"
                        VerticalAlignment="Bottom"
                        HorizontalAlignment="Left"
-                       Margin="4,0,0,6"/>
+                       Margin="10,0,0,6"/>
 
             <!-- v3.5：类型选择（左下角独立一行，不与占位文字重叠） -->
             <StackPanel Grid.Row="1" Orientation="Horizontal"
