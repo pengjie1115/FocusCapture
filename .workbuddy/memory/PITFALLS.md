@@ -45,3 +45,11 @@
 
 Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.workbuddy/memory/2026-09-24.md` 会变成 `feature\x;.workbuddy\memory\...` → fatal: ambiguous argument。
 解法：命令前加 `MSYS_NO_PATHCONV=1`，或先把两个 ref 各自 dump 到临时文件再 diff。
+
+## 构建被「正在运行的主程序」锁住（2026-09-27）
+
+- 现象：`dotnet build` 报 `MSB3026`（连续重试 10 次）→ `MSB3027` / `MSB3021`，提示 `bin\Debug\net8.0-windows\FocusCapture.exe` **被 "FocusCapture (PID)" 锁定**。
+- 根因：**应用正在运行**，apphost exe 被占用，主项目写不出输出 —— 与代码无关。
+- **绝不要杀用户正在跑的进程**。绕法：只构建目标子项目、复用主项目**已有产物**：
+  `dotnet build <子项目>.csproj --no-dependencies`（前提：主项目此前编译过，`bin\Debug\net8.0-windows\` 里有 `FocusCapture.dll`）。
+  本仓库 `tools/` 下的探针（baidu-diag / baidu-listall）都适用。
