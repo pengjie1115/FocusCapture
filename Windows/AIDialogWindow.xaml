@@ -404,36 +404,11 @@
                         </Border>
                     </Grid>
 
-                    <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（**只有文字**），
-                         此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。
-                         2026-09-26：欢迎语图标（Image）按用户要求删除 —— 设置里对应入口同步删除。
-                         2026-09-27 加快捷问法胶囊：欢迎语下方一排，点击 = 整句直接发送（设置可自定义，
-                         空列表 = 不显示）。与欢迎语同进一个居中 StackPanel，整体共享底部 180 偏移。 -->
-                    <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
-                        <!-- 底部 230 的留白是刻意的（原 180 只够欢迎语一行）：胶囊行最多两行（8 条封顶），
-                             留白不够时最后一枚会被居中的输入区压住（快照 10d 实测，2026-09-27 加大）。 -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,230">
-                            <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="{DynamicResource Chat_D8D8D8}"
-                                       HorizontalAlignment="Center"
-                                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"/>
-                            <ItemsControl x:Name="WelcomePrompts" Margin="0,18,0,0" HorizontalAlignment="Center"
-                                          Visibility="Collapsed">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Button Content="{Binding}" Click="WelcomePrompt_Click"
-                                                FontSize="12" Padding="10,4" Margin="4,0,4,6"
-                                                Cursor="Hand"
-                                                ToolTip="点击直接发送（不用打字）"/>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </Grid>
+                    <!-- 起手页已挪到 MessagesScroll 之后（2026-09-27 修胶囊点击无反应）：
+                         两者同占 Row 0，XAML 声明序 = Z 序，原位置（ScrollViewer 之前）让起手层
+                         整个垫在滚动区下面 —— MessagesScroll 背景透明但**可命中**，胶囊
+                         看得见点不到（InputHitTest 实测命中 ScrollViewer，2026-09-27）。
+                         欢迎语是纯展示所以当年没暴露；加了可点的胶囊就藏不住了。 -->
 
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
                                   VerticalScrollBarVisibility="Auto"
@@ -684,6 +659,38 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
+
+                <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语 + 快捷问法胶囊。
+                     此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。
+                     2026-09-26：欢迎语图标（Image）按用户要求删除 —— 设置里对应入口同步删除。
+                     2026-09-27 加快捷问法胶囊：欢迎语下方一排，点击 = 整句直接发送（设置可自定义，
+                     空列表 = 不显示）。与欢迎语同进一个居中 StackPanel，整体共享底部偏移。
+                     【必须在 MessagesScroll 之后】Z 序高于滚动区，胶囊才点得到（2026-09-27 实测）。 -->
+                <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
+                    <!-- 底部 230 的留白是刻意的（原 180 只够欢迎语一行）：胶囊行最多两行（8 条封顶），
+                         留白不够时最后一枚会被居中的输入区压住（快照 10d 实测，2026-09-27 加大）。 -->
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,230">
+                        <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="{DynamicResource Chat_D8D8D8}"
+                                   HorizontalAlignment="Center"
+                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"/>
+                        <ItemsControl x:Name="WelcomePrompts" Margin="0,18,0,0" HorizontalAlignment="Center"
+                                      Visibility="Collapsed">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding}" Click="WelcomePrompt_Click"
+                                            FontSize="12" Padding="10,4" Margin="4,0,4,6"
+                                            Cursor="Hand"
+                                            ToolTip="点击直接发送（不用打字）"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Grid>
 
                 <!-- 输入区（2026-09-14：支持图片/文档，文字与附件块混排）
                      结构：加号按钮 + 富文本输入区 + 发送按钮。

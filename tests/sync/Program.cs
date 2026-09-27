@@ -943,6 +943,10 @@ print(json.dumps({
               "绑回 Content 会把 [[OPTIONS:...]] 裸露给用户；漏 Mode=OneWay 会在 TextBox 默认 TwoWay 下对只读属性抛 XamlParseException——每个气泡炸一次弹窗、发送链路被打断（2026-09-27 实测）");
         Check(settingsXaml.Contains("x:Name=\"ChatQuickPromptsInput\"") && settingsCs.Contains("ChatQuickPrompts_TextChanged"),
               "设置「AI 问答界面」板块必须有快捷问法编辑框（每行一条，用户可自定义增删）");
+        Check(aiXaml.IndexOf("x:Name=\"WelcomePanel\"", StringComparison.Ordinal)
+              > aiXaml.IndexOf("x:Name=\"MessagesScroll\"", StringComparison.Ordinal),
+              "WelcomePanel 必须声明在 MessagesScroll 之后（同占 Row 0，声明序 = Z 序）",
+              "反了会被透明但可命中的 MessagesScroll 挡住点击 —— 胶囊看得见点不到（2026-09-27 InputHitTest 实测）");
         Check(File.ReadAllText(Path.Combine(repoRoot, "Services", "ChatSessionService.cs")).Contains("QuickOptions.SystemPromptRules"),
               "系统提示词必须注入快捷选项协议（BuildSystemPrompt 引用 QuickOptions.SystemPromptRules）",
               "协议没进提示词 = 模型根本不会输出标记，按钮永远不出现");

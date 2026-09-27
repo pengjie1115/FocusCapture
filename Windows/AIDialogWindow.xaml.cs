@@ -762,10 +762,17 @@ public partial class AIDialogWindow : Window
             ? custom.Replace("{昵称}", nickname)
             : nickname.Length > 0 ? $"{nickname}，我帮你" : "我帮你";
 
-        // 起手页快捷问法胶囊（2026-09-27）：点击 = 整句直接发送；空列表/全空白 = 整行不显示
+        // 起手页快捷问法胶囊（2026-09-27）：点击 = 整句直接发送；空列表/全空白 = 整行不显示。
+        // 只在内容真变时才重赋 ItemsSource：赋新实例 = 全部胶囊容器销毁重建，重建那一帧内点击会落空
+        // （本方法每次起手态布局都会路过，2026-09-27 诊断实测旧按钮 DataContext 变 {DisconnectedItem}）
         var prompts = (_settings.ChatQuickPrompts ?? new List<string>())
             .Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
-        WelcomePrompts.ItemsSource = prompts;
+        var current = WelcomePrompts.ItemsSource as IReadOnlyList<string>;
+        if (current == null || current.Count != prompts.Count
+            || !current.Zip(prompts, (a, b) => a == b).All(same => same))
+        {
+            WelcomePrompts.ItemsSource = prompts;
+        }
         WelcomePrompts.Visibility = prompts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
