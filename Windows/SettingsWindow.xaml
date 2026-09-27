@@ -543,6 +543,17 @@
                     </DockPanel>
                     <TextBlock Text="起手页那句话的整句；留空 = 默认「{昵称}，我帮你」。里面写 {昵称} 会替换成上面的昵称（留空则用 Windows 登录名）"
                                Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
+                    <!-- 起手页快捷问法胶囊（2026-09-27）：每行一条，点击 = 整句直接发送；全空 = 不显示 -->
+                    <DockPanel Margin="0,8">
+                        <TextBlock Text="快捷问法胶囊" Width="130" VerticalAlignment="Top" Margin="0,6,0,0"/>
+                        <TextBox x:Name="ChatQuickPromptsInput" Style="{StaticResource DarkTextBox}"
+                                 AcceptsReturn="True" TextWrapping="Wrap"
+                                 Height="72" VerticalScrollBarVisibility="Auto"
+                                 VerticalContentAlignment="Top"
+                                 TextChanged="ChatQuickPrompts_TextChanged"/>
+                    </DockPanel>
+                    <TextBlock Text="起手页欢迎语下方一排胶囊，点一下整句直接发送（不用打字）。每行一条，最多 8 条；全部清空则不显示胶囊"
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" Margin="130,2,0,6"/>
                     <DockPanel Margin="0,8">
                         <TextBlock Text="用户头像" Width="130" VerticalAlignment="Center"/>
                         <StackPanel>

@@ -100,7 +100,44 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
             if (_content == value) return;
             _content = value;
             FirePropertyChanged(nameof(Content));
+            // 显示文本跟着刷：流式期间把 [[OPTIONS:...]] 标记（含半截）藏掉，正文缓冲区不动
+            FirePropertyChanged(nameof(DisplayContent));
         }
+    }
+
+    /// <summary>气泡正文展示文本 = Content 剥除快捷选项标记（含尾部半截）后的结果。
+    /// BubbleText 绑这个而不是 Content —— 会话历史保留原文（模型下轮还能看到自己给过什么选项），
+    /// 剥除只发生在显示层（2026-09-27 快捷选项协议，见 QuickOptions）。</summary>
+    public string DisplayContent => IsUser ? _content : QuickOptions.StripForDisplay(_content);
+
+    /// <summary>快捷选项按钮（AI 气泡用；null = 不显示按钮行）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<QuickActionViewModel>? QuickActions { get; private set; }
+
+    public bool HasQuickActions => QuickActions is { Count: > 0 };
+
+    /// <summary>回答结束后调用：解析 Content 里的 [[OPTIONS:...]] 标记 → 剥除 + 生成按钮。
+    /// 用户气泡跳过（协议只对 AI 回复生效）。</summary>
+    public void FinalizeQuickOptions()
+    {
+        if (IsUser) return;
+        var options = QuickOptions.Parse(_content, out var clean);
+        Content = clean;   // setter 会同步刷 DisplayContent（此时无标记，等价 clean）
+        if (options.Count > 0)
+        {
+            QuickActions = new System.Collections.ObjectModel.ObservableCollection<QuickActionViewModel>(
+                options.Select(o => new QuickActionViewModel(o)));
+        }
+        FirePropertyChanged(nameof(QuickActions));
+        FirePropertyChanged(nameof(HasQuickActions));
+    }
+
+    /// <summary>挂命令型按钮（不走模型、点击执行本地动作，如错误后的「重试」）。</summary>
+    public void SetCommandActions(params QuickActionViewModel[] actions)
+    {
+        if (IsUser) return;
+        QuickActions = new System.Collections.ObjectModel.ObservableCollection<QuickActionViewModel>(actions);
+        FirePropertyChanged(nameof(QuickActions));
+        FirePropertyChanged(nameof(HasQuickActions));
     }
 
     public bool IsFillable { get; }
@@ -190,12 +227,28 @@ public class ChatBubbleViewModel : INotifyPropertyChanged
         Content = content;
         IsFillable = isFillable;
         Attachments = attachments;
+        // 历史会话回看：加载时内容即定稿，直接解析一次（流式气泡此刻内容为空，Finalize 无操作）
+        if (!isUser) FinalizeQuickOptions();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void FirePropertyChanged(string name) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>气泡下方的快捷按钮（2026-09-27）：
+/// 发送型（IsCommand=false，模型 [[OPTIONS:...]] 协议产出 / 起手页胶囊）点击 = 整句直接发送；
+/// 命令型（IsCommand=true）点击 = 执行本地动作（如错误后的「重试」），不走模型。</summary>
+public sealed class QuickActionViewModel
+{
+    public string Text { get; }
+    public bool IsCommand { get; }
+    public QuickActionViewModel(string text, bool isCommand = false)
+    {
+        Text = text;
+        IsCommand = isCommand;
+    }
 }
 
 /// <summary>三板块 AI 对话框：翻译 / 搜索 / 问答。连续对话 + 真流式（含思考过程）+ 发送/停止 + 历史会话抽屉 + 回填</summary>
@@ -708,6 +761,12 @@ public partial class AIDialogWindow : Window
         WelcomeText.Text = custom.Length > 0
             ? custom.Replace("{昵称}", nickname)
             : nickname.Length > 0 ? $"{nickname}，我帮你" : "我帮你";
+
+        // 起手页快捷问法胶囊（2026-09-27）：点击 = 整句直接发送；空列表/全空白 = 整行不显示
+        var prompts = (_settings.ChatQuickPrompts ?? new List<string>())
+            .Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
+        WelcomePrompts.ItemsSource = prompts;
+        WelcomePrompts.Visibility = prompts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>欢迎语里的称呼：设置里的昵称优先，留空取 Windows 登录名（取不到返回空串，绝不抛）。</summary>
@@ -1113,6 +1172,56 @@ public partial class AIDialogWindow : Window
         ResetInput();
         if (_active != null) _active.DraftText = null;   // 发送成功即清该会话草稿
         SendAsync(text, attachments);
+    }
+
+    /// <summary>气泡下方快捷按钮点击（2026-09-27）：发送型 = 整句直接发送（不用打字）；
+    /// 命令型 = 本地动作（目前只有错误后的「重试」）。分组落位与 SendCurrentInput 同口径。</summary>
+    private void QuickOption_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: QuickActionViewModel action }) return;
+        if (action.IsCommand)
+        {
+            RetryLastUserMessage();
+            return;
+        }
+        SendFromUiButton(action.Text);
+    }
+
+    /// <summary>起手页快捷问法胶囊点击（2026-09-27）：整句直接发送，第一句话就带着设置里的问法出去。</summary>
+    private void WelcomePrompt_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: string prompt } || string.IsNullOrWhiteSpace(prompt)) return;
+        SendFromUiButton(prompt);
+    }
+
+    /// <summary>界面按钮（快捷选项/起手胶囊）共用的发送入口：回答中不给点；
+    /// 分组落位与 SendCurrentInput 同口径（分组视图/待选分组 = 先落到目标分组的新会话再发）。</summary>
+    private void SendFromUiButton(string text)
+    {
+        if (_active is { IsStreaming: true }) return;
+        if (_activeGroupId.Length > 0)
+        {
+            var groupId = _activeGroupId;
+            CloseGroupView();
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, groupId);
+        }
+        else if (_pendingGroupId.Length > 0)
+        {
+            StartNewSession(_active?.Mode ?? ExplainMode.Ask, _active?.TargetNote, _pendingGroupId);
+            _pendingGroupId = "";
+        }
+        SendAsync(text);
+    }
+
+    /// <summary>错误气泡的「重试」：把最后一条无附件的用户消息原样重发。
+    /// 带附件的重发要重新挂附件块，按钮在错误路径里就不给（协议见 SendAsync 的 catch）。</summary>
+    private void RetryLastUserMessage()
+    {
+        var runtime = _active;
+        if (runtime == null || runtime.IsStreaming) return;
+        var lastUser = runtime.Session.Messages.LastOrDefault(m => m.Role == ChatRoles.User);
+        if (lastUser == null || lastUser.Attachments is { Count: > 0 }) return;
+        SendAsync(lastUser.Content);
     }
 
     // ── 附件添加入口：加号 / 粘贴 / 拖拽 三处共用 ──
@@ -1854,20 +1963,31 @@ public partial class AIDialogWindow : Window
             var trimHint = ResolveProviderForSession(runtime).LastTrimHint;
             if (!string.IsNullOrWhiteSpace(trimHint))
                 current.Content = (current.Content ?? "") + "\n\n（" + trimHint + "）";
+
+            // 快捷选项收尾（2026-09-27）：普通/Agent 两路径统一在这里解析 [[OPTIONS:...]] 标记
+            // → 剥除 + 渲染胶囊按钮。停止生成（取消）路径的 MarkStopped 不给按钮。
+            current.FinalizeQuickOptions();
         }
         catch (Exception ex)
         {
             var last = runtime.Bubbles.Count > 0 ? runtime.Bubbles[runtime.Bubbles.Count - 1] : null;
+            var errorText = $"（错误：{ex.Message}）";
+            ChatBubbleViewModel? errorBubble;
             if (last != null && !last.IsUser)
             {
-                last.Content += string.IsNullOrEmpty(last.Content)
-                    ? $"（错误：{ex.Message}）"
-                    : $"\n\n（错误：{ex.Message}）";
+                last.Content += string.IsNullOrEmpty(last.Content) ? errorText : $"\n\n{errorText}";
+                errorBubble = last;
             }
             else
             {
-                AddBubble(runtime, false, $"（错误：{ex.Message}）");
+                errorBubble = new ChatBubbleViewModel(false, errorText);
+                runtime.Bubbles.Add(errorBubble);
             }
+            // 命令型「重试」：把最后一条无附件的用户消息原样重发（带附件的重发要重挂附件，先不覆盖）
+            var lastUser = runtime.Session.Messages.LastOrDefault(m => m.Role == ChatRoles.User);
+            if (lastUser != null && (lastUser.Attachments is not { Count: > 0 }))
+                errorBubble.SetCommandActions(new QuickActionViewModel("重试", isCommand: true));
+            ScrollAfterDelay(runtime);
         }
         finally
         {

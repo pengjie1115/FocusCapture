@@ -39,6 +39,17 @@ public class AppSettings
     // 注意：这是「背景明暗」不是窗口透明度 —— 窗口始终不透明，由 ChatThemeService 统一换色。
     public double ChatShade { get; set; } = 1.0;
 
+    // ── 起手页快捷问法胶囊（2026-09-27 新增）──
+    // 欢迎语下方一排胶囊，点击 = 整句直接发送（用户不用打字）。设置「AI 问答界面」板块可改（每行一条）；
+    // 空列表 = 不显示胶囊。只存本机（AppSettings 不进跨端同步，用户已拍板）。
+    public List<string> ChatQuickPrompts { get; set; } = new()
+    {
+        "查看今天记了哪些笔记",
+        "帮我整理这周的待办",
+        "总结最近的灵感速记",
+        "今天有什么日程和提醒",
+    };
+
     // ── 输入框圆角（2026-09-23 新增；可调四角弧度，0=纯直角，默认 10 = 改造前现状）──
     // 落「显示」板块；窗口 Background 改透明后，此值才真正露出圆角（见 InputWindow.xaml）
     public double InputBorderRadius { get; set; } = 10;

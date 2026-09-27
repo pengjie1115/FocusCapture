@@ -406,14 +406,33 @@
 
                     <!-- 起手页（2026-09-23）：空会话时显示自定义欢迎语（**只有文字**），
                          此刻输入区被摆到正中间（见 ApplyComposerLayout），发第一条消息后一起沉底。
-                         2026-09-26：欢迎语图标（Image）按用户要求删除 —— 设置里对应入口同步删除。 -->
+                         2026-09-26：欢迎语图标（Image）按用户要求删除 —— 设置里对应入口同步删除。
+                         2026-09-27 加快捷问法胶囊：欢迎语下方一排，点击 = 整句直接发送（设置可自定义，
+                         空列表 = 不显示）。与欢迎语同进一个居中 StackPanel，整体共享底部 180 偏移。 -->
                     <Grid x:Name="WelcomePanel" Grid.Row="0" Visibility="Collapsed">
-                        <!-- 底部 180 的留白是刻意的：输入区居中时中心也在 Row 0 的中心，
-                             欢迎语靠这个偏移让出它头顶的位置，两者不会叠在一起。 -->
-                        <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="{DynamicResource Chat_D8D8D8}"
-                                   VerticalAlignment="Center" HorizontalAlignment="Center"
-                                   Margin="32,0,32,180"
-                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"/>
+                        <!-- 底部 230 的留白是刻意的（原 180 只够欢迎语一行）：胶囊行最多两行（8 条封顶），
+                             留白不够时最后一枚会被居中的输入区压住（快照 10d 实测，2026-09-27 加大）。 -->
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32,0,32,230">
+                            <TextBlock x:Name="WelcomeText" FontSize="18" Foreground="{DynamicResource Chat_D8D8D8}"
+                                       HorizontalAlignment="Center"
+                                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"/>
+                            <ItemsControl x:Name="WelcomePrompts" Margin="0,18,0,0" HorizontalAlignment="Center"
+                                          Visibility="Collapsed">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Content="{Binding}" Click="WelcomePrompt_Click"
+                                                FontSize="12" Padding="10,4" Margin="4,0,4,6"
+                                                Cursor="Hand"
+                                                ToolTip="点击直接发送（不用打字）"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
                     </Grid>
 
                     <ScrollViewer x:Name="MessagesScroll" Grid.Row="0"
@@ -480,9 +499,11 @@
                                                        TextWrapping="Wrap"
                                                        Margin="0,0,0,4"
                                                        Visibility="{Binding HasToolSteps, Converter={StaticResource BoolToVis}}"/>
-                                            <!-- 只读 TextBox：支持拖选部分文字回填（TextBlock 不支持选中） -->
+                                            <!-- 只读 TextBox：支持拖选部分文字回填（TextBlock 不支持选中）。
+                                                 绑 DisplayContent 不绑 Content：[[OPTIONS:...]] 标记只在显示层剥除
+                                                 （2026-09-27 快捷选项协议），会话历史保留原文 -->
                                             <TextBox x:Name="BubbleText"
-                                                     Text="{Binding Content}"
+                                                     Text="{Binding DisplayContent}"
                                                      TextWrapping="Wrap"
                                                      IsReadOnly="True"
                                                      IsReadOnlyCaretVisible="False"
@@ -491,6 +512,29 @@
                                                      Foreground="{DynamicResource Chat_E0E0E0}"
                                                      FontSize="13"
                                                      Padding="0"/>
+                                            <!-- 快捷选项按钮行（2026-09-27）：AI 需要用户确认/多选/补参数时，
+                                                 回复末尾的 [[OPTIONS:...]] 标记解析成胶囊；发送型点击=整句直接发送，
+                                                 命令型（如错误后的「重试」）点击=执行本地动作。 -->
+                                            <ItemsControl ItemsSource="{Binding QuickActions}"
+                                                          Margin="0,6,0,0"
+                                                          Visibility="{Binding HasQuickActions, Converter={StaticResource BoolToVis}}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel Orientation="Horizontal"/>
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Button Content="{Binding Text}"
+                                                                Click="QuickOption_Click"
+                                                                FontSize="12"
+                                                                Padding="10,3"
+                                                                Margin="0,0,6,6"
+                                                                Cursor="Hand"
+                                                                ToolTip="点击直接发送（不用打字）"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                             <!-- 附件区（2026-09-14）：与输入区同一种卡片（图标前缀 + 截断文件名），
                                                  悬停出预览、双击看大图/打开原文件。刻意不复刻输入区里的精确交错顺序——
                                                  气泡正文是纯文本控件，顺序仍在会话数据里（InsertOffset），上行请求照旧还原 -->

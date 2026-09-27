@@ -377,6 +377,8 @@ public partial class SettingsWindow : Window
         // AI 问答界面（2026-09-24）：昵称 / 自定义欢迎语 / 侧边栏默认展开 / 图片资源状态回显
         ChatNicknameInput.Text = _settings.ChatUserNickname ?? "";
         ChatWelcomeInput.Text = _settings.ChatWelcomeText ?? "";
+        // 起手页快捷问法胶囊（2026-09-27）：每行一条回显
+        ChatQuickPromptsInput.Text = string.Join(Environment.NewLine, _settings.ChatQuickPrompts ?? new List<string>());
         SidebarDefaultExpandedCheck.IsChecked = _settings.ChatSidebarDefaultExpanded;
         UpdateChatAssetsUI();
         LoadSyncSettings();
@@ -2057,6 +2059,21 @@ public partial class SettingsWindow : Window
     {
         if (_suppressEvents) return;
         _settings.ChatWelcomeText = ChatWelcomeInput.Text;
+        _settings.Save();
+        _onChanged?.Invoke();
+    }
+
+    // 起手页快捷问法胶囊（2026-09-27）：每行一条；去空白行、截前 8 条。
+    // 窗口内解析统一走 AIDialogWindow.UpdateWelcomeContent（trim + 跳空行），这里只存原文行。
+    private void ChatQuickPrompts_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.ChatQuickPrompts = ChatQuickPromptsInput.Text
+            .Split(['\r', '\n'])
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .Take(8)
+            .ToList();
         _settings.Save();
         _onChanged?.Invoke();
     }

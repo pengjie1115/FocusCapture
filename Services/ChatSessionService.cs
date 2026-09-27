@@ -370,6 +370,10 @@ public class ChatSessionService
             _ => "你是用户的 AI 助手。用自然、口语化的中文直接回答问题，像和朋友聊天一样。**严禁使用 Markdown 格式**：不要用 **加粗**、# 标题、列表、代码块、分隔线等任何标记；只用普通段落文字回复，必要时换行即可。",
         };
 
+        // 快捷选项协议（2026-09-27）：需要用户确认/多选/补参数时输出 [[OPTIONS:...]] 标记，
+        // 前端剥除后渲染成胶囊按钮（见 QuickOptions）。各模式共用。
+        basePrompt += "\n\n" + QuickOptions.SystemPromptRules;
+
         if (!string.IsNullOrWhiteSpace(noteContext) && !string.IsNullOrWhiteSpace(noteContent))
         {
             basePrompt += $"\n当前笔记内容：{noteContent}";

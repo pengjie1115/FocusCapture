@@ -905,6 +905,48 @@ print(json.dumps({
               "设置「显示」板块必须有「AI 问答界面明暗」滑块且拖动实时 Apply（DynamicResource 全窗跟随）",
               "滑块缺失或拖动不生效 = 明暗调节没接通");
 
+        // ── 4c. 快捷选项协议（2026-09-27：[[OPTIONS:a|b]] 标记 → 气泡胶囊按钮 + 起手页胶囊）──
+        var o1 = QuickOptions.Parse("好的，记下了。\n[[OPTIONS:去|不去|再想想]]", out var c1);
+        Check(o1.Count == 3 && o1[0] == "去" && o1[2] == "再想想"
+              && c1 == "好的，记下了。",
+              "协议解析：标记剥除干净（含标记行残留换行）、选项按 | 切分去空白",
+              $"实际 {o1.Count} 项 / clean=「{c1}」");
+        var o2 = QuickOptions.Parse("普通回复没有标记", out var c2);
+        Check(o2.Count == 0 && c2 == "普通回复没有标记",
+              "无标记回复必须原样通过（正文一个字都不动）");
+        var o3 = QuickOptions.Parse("前文\n[[OPTIONS:是|否", out _);
+        Check(o3.Count == 0,
+              "残缺标记（无收尾 ]]）不解析 —— 宁可按钮不出来，不许把模型正文截断");
+        var o4 = QuickOptions.Parse("[[OPTIONS:一|二|三|四|五|超长选项超出二十个字符上限会被整条丢弃]]", out var c4);
+        Check(o4.Count == 4 && o4[3] == "四"
+              && !c4.Contains("OPTIONS"),
+              "选项最多取 4 条、超 20 字的整条丢弃（防模型跑飞刷屏）",
+              $"实际 {o4.Count} 项：{string.Join("/", o4)}");
+        Check(QuickOptions.StripForDisplay("正文\n[[OPTIONS:a|b]]") == "正文"
+              && QuickOptions.StripForDisplay("正文[[OPTIO") == "正文"
+              && QuickOptions.StripForDisplay("正常") == "正常",
+              "流式显示必须藏掉完整标记与尾部半截标记（[[OPTIO 这类前缀片段不许露脸闪现）");
+        var vm1 = new ChatBubbleViewModel(false, "好的。\n[[OPTIONS:去|不去]]");
+        Check(vm1.QuickActions is { Count: 2 } && vm1.DisplayContent == "好的。",
+              "历史会话回看：AI 气泡构造时即解析标记 → 按钮可用、正文已剥");
+        var vm2 = new ChatBubbleViewModel(true, "[[OPTIONS:用户气泡里的标记不该解析]]");
+        Check(vm2.QuickActions == null && vm2.DisplayContent.Contains("[[OPTIONS:"),
+              "用户气泡跳过协议（用户原文原样显示，剥除只对 AI 回复生效）");
+        Check(new AppSettings().ChatQuickPrompts is { Count: > 0 },
+              "起手页快捷问法胶囊必须预置非空（用户没配置过也有得点）");
+        Check(aiXaml.Contains("Text=\"{Binding DisplayContent}\"")
+              && aiXaml.Contains("Click=\"QuickOption_Click\"")
+              && aiXaml.Contains("Click=\"WelcomePrompt_Click\"")
+              && aiXaml.Contains("x:Name=\"WelcomePrompts\"")
+              && aiCs.Contains("QuickActionViewModel"),
+              "气泡正文必须绑 DisplayContent（显示层剥标记）+ 气泡胶囊/起手胶囊两处点击接线",
+              "绑回 Content 会把 [[OPTIONS:...]] 裸露给用户");
+        Check(settingsXaml.Contains("x:Name=\"ChatQuickPromptsInput\"") && settingsCs.Contains("ChatQuickPrompts_TextChanged"),
+              "设置「AI 问答界面」板块必须有快捷问法编辑框（每行一条，用户可自定义增删）");
+        Check(File.ReadAllText(Path.Combine(repoRoot, "Services", "ChatSessionService.cs")).Contains("QuickOptions.SystemPromptRules"),
+              "系统提示词必须注入快捷选项协议（BuildSystemPrompt 引用 QuickOptions.SystemPromptRules）",
+              "协议没进提示词 = 模型根本不会输出标记，按钮永远不出现");
+
         // ── 5. 设置页「默认模型」框 ──
         Check(settingsXaml.Contains("x:Name=\"DefaultModelRow\"") && settingsXaml.Contains("DefaultModelRow_Click"),
               "设置页必须保留可点击的「默认模型」框（点框即弹下拉，点中即生效）");
