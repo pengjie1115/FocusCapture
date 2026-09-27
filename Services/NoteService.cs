@@ -110,6 +110,13 @@ public class NoteService
                 entry.DueTime = dueTime.Value;
             else if (TimeParser.TryParse(entry.Content, out var due))
                 entry.DueTime = due;
+            // v3.12（2026-09-27 用户拍板）：输入的日期时间只用于识别归属与提醒，不留在正文里 ——
+            // 设上提醒后，把正文里被时间识别命中的表达剥掉（没命中 / 剥完为空 → 保留原文，绝不产生空待办）
+            if (entry.DueTime.HasValue)
+            {
+                var stripped = TimeParser.StripTimeExpression(entry.Content);
+                if (stripped.Length > 0) entry.Content = stripped;
+            }
         }
 
         // 确定文件名

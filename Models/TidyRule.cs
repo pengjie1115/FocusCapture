@@ -15,8 +15,14 @@ public class TidyRule
     /// <summary>稳定标识。预置 = "builtin-*"（见 TidyRuleCatalog）；自定义 = Guid。</summary>
     public string Id { get; set; } = "";
 
-    /// <summary>显示名（底栏 chip 与设置列表都用它）。</summary>
+    /// <summary>显示名（底栏 chip 与设置列表都用它）。预置条目的名称随版本由代码刷新（Normalize），settings 里的旧名不滞留。</summary>
     public string Name { get; set; } = "";
+
+    /// <summary>
+    /// 适用场景 / 用法的一句话说明（2026-09-27 phase2）：预览窗规则按钮与设置列表的悬停提示都显示它。
+    /// 预置条目由代码随版本刷新；自定义规则在 设置 → 整理规则 的编辑器里填写，留空时悬停只提示「未填写说明」。
+    /// </summary>
+    public string Description { get; set; } = "";
 
     /// <summary>
     /// 自定义规则的提示词（<b>整段替换</b>系统提示词，不拼硬约束 —— 2026-09-27 用户拍板：

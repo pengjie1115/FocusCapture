@@ -1968,10 +1968,12 @@ print(json.dumps({
               "provider 存在但 Key 为空（老配置残留）→ 同样短路");
 
         // ── 3. 回包清洗后才交给界面 ──
+        // 2026-09-27 phase2：预置规则在剥围栏/开场白之外还要做排版机械清洗（- → 「· 」）——
+        // stub 回包没带规则（null = 默认预置口径），所以期望值是清洗后的「· 要点一」而非原文的「- 要点一」
         var fenced = new StubChatProvider("```markdown\n好的，以下是整理后的内容：\n- 要点一\n- 要点二\n```");
         var ok = await NoteTidyService.TidyAsync(fenced, "一段原始文字");
-        Check(ok.Ok && ok.Text == "- 要点一\n- 要点二",
-              "返回必须剥掉「``` 围栏 + 开场白」再交给界面",
+        Check(ok.Ok && ok.Text == "· 要点一\n· 要点二",
+              "返回必须剥掉「``` 围栏 + 开场白」再交给界面，预置规则还须把行首 - 转成「· 」（phase2 拍板彻底放弃 - 与 *）",
               $"实际「{Short(ok.Text)}」—— 这些字符会原样写进用户笔记，且不可逆");
 
         var blank = await NoteTidyService.TidyAsync(new StubChatProvider("   "), "一段原始文字");
@@ -2025,11 +2027,11 @@ print(json.dumps({
         //   ② 自定义规则被偷偷拼上硬约束 → 用户写的指令静默失效（拍板过：自定义整段替换）；
         //   ③ 默认规则与可见性被耦合 → 用户隐藏规则后发现"我设的默认怎么不生效了"。
         var capBuiltin = new StubChatProvider("结果");
-        var builtinRule = new TidyRule { Id = TidyRuleCatalog.TidyId, Name = "理顺条理", IsBuiltin = true };
+        var builtinRule = new TidyRule { Id = TidyRuleCatalog.TidyId, Name = "逻辑梳理", IsBuiltin = true };
         var okBuiltin = await NoteTidyService.TidyAsync(capBuiltin, "一段原文", builtinRule);
         Check(okBuiltin.Ok && (capBuiltin.LastSystem ?? "").Contains("不要翻译")
               && (capBuiltin.LastSystem ?? "").Contains("不新增任何事实"),
-              "预置规则 = 输出纪律 + 指令段拼接（理顺条理必须同时带「不翻译」与「不新增事实」）",
+              "预置规则 = 输出纪律 + 指令段拼接（逻辑梳理必须同时带「不翻译」与「不新增事实」）",
               $"实际 system：「{Short(capBuiltin.LastSystem)}」");
 
         var capCustom = new StubChatProvider("结果");
@@ -2047,7 +2049,7 @@ print(json.dumps({
               "Normalize 必须幂等：补齐缺失的预置规则但不重复添加（升级版号时给老 settings 补新规则）");
 
         Check(TidyRuleCatalog.ResolveDefaultRule(rulesSettings).Id == TidyRuleCatalog.TidyId,
-              "没设默认规则 → 回落理顺条理（与旧版行为对齐）");
+              "没设默认规则 → 回落逻辑梳理（与旧版行为对齐）");
         rulesSettings.TidyDefaultRuleId = TidyRuleCatalog.ExplainId;
         rulesSettings.TidyRules.First(r => r.Id == TidyRuleCatalog.ExplainId).Visible = false;
         Check(TidyRuleCatalog.ResolveDefaultRule(rulesSettings).Id == TidyRuleCatalog.ExplainId,
@@ -2062,6 +2064,20 @@ print(json.dumps({
 
         Check(flowCs.Contains("TidyChoice.CreateTodos") && flowCs.Contains("NoteType.Todo"),
               "「创建待办」出口必须把提取结果落成真正的待办（NoteType.Todo），否则提取待办就是空壳子");
+
+        // ── 4c. phase2 交互契约（2026-09-27：先开窗后整理 + 创建待办不关窗 + 规则悬停说明）──
+        var previewCs = File.ReadAllText(Path.Combine(repoRoot, "Windows", "AiTidyPreviewWindow.xaml.cs"));
+        Check(flowCs.Contains("PendingFirstTidy = true") && flowCs.Contains("CompleteInitialTidy")
+              && flowCs.IndexOf("preview.Show()", StringComparison.Ordinal) < flowCs.LastIndexOf("TidyAsync", StringComparison.Ordinal),
+              "点 AI 按钮必须先开预览窗、后整理（2026-09-27 phase2 拍板：等整理完才弹窗会让用户觉得卡住了）",
+              "顺序反了 = 用户又对着空气等半天，失败还得弹框打断");
+        Check(flowCs.Contains("CreateHandler") && previewCs.Contains("CreateHandler"),
+              "窗内「创建待办」必须经注入的落库入口原地创建（窗口不碰数据层，但创建后要当场通知列表刷新）",
+              "落库入口缺失 = 点了创建没反应；不回调 = 列表不刷新，用户以为没建成又建一遍");
+        Check(previewCs.Contains("_todosCreated") && previewCs.Contains("OnTodoRowsChanged"),
+              "创建成功后「创建待办」必须禁用、行被改动才恢复（防手滑连点重复创建同一批）");
+        Check(previewCs.Contains("ResolveRuleDescription") && previewCs.Contains("rule.Description"),
+              "规则按钮悬停必须显示适用场景说明（2026-09-27 phase2：不再只显示「内置规则」几个字）");
 
         // ── 5. 待办汇总：点编辑框以外自动保存退出（2026-09-26 用户报的毛病）──
         Check(todoCs.Contains("OnEditBoxLostFocus") && todoCs.Contains("IsFocusInRow")

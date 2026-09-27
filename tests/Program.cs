@@ -138,6 +138,18 @@ Check(r4.Matched && Math.Abs((r4.Time - DateTime.Now.AddMinutes(30)).TotalSecond
 var r5 = TimeParser.Parse("下午茶");
 Check(!r5.Matched, "「下午茶」不该被识别成时间");
 
+// 时间表达剥离（2026-09-27 phase2）：手动建待办设上提醒后，正文里的日期时间要剥掉只留事情本身。
+// 样例全部选用「任何日期跑都命中」的表达（相对日 / 月日 / 相对时长），不写死日期防日历漂移。
+var s1 = TimeParser.StripTimeExpression("10月1日上午9点12分要坐高铁回家");
+Check(s1 == "要坐高铁回家", "日期+时段+时刻要整体剥掉，只留事情本身",
+      $"实际「{s1}」");
+var s2 = TimeParser.StripTimeExpression("明天下午3点，部门会议");
+Check(s2 == "部门会议", "剥除后暴露在首尾的标点要收掉", $"实际「{s2}」");
+var s3 = TimeParser.StripTimeExpression("半小时后开会");
+Check(s3 == "开会", "相对时长（半小时后）同样要剥掉", $"实际「{s3}」");
+var s4 = TimeParser.StripTimeExpression("买牛奶");
+Check(s4 == "买牛奶", "没命中时间表达 → 原样返回（一个字都不动）", $"实际「{s4}」");
+
 // ── [3] 灵感速览标题栏目录 QuickViewToolbarCatalog ──
 // 坏了的表现：升级后标题栏空白 / 手改 settings.json 后面板再也唤不出按钮 / 设置页预算虚标。
 Console.WriteLine("[3] 灵感速览标题栏目录 QuickViewToolbarCatalog");
@@ -631,6 +643,32 @@ Check(NoteTidyPrompt.IsNoTodoMarker("未发现待办") && !NoteTidyPrompt.IsNoTo
 
 Check(NoteTidyPrompt.ParseTodoLines("").Count == 0 && NoteTidyPrompt.ParseTodoLines(null).Count == 0,
       "空回包解析出 0 条（调用方据此退回纯文本展示、创建待办置灰）");
+
+// ── phase2（2026-09-27）：占位符剥除 / 时间兜底 / Markdown 机械清洗 ──
+// 占位符照抄是实测发生过的（原文带「【yyyy-MM-dd】」模型原样抄回来），不兜底 = 待办标题永远带脏前缀
+var phTodos = NoteTidyPrompt.ParseTodoLines("【yyyy-MM-dd】实现点击规则重跑\n【YYYY-MM-DD HH:mm】给供应商回电话");
+Check(phTodos.Count == 2 && phTodos[0].Text == "实现点击规则重跑" && phTodos[0].Due == null
+      && phTodos[1].Text == "给供应商回电话" && phTodos[1].Due == null,
+      "行首字面量占位「【yyyy-MM-dd】」必须剥掉：不当日期解析、也不留在待办文字里",
+      $"实际「{phTodos[0].Text}」@{phTodos[0].Due:yyyy-MM-dd HH:mm}");
+
+var fbTodos = NoteTidyPrompt.ParseTodoLines("明天买打印纸\n买牛奶",
+    t => t.Contains("明天") ? new DateTime(2026, 10, 2, 10, 0, 0) : null);
+Check(fbTodos[0].Due == new DateTime(2026, 10, 2, 10, 0, 0) && fbTodos[0].Text == "明天买打印纸",
+      "timeFallback 兜底：模型漏写【】时由注入的解析器补截止时间（文字原样，剥离交给提示词）",
+      $"实际 {fbTodos[0].Due:yyyy-MM-dd HH:mm}");
+Check(fbTodos[1].Due == null, "fallback 认不出的行保持无截止时间（不强填）");
+
+var normalized = NoteTidyPrompt.NormalizePlainFormatting("**标题**\n- 甲\n  * 乙\n1. 丙");
+Check(normalized == "标题\n· 甲\n  · 乙\n1. 丙",
+      "Markdown 机械清洗：** 去星号、行首 -/*/• 转「· 」（缩进保留）、正常序号不动",
+      $"实际「{Cut(normalized)}」");
+Check(NoteTidyPrompt.NormalizePlainFormatting("") == "" && NoteTidyPrompt.NormalizePlainFormatting(null) == "",
+      "空回包清洗后仍是空串");
+Check(NoteTidyPrompt.OutputDiscipline.Contains("不用 ** 加粗") && NoteTidyPrompt.OutputDiscipline.Contains("不用 - 或 *"),
+      "输出纪律必须明令禁用 Markdown 记号（结果区是纯 TextBox，** 与 - 展示出来就是裸符号）");
+Check(NoteTidyPrompt.ExtractTodoInstruction.Contains("顺延一年") && NoteTidyPrompt.ExtractTodoInstruction.Contains("绝不允许照抄"),
+      "提取待办指令必须写死年份补全规则（未到补当年、已过顺延一年）并禁止照抄占位符");
 
 Mark("[13]-[17] AI 解析 / 裁剪 / 搜索匹配 / 整理清洗");
 

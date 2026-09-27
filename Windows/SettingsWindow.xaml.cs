@@ -2789,6 +2789,11 @@ public partial class SettingsWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                 });
             Grid.SetColumn(namePanel, 0);
+            // 悬停显示适用场景说明（2026-09-27 phase2）：预置带出代码里的说明；自定义没填就提示去哪补
+            var ruleDesc = !string.IsNullOrWhiteSpace(r.Description)
+                ? r.Description
+                : r.IsBuiltin ? null : "未填写适用场景说明 —— 点「编辑」补一句，预览窗悬停规则按钮时即可见";
+            if (ruleDesc != null) namePanel.ToolTip = $"{r.Name}：{ruleDesc}";
             row.Children.Add(namePanel);
 
             var showCheck = new CheckBox
@@ -2834,11 +2839,11 @@ public partial class SettingsWindow : Window
                 ops.Children.Add(MakeOp("↓", (_, _) => MoveTidyRule(idx, 1), "下移（预览窗底栏顺序）"));
             if (r.IsBuiltin)
             {
-                ops.Children.Add(MakeOp("复制", (_, _) => OpenTidyRuleEditor(null, r.Name + "（副本）", TidyRuleCatalog.Find(r.Id)?.Instruction ?? ""), "复制这条预置规则作为自定义规则的底稿（可改提示词）"));
+                ops.Children.Add(MakeOp("复制", (_, _) => OpenTidyRuleEditor(null, r.Name + "（副本）", TidyRuleCatalog.Find(r.Id)?.Instruction ?? "", TidyRuleCatalog.Find(r.Id)?.Description ?? ""), "复制这条预置规则作为自定义规则的底稿（可改提示词）"));
             }
             else
             {
-                ops.Children.Add(MakeOp("编辑", (_, _) => OpenTidyRuleEditor(r.Id, r.Name, r.Prompt), "修改这条自定义规则的名称与提示词"));
+                ops.Children.Add(MakeOp("编辑", (_, _) => OpenTidyRuleEditor(r.Id, r.Name, r.Prompt, r.Description), "修改这条自定义规则的名称、适用场景说明与提示词"));
                 ops.Children.Add(MakeOp("删除", (_, _) => DeleteTidyRule(r.Id), "删除这条自定义规则（预置规则不可删）"));
             }
             Grid.SetColumn(ops, 2);
@@ -2864,13 +2869,14 @@ public partial class SettingsWindow : Window
         LoadTidyRules();
     }
 
-    /// <summary>打开行内编辑器。id=null 表示新增；baseName/basePrompt 是初稿（复制预置时带出指令正文）。</summary>
-    private void OpenTidyRuleEditor(string? id, string baseName, string basePrompt)
+    /// <summary>打开行内编辑器。id=null 表示新增；baseName/basePrompt/baseDesc 是初稿（复制预置时带出指令正文与适用场景说明）。</summary>
+    private void OpenTidyRuleEditor(string? id, string baseName, string basePrompt, string baseDesc = "")
     {
         _tidyRuleEditingId = id;
         _suppressEvents = true;
         TidyRuleNameInput.Text = baseName;
         TidyRulePromptInput.Text = basePrompt;
+        TidyRuleDescInput.Text = baseDesc;
         _suppressEvents = false;
         TidyRuleEditorTag.Text = id == null ? "新增自定义规则" : "正在编辑这条自定义规则";
         UpdateTidyRuleEditorHint();
@@ -2890,6 +2896,7 @@ public partial class SettingsWindow : Window
     {
         var name = TidyRuleNameInput.Text.Trim();
         var prompt = TidyRulePromptInput.Text.Trim();
+        var desc = TidyRuleDescInput.Text.Trim();
         if (name.Length == 0) { TidyRuleEditorHint.Text = "规则名称不能为空。"; return; }
         if (prompt.Length == 0) { TidyRuleEditorHint.Text = "提示词不能为空 —— 这段话就是模型收到的全部指令。"; return; }
         if (_settings.TidyRules.Any(r => !r.IsBuiltin && r.Id != _tidyRuleEditingId && r.Name == name))
@@ -2899,6 +2906,7 @@ public partial class SettingsWindow : Window
         {
             exist.Name = name;
             exist.Prompt = prompt;
+            exist.Description = desc;
         }
         else
         {
@@ -2907,6 +2915,7 @@ public partial class SettingsWindow : Window
                 Id = Guid.NewGuid().ToString("N"),
                 Name = name,
                 Prompt = prompt,
+                Description = desc,
                 IsBuiltin = false,
                 Visible = true,
             });
@@ -2925,7 +2934,7 @@ public partial class SettingsWindow : Window
             MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
         _settings.TidyRules.Remove(rule);
-        if (_settings.TidyDefaultRuleId == id) _settings.TidyDefaultRuleId = TidyRuleCatalog.TidyId;   // 默认规则被删 → 回落理顺条理
+        if (_settings.TidyDefaultRuleId == id) _settings.TidyDefaultRuleId = TidyRuleCatalog.TidyId;   // 默认规则被删 → 回落逻辑梳理
         _settings.Save();
         LoadTidyRules();
     }

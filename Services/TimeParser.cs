@@ -94,7 +94,7 @@ public static class TimeParser
         if (!tm.Success)
         {
             // 纯日期（无时刻）：如"30号""本月30号""8月27号""下周三"。识别出日期，时刻由 UI 弹窗问。
-            var (date, hasDateWord) = ResolveDate(text, 0, 0, isDateOnly: true);
+            var (date, hasDateWord, _) = ResolveDate(text, 0, 0, isDateOnly: true);
             if (hasDateWord)
                 return new ParseResult(true, date, false) { IsDateOnly = true };
             return default;
@@ -122,25 +122,95 @@ public static class TimeParser
         if (period != null) hour = ApplyPeriod(hour, period);
 
         // 日期表达（取最靠近时刻的）
-        var (date2, hasDateWord2) = ResolveDate(prefix, hour, minute, isDateOnly: false);
+        var (date2, hasDateWord2, _) = ResolveDate(prefix, hour, minute, isDateOnly: false);
 
         var time = date2.AddHours(hour).AddMinutes(minute);
         var bare = period == null && !hasDateWord2;
         return new ParseResult(true, time, bare);
     }
 
+    // ── 时间表达剥离（2026-09-27 phase2，用户拍板：日期时间只进 DueTime，不留在待办正文里）──
+    // 「10月1日上午9点12分要坐高铁回家」→「要坐高铁回家」。
+    // 不能复用 Parse 的匹配索引：Parse 的 Normalize 会把「今晚」扩成「今天晚上」（长度变了，索引漂移），
+    // 所以这里只做一遍 **等长归一**（全角：／－ → 半角，一字换一字），合成词交给 CompositeWordRe 单独认。
+
+    private static readonly Regex CompositeWordRe = new(@"(今晚|今早|明早|明晚)", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 把正文里被时间识别命中的那段表达剥掉，返回清理后的正文（收掉剥除处紧邻的顿号 / 逗号 / 空白）。
+    /// 没命中时间表达 / 剥完为空 → <b>原样返回</b>（调用方据此保留原文，绝不产生空待办）。
+    /// 只在确实设上提醒时调用（SaveNote 侧把关）；句号 / 问号等用户自己的标点不在收尾集合里，不动。
+    /// </summary>
+    public static string StripTimeExpression(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text ?? "";
+        var t = text.Replace("：", ":").Replace("／", "/").Replace("－", "-");
+
+        var spans = new List<(int Start, int Length)>();
+        var dm = DurationRe.Match(t);
+        if (dm.Success)
+        {
+            spans.Add((dm.Index, dm.Length));
+        }
+        else
+        {
+            var tm = TimeOfDayRe.Match(t);
+            if (tm.Success)
+            {
+                int hour, minute;
+                if (tm.Groups[1].Success) { hour = int.Parse(tm.Groups[1].Value); minute = int.Parse(tm.Groups[2].Value); }
+                else { hour = ChineseToInt(tm.Groups[3].Value); minute = tm.Groups[4].Success ? ParseMinute(tm.Groups[4].Value) : 0; }
+                if (hour <= 23 && minute <= 59)   // 与 Parse 同口径：非法时刻视同未识别，不剥
+                {
+                    spans.Add((tm.Index, tm.Length));
+                    var pre = t[..tm.Index];
+                    var periods = PeriodRe.Matches(pre);
+                    if (periods.Count > 0) { var p = periods[^1]; spans.Add((p.Index, p.Length)); }
+                    var comp = CompositeWordRe.Matches(pre);
+                    if (comp.Count > 0) { var c = comp[^1]; spans.Add((c.Index, c.Length)); }
+                    var (_, hasDate, dateMatch) = ResolveDate(pre, hour, minute, isDateOnly: false);
+                    if (hasDate && dateMatch != null) spans.Add((dateMatch.Index, dateMatch.Length));
+                }
+            }
+            else
+            {
+                var (_, hasDate, dateMatch) = ResolveDate(t, 0, 0, isDateOnly: true);
+                if (hasDate && dateMatch != null) spans.Add((dateMatch.Index, dateMatch.Length));
+            }
+        }
+
+        if (spans.Count == 0) return text;
+
+        spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+        var sb = new System.Text.StringBuilder();
+        var pos = 0;
+        foreach (var s in spans)
+        {
+            if (s.Start > pos) sb.Append(t, pos, s.Start - pos);
+            pos = Math.Max(pos, s.Start + s.Length);
+        }
+        sb.Append(t[pos..]);
+
+        var result = Regex.Replace(sb.ToString(), @"[ \t]{2,}", " ").Trim();
+        // 收掉剥除后暴露在首尾的顿号 / 逗号 / 空白（句号问号是用户自己的，不动）
+        result = result.Trim('，', '、', '；', '：', '．', ',', ';', ':', ' ', '　');
+        return result.Length > 0 ? result : text;
+    }
+
     /// <summary>
     /// 在时刻前缀中解析基准日期。规则优先级：绝对日期 > 月日 > 下个月 > 星期 > 相对日 > 本月/裸号。
     /// 顺延逻辑：月日今年已过→明年；裸号/本月号本月已过→下月；星期今天已是且时刻已过→下周（纯日期无时刻时不顺延）；下周三强制下周。
+    /// 第三个返回值是<b>命中的那个 Match</b>（2026-09-27 phase2）—— <see cref="StripTimeExpression"/> 靠它定位
+    /// 要从正文里剥掉的那段日期文字；传入的 prefix 是什么文本，Index 就相对什么文本。
     /// </summary>
-    private static (DateTime Date, bool HasDateWord) ResolveDate(string prefix, int hour, int minute, bool isDateOnly)
+    private static (DateTime Date, bool HasDateWord, Match? DateMatch) ResolveDate(string prefix, int hour, int minute, bool isDateOnly)
     {
         var now = DateTime.Now;
 
         // 1. 绝对日期 yyyy-MM-dd
         var abs = LastMatch(AbsDateRe, prefix);
         if (abs != null && DateTime.TryParse(abs.Value, out var absDate))
-            return (absDate.Date, true);
+            return (absDate.Date, true, abs);
 
         // 1.5 数字斜杠/横杠 2026/10/8、10/8、10-8（月在前）。月 1-12、日 1-31 合法才认；
         // 日期已过（含带年份的过去日期）→ 视为未识别，继续走后面规则（用户决策：数字式不顺延明年）
@@ -153,7 +223,7 @@ public static class TimeParser
             {
                 var year = sd.Groups[1].Success ? int.Parse(sd.Groups[1].Value) : now.Year;
                 var t = BuildMonthDay(year, month, day, hour, minute);
-                if (t.Date >= now.Date) return (t.Date, true);
+                if (t.Date >= now.Date) return (t.Date, true, sd);
             }
         }
 
@@ -163,7 +233,7 @@ public static class TimeParser
         {
             var t = BuildMonthDay(now.Year, ChineseToInt(mm.Groups[1].Value), ChineseToInt(mm.Groups[2].Value), hour, minute);
             if (t < now) t = t.AddYears(1);
-            return (t.Date, true);
+            return (t.Date, true, mm);
         }
 
         // 3. 下个月 N[日号]
@@ -172,7 +242,7 @@ public static class TimeParser
         {
             var next = now.AddMonths(1);
             var t = BuildMonthDay(next.Year, next.Month, ChineseToInt(nm.Groups[1].Value), hour, minute);
-            return (t.Date, true);
+            return (t.Date, true, nm);
         }
 
         // 4. 星期（下?周X / 下?星期X）
@@ -184,13 +254,13 @@ public static class TimeParser
             if (!string.IsNullOrEmpty(wk.Groups[1].Value)) diff += 7;          // "下周三" 强制下周
             else if (!isDateOnly && diff == 0 && new DateTime(now.Year, now.Month, now.Day, hour, minute, 0) <= now)
                 diff += 7;                                                      // 今天已是该星期且时刻已过 → 下周
-            return (DateTime.Today.AddDays(diff), true);
+            return (DateTime.Today.AddDays(diff), true, wk);
         }
 
         // 5. 相对日（大后天/后天/明天/今天）
         var rd = LastMatch(RelDayRe, prefix);
         if (rd != null)
-            return (DateTime.Today.AddDays(DayOffset(rd.Value)), true);
+            return (DateTime.Today.AddDays(DayOffset(rd.Value)), true, rd);
 
         // 6. 本月/裸号 N[日号]（本月已过 → 下月）。排除属于"X月N号"月日表达的一部分（前缀末尾是"数字+月"）
         var dn = LastMatch(DayNumRe, prefix);
@@ -198,11 +268,11 @@ public static class TimeParser
         {
             var t = BuildMonthDay(now.Year, now.Month, ChineseToInt(dn.Groups[2].Value), hour, minute);
             if (t < now) t = t.AddMonths(1);
-            return (t.Date, true);
+            return (t.Date, true, dn);
         }
 
         // 无日期表达 → 今天
-        return (DateTime.Today, false);
+        return (DateTime.Today, false, null);
     }
 
     private static Match? LastMatch(Regex re, string text)

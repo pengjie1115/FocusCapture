@@ -27,16 +27,20 @@ public static class NoteTidyPrompt
 
     /// <summary>
     /// 预置规则共用的<b>通用输出纪律</b>（原「硬约束」收窄后的残留）：
-    /// 不翻译 / 无开场白无围栏 / 层级用正常序号。原①「不新增事实」与⑦「只用 - 与 **」**不在**这里 ——
-    /// ①与「解释扩展」冲突（它就是要新增解释）、①与「总结」的"压缩"也有张力，
+    /// 不翻译 / 无开场白无围栏 / 层级用正常序号 / 禁 Markdown 记号。
+    /// 原①「不新增事实」**不在**这里 —— 与「解释扩展」冲突（它就是要新增解释）、与「总结」的"压缩"也有张力，
     /// 所以移进各规则的指令段自己声明（2026-09-27）。
+    ///
+    /// <para><b>2026-09-27 phase2</b>：④「禁 Markdown 记号」为用户拍板新增 —— 结果区是纯 TextBox，
+    /// 模型带回的 ** 与 - 展示出来就是裸符号（用户原话：「彻底放弃这种排版样式」）。
+    /// 提示词之外还有 <see cref="NormalizePlainFormatting"/> 机械兜底，双保险。</para>
     /// </summary>
     public const string OutputDiscipline =
         "你是笔记整理助手。遵守以下通用输出纪律：" +
         "① 保持原文语言（中文还是中文），不要翻译；" +
         "② 直接输出结果正文，不要任何开场白、结语、说明或代码块围栏；" +
-        "③ 分层与分点用 Markdown 正常序号（1. 2. 3.）与缩进表达，小标题可用 **加粗**，" +
-        "面向人阅读，不追求机器可解析。";
+        "③ 分层与分点用正常序号（1. 2. 3.）与缩进表达，小标题直接写一行文字（可用冒号收尾）；" +
+        "④ 不用任何 Markdown 记号：不用 ** 加粗、不用 - 或 * 当分点符号 —— 输出是给人直接读的纯文本，不是渲染源码。";
 
     /// <summary>「理顺条理」（默认规则）的指令段：不改原意，只做逻辑重组 —— 原默认提示词的 ②③⑤。</summary>
     public const string TidyInstruction =
@@ -56,11 +60,19 @@ public static class NoteTidyPrompt
     /// <summary>
     /// 「提取待办」的指令段：逐行输出、行内带时间戳，供 <see cref="ParseTodoLines"/> 机械解析
     /// —— 格式是机器约定，坏一行就少一条待办，所以这里用「本规则不用序号」显式压住输出纪律的③。
+    ///
+    /// <para><b>2026-09-27 phase2</b>：① 明确年份补全规则（没写年份：未到补当年、已过顺延一年 ——
+    /// 今天日期由 <c>NoteTidyService</c> 随消息注入，模型自己不知道今天几号）；② 明确「上午9点12分 → 09:12」
+    /// 的换算示例；③ 禁止照抄原文里的「【yyyy-MM-dd】」占位写法（实测模型抄过，见 <see cref="ParseTodoLines"/> 兜底）；
+    /// ④ 要求正文不重复时间（已在行首【】里）。</para>
     /// </summary>
     public const string ExtractTodoInstruction =
         "从用户给的文字中只提取「要做的事」（待办事项），按执行顺序排列。输出格式（本规则不用序号、不用分点符号）：" +
-        "每行一条待办；若原文给出了时间，行首写成「【yyyy-MM-dd HH:mm】」（只有日期没有具体钟点就「【yyyy-MM-dd】」），" +
-        "原文没给时间就不加【】直接写内容；除此之外不要输出任何别的文字。若确实没有待办，只输出「未发现待办」。";
+        "每行一条待办；若原文提到了时间（钟点、日期、星期、「明天上午」这类表达都算），必须换算成真实日期写在行首" +
+        "「【yyyy-MM-dd HH:mm】」（只有日期没有具体钟点就「【yyyy-MM-dd】」，「上午9点12分」要写成 09:12）；" +
+        "原文没写年份的日期：今年还没到就补今年，今年已经过了就顺延一年（消息会告知今天的日期，按它算）；" +
+        "【】里必须写换算出来的真实日期，原文里的占位写法（例如「【yyyy-MM-dd】」）绝不允许照抄；" +
+        "时间已经写在行首【】里，正文就不要再重复时间表达；除此之外不要输出任何别的文字。若确实没有待办，只输出「未发现待办」。";
 
     /// <summary>
     /// 「解释扩展」的指令段：唯一允许新增内容的预置规则，边界收在「末尾附注」——
@@ -99,9 +111,13 @@ public static class NoteTidyPrompt
     /// 解析「提取待办」的回包为待办行（文字 + 可空截止时间）。<b>机械解析、绝不抛</b>：
     /// ① 逐行剥掉行首的序号 / 分点符号（模型不听"不用序号"的招呼时兜住）；
     /// ② 行首【yyyy-MM-dd( HH:mm)】识别为截止时间（识别不出就整个当纯文字）；
-    /// ③ 空行跳过。解析出 0 条由调用方兜底（预览窗退回纯文本、创建待办置灰）。
+    /// ③ 行首字面量「【yyyy-MM-dd】」占位写法直接剥掉（2026-09-27 phase2：模型照抄原文占位符，实测发生过）；
+    /// ④ 行没带【】时交给 <paramref name="timeFallback"/> 再认一次时间（2026-09-27 phase2：
+    ///    调用方注入 <c>TimeParser</c>，本文件保持零依赖；fallback 只补截止时间、不动文字 ——
+    ///    文字里的时间表达要不要剥离由模型按提示词重写，机械剥离会切坏「十点**前**」这类嵌字）；
+    /// ⑤ 空行跳过。解析出 0 条由调用方兜底（预览窗退回纯文本、创建待办置灰）。
     /// </summary>
-    public static List<(string Text, DateTime? Due)> ParseTodoLines(string? raw)
+    public static List<(string Text, DateTime? Due)> ParseTodoLines(string? raw, Func<string, DateTime?>? timeFallback = null)
     {
         var result = new List<(string Text, DateTime? Due)>();
         foreach (var line in (raw ?? "").Replace("\r\n", "\n").Split('\n'))
@@ -120,7 +136,13 @@ public static class NoteTidyPrompt
                 due = date;
                 t = t[m.Length..].Trim();
             }
+            else
+            {
+                var ph = TodoPlaceholderRegex.Match(t);
+                if (ph.Success) t = t[ph.Length..].Trim();
+            }
             if (t.Length == 0) continue;
+            if (due == null && timeFallback != null) due = timeFallback(t);
             result.Add((t, due));
         }
         return result;
@@ -145,6 +167,10 @@ public static class NoteTidyPrompt
 
     private static readonly Regex TodoDueRegex =
         new(@"^【\s*(?<y>\d{4})-(?<mo>\d{1,2})-(?<d>\d{1,2})(?:\s+(?<hh>\d{1,2}):(?<mi>\d{2}))?\s*】\s*");
+
+    /// <summary>行首字面量占位「【yyyy-MM-dd( HH:mm)】」—— 不是真实日期，剥掉前缀、日期留空（提示词已禁，这里兜底）。</summary>
+    private static readonly Regex TodoPlaceholderRegex =
+        new(@"^【\s*y\s*y\s*y\s*y\s*-\s*M\s*M\s*-\s*d\s*d(?:\s+H\s*H\s*:\s*m\s*m)?\s*】\s*", RegexOptions.IgnoreCase);
 
     private static readonly Regex ListPrefixRegex = new(@"^(?:[-*•·]|（?\d{1,2}[）.、．]|\(\d{1,2}\))\s*");
 
@@ -196,4 +222,31 @@ public static class NoteTidyPrompt
             || s.Contains("已整理", StringComparison.Ordinal)
             || s.Contains("好的", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 预置规则结果的<b>排版机械清洗</b>（2026-09-27 phase2 用户拍板「彻底放弃 * 与 -」）：
+    /// ① 去掉 <c>**</c> 加粗记号（结果区是纯 TextBox，** 展示出来就是裸符号）；
+    /// ② 行首 <c>- </c>/<c>* </c>/<c>• </c> 分点符号转「· 」（保留缩进；中文排版正常符号，非 Markdown 记号）；
+    /// 序号（1. 2.）与正文一律不动。<b>只对预置规则生效</b> —— 自定义规则整段替换提示词（用户拍板：完全交给用户），
+    /// 用户主动要的 Markdown 不吃掉；调用方（NoteTidyService）按规则是否预置分流。
+    /// 与 <see cref="CleanResult"/> 分开两个方法：那边守「脏数据」（围栏/开场白），这边管「排版」，测试各守各的。
+    /// </summary>
+    public static string NormalizePlainFormatting(string? raw)
+    {
+        var t = (raw ?? "").Replace("\r\n", "\n");
+        if (t.Length == 0) return "";
+        var lines = t.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var bullet = BulletPrefixRegex.Match(line);
+            if (bullet.Success)
+                line = bullet.Groups["indent"].Value + "· " + bullet.Groups["rest"].Value;
+            lines[i] = line.Replace("**", "");
+        }
+        return string.Join("\n", lines).Trim();
+    }
+
+    /// <summary>行首分点符号（缩进保留；要求符号后跟空白，防把「----」分隔线或「*」乘号误伤）。</summary>
+    private static readonly Regex BulletPrefixRegex = new(@"^(?<indent>\s*)[*•-]\s+(?<rest>.*)$");
 }

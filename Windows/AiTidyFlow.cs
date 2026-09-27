@@ -15,7 +15,8 @@ public enum TidyChoice
     SaveAsNew,
     /// <summary>用整理结果原地替换这条内容（旧文本先进回收站，可恢复）</summary>
     Replace,
-    /// <summary>把提取出的待办逐条落成真正的待办（原文不动）—— 仅提取待办规则的列表形态下出现</summary>
+    /// <summary>把提取出的待办逐条落成真正的待办（原文不动）—— 仅提取待办规则的列表形态下可用。
+    /// 2026-09-27 phase2 起不再经关窗触发：预览窗内点「创建待办」原地走这条出口（经 CreateHandler），窗口保持打开。</summary>
     CreateTodos,
 }
 
@@ -23,27 +24,31 @@ public enum TidyChoice
 public sealed record TidyTodoDraft(string Text, DateTime? Due);
 
 /// <summary>
-/// 「AI 整理」的共用流程（2026-09-26 新增；2026-09-27 规则化 + 预览窗改<b>非模态</b>）：
+/// 「AI 整理」的共用流程（2026-09-26 新增；2026-09-27 规则化 + 预览窗改<b>非模态</b>；同日 phase2 改先开窗后整理）：
 /// 整理 → 预览对照 → 按出口落库，三个入口共用这一份。
 ///
 /// <para><b>为什么抽成一处</b>：灵感速览面板 / 待办汇总面板 / 全屏编辑窗三处都要这个功能，
 /// 各写一遍必然漂移成三套行为（本项目在导入流程上已经栽过一次 —— 见 Windows/ImportFlow.cs 的来历）。
 /// 各入口的差异只在"落库后怎么刷新自己"，所以刷新留给调用方的回调，其余全部收在这里。</para>
 ///
-/// <para><b>2026-09-27 非模态（用户拍板：预览窗开着时灵感速览要能操作）</b>：
-/// 预览窗 <c>Show</c> 出来后本方法即返回；落库发生在预览窗关闭时，结果经 <paramref name="onDone"/>
-/// 回调交还调用方刷新自己。因此同一时间可以开着多个预览窗（对不同条目），各窗互不影响。</para>
+/// <para><b>2026-09-27 phase2：先开窗后整理（用户拍板：点 AI 按钮立即弹窗，不等整理完 —— 等着像卡住了）</b>：
+/// 预览窗以「整理中」态 Show 出来后才开始调模型，结果经 <see cref="AiTidyPreviewWindow.CompleteInitialTidy"/>
+/// 落进窗口；空内容 / 超长 / 未配模型这三件开窗前就能判定的事仍然提前拦下弹框，不开白窗。
+/// 落库发生在预览窗关闭时（或「创建待办」原地创建时），结果经 <paramref name="onDone"/> 回调交还调用方刷新自己。
+/// 同一时间可以开着多个预览窗（对不同条目），各窗互不影响。</para>
 ///
-/// <para><b>失败一律不抛</b>：超长、未配模型、网络失败都弹一句人话给用户，预览窗不开 ——
+/// <para><b>失败一律不抛</b>：网络失败在预览窗状态行报人话（不再弹框）；开窗前的判定失败弹一句人话，预览窗不开 ——
 /// 调用方无需刷新。</para>
 /// </summary>
 public static class AiTidyFlow
 {
-    /// <summary>流程结果：用户选了哪个出口、最终文本、以及**数据是否真的变了**（调用方据此决定要不要刷新列表）。</summary>
-    public sealed record FlowResult(TidyChoice Choice, string Text, bool DataChanged);
+    /// <summary>流程结果：用户选了哪个出口、最终文本、以及**数据是否真的变了**（调用方据此决定要不要刷新列表）。
+    /// CreatedCount 仅「创建待办」出口 > 0（原地创建后窗口不关，列表要当场刷新）。</summary>
+    public sealed record FlowResult(TidyChoice Choice, string Text, bool DataChanged, int CreatedCount = 0);
 
     /// <summary>
-    /// 首整理 → 开预览窗（非模态）。方法在窗口打开后即返回；用户选出口关窗后按需落库并回调。
+    /// 开预览窗（非模态）→ 按默认规则整理 → 结果落窗。方法在窗口打开后即返回；
+    /// 用户选出口关窗（或窗内原地创建待办）后按需落库并回调。
     /// </summary>
     /// <param name="entry">被整理的那条（用于预览窗标题与落库定位）。</param>
     /// <param name="text">送给模型的正文（行内编辑态下应是编辑框里正在改的内容，而不是已落盘的旧文本）。</param>
@@ -53,10 +58,21 @@ public static class AiTidyFlow
     {
         var provider = NoteTidyService.ResolveProvider(activeProvider, settings);
         var rule = TidyRuleCatalog.ResolveDefaultRule(settings);
-        var outcome = await NoteTidyService.TidyAsync(provider, text, rule).ConfigureAwait(true);
-        if (!outcome.Ok)
+
+        // 开窗前就能判定的失败：拦下弹框，不开白窗（窗内的失败 = 模型 / 网络这一类，走窗口状态行）
+        if (string.IsNullOrWhiteSpace(text))
         {
-            Warn(owner, outcome.Error ?? "整理失败。");
+            Warn(owner, "这条内容是空的，没什么可整理的。");
+            return;
+        }
+        if (NoteTidyPrompt.IsTooLong(text))
+        {
+            Warn(owner, NoteTidyPrompt.TooLongMessage(NoteTidyPrompt.CharCount(text)));
+            return;
+        }
+        if (!NoteTidyService.IsReady(provider))
+        {
+            Warn(owner, NoteTidyService.NotConfiguredMessage);
             return;
         }
 
@@ -65,13 +81,29 @@ public static class AiTidyFlow
         var preview = new AiTidyPreviewWindow(new AiTidyPreviewWindow.TidyPreviewRequest
         {
             Original = (text ?? "").Trim(),
-            InitialTidied = outcome.Text,
+            InitialTidied = "",
             InitialRule = rule,
             Rules = TidyRuleCatalog.ResolveVisible(settings),
             ShowCustomEntry = settings?.TidyShowCustomEntry ?? true,
             ModelLabel = modelLabel,
             Provider = provider,
             Settings = settings,
+            PendingFirstTidy = true,
+            // 窗内「创建待办」的落库入口：复用 Apply 的创建分支，创建成功立刻回调刷新列表（窗口不关，2026-09-27 phase2 拍板）
+            CreateHandler = drafts =>
+            {
+                try
+                {
+                    var result = Apply(notes, entry, TidyChoice.CreateTodos, "", drafts);
+                    if (result != null) onDone?.Invoke(result);
+                    return result?.CreatedCount ?? 0;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Error("AiTidy", "窗内创建待办失败", ex);
+                    return 0;
+                }
+            },
         })
         { Owner = owner };
 
@@ -104,7 +136,11 @@ public static class AiTidyFlow
         catch (Exception ex)
         {
             AppLog.Error("AiTidy", "预览窗打开失败", ex);
+            return;
         }
+
+        var outcome = await NoteTidyService.TidyAsync(provider, text, rule).ConfigureAwait(true);
+        preview.CompleteInitialTidy(outcome);   // 窗已关 = 用户不等了，方法内部直接丢弃
     }
 
     /// <summary>
@@ -148,7 +184,7 @@ public static class AiTidyFlow
                     if (string.IsNullOrWhiteSpace(t.Text)) continue;
                     if (notes.SaveNote(t.Text.Trim(), "AI 整理", NoteType.Todo, t.Due) != null) created++;
                 }
-                return created > 0 ? new FlowResult(choice, text, DataChanged: true) : null;
+                return created > 0 ? new FlowResult(choice, text, DataChanged: true, CreatedCount: created) : null;
 
             default:
                 return null;

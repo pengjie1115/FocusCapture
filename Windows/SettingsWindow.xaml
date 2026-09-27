@@ -713,6 +713,11 @@
                                 <TextBlock Text="规则名称" Width="80" VerticalAlignment="Center"/>
                                 <TextBox x:Name="TidyRuleNameInput" Style="{StaticResource DarkTextBox}" MaxLength="12"/>
                             </DockPanel>
+                            <DockPanel Margin="0,0,0,6">
+                                <TextBlock Text="适用场景" Width="80" VerticalAlignment="Center"/>
+                                <TextBox x:Name="TidyRuleDescInput" Style="{StaticResource DarkTextBox}" MaxLength="60"
+                                         ToolTip="一句话说明这条规则适合什么内容、怎么用 —— 预览窗里悬停规则按钮时显示（可留空）"/>
+                            </DockPanel>
                             <DockPanel>
                                 <TextBlock Text="提示词" Width="80" VerticalAlignment="Top" Margin="0,4,0,0"/>
                                 <TextBox x:Name="TidyRulePromptInput" Style="{StaticResource DarkTextBox}"

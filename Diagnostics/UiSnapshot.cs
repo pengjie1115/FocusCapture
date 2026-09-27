@@ -479,10 +479,11 @@ internal static class UiSnapshot
 
             // 30：文本流形态 —— 新增的底部规则条（预置 4 条 chips + 自定义入口）与原有出口并排，
             // 规则多 / 窗口窄时会不会挤出边界、chips 与出口是否看混，只有出图才知道。
+            // 样例文案 2026-09-27 phase2 起去 Markdown 化（** 与 - 已按用户拍板彻底放弃，改「· 」与正常序号）。
             Capture("30-AI 整理预览窗（规则条）", () => new AiTidyPreviewWindow(new AiTidyPreviewWindow.TidyPreviewRequest
             {
                 Original = "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
-                InitialTidied = "1. **供应商沟通**\n   价格与交期都还行；加急要加钱。\n2. **待办**\n   1. 上周的会议纪要发给他；\n   2. 明天上午 10:00 前处理掉。",
+                InitialTidied = "1. 供应商沟通：\n   · 价格与交期都还行；加急要加钱。\n2. 待办：\n   1. 上周的会议纪要发给他；\n   2. 明天上午 10:00 前处理掉。",
                 InitialRule = TidyRuleCatalog.ResolveDefaultRule(settings),
                 Rules = TidyRuleCatalog.ResolveVisible(settings),
                 ShowCustomEntry = settings.TidyShowCustomEntry,
@@ -491,8 +492,8 @@ internal static class UiSnapshot
                 Settings = settings,
             }), outDir, log);
 
-            // 30b：提取待办形态 —— 结果区切待办行列表（文字 + 行内日期 / 时间框 + 删行），
-            // 「创建待办」出口只在规则条选中「提取待办」时出现；日期框是系统控件、深色底下什么样子只有出图才知道。
+            // 30b：提取待办形态 —— 结果区切待办行列表（文字 + 行内日期 / 时间框[小时/分钟分框] + 删行），
+            // 「创建待办」出口只在规则条选中「提取待办」时出现；日期框已收窄压浅灰（phase2），深色底下什么样子只有出图才知道。
             Capture("30b-AI 整理预览窗（提取待办）", () => new AiTidyPreviewWindow(new AiTidyPreviewWindow.TidyPreviewRequest
             {
                 Original = "跟供应商聊了价格和交期都还行但是加急要加钱另外上周的会议纪要还没发给他明天上午十点前要处理掉",
