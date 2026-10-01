@@ -54,6 +54,7 @@ public static class ChatThemeService
         ["Chat_D0D0D0"] = (FromHex("#4A4A4A"), FromHex("#D0D0D0")),   // 侧栏次文字
         ["Chat_CCCCCC"] = (FromHex("#444444"), FromHex("#CCCCCC")),   // 次标题/附件名
         ["Chat_C8C8C8"] = (FromHex("#4A4A4A"), FromHex("#C8C8C8")),   // 次文字
+        ["Chat_BBBBBB"] = (FromHex("#565656"), FromHex("#BBBBBB")),   // 输入框加号图标（2026-10-01 补：主题化时漏加色板条目导致加号不渲染）
         ["Chat_B8B8B8"] = (FromHex("#585858"), FromHex("#B8B8B8")),   // 图标/侧栏文字
         ["Chat_AAAAAA"] = (FromHex("#6A6A6A"), FromHex("#AAAAAA")),
         ["Chat_A8A8A8"] = (FromHex("#6C6C6C"), FromHex("#A8A8A8")),
@@ -74,6 +75,7 @@ public static class ChatThemeService
         ["Chat_6E8B6E"] = (FromHex("#43744B"), FromHex("#6E8B6E")),
         ["Chat_C9A227"] = (FromHex("#9A7B14"), FromHex("#C9A227")),   // 金（星标/警示边）
         ["Chat_E08585"] = (FromHex("#B84040"), FromHex("#E08585")),   // 错误红字
+        ["Chat_E08080"] = (FromHex("#B84040"), FromHex("#E08080")),   // 右键菜单「删除对话」红字（2026-10-01 补：与加号同批漏网 —— Brush() 直接索引，缺失会抛 KeyNotFoundException）
         ["Chat_C08080"] = (FromHex("#A85858"), FromHex("#C08080")),
         ["Chat_8A3A3A"] = (FromHex("#D9A0A0"), FromHex("#8A3A3A")),   // 错误边框
         ["Chat_378ADD"] = (FromHex("#2467B8"), FromHex("#378ADD")),   // 附件图片边框蓝

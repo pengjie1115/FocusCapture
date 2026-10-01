@@ -869,6 +869,29 @@ public partial class AIDialogWindow : Window
             return;
         }
 
+        // Ctrl+V：剪贴板是"资源管理器复制的文件"时自己接管。RichTextBox 的内置粘贴命令
+        // 只认 Xaml/Rtf/UnicodeText/Bitmap 等格式，对纯 FileDrop 判 CanExecute=false，
+        // 粘贴事件（OnInputPaste）根本不会触发 —— 表现就是"复制文件后粘贴毫无反应"，
+        // 连诊断日志都没有。文件优先于文本，与 OnInputPaste 的判据顺序保持一致。
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.V)
+        {
+            try
+            {
+                if (Clipboard.GetDataObject() is { } data
+                    && TryGetClipboardFiles(data) is { Length: > 0 } files)
+                {
+                    e.Handled = true;
+                    _ = AddFilesSafelyAsync(files);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 剪贴板被其他程序占用等：放行默认粘贴，不让粘贴整体失效
+                AppLog.Warn("AI", "Ctrl+V 检查文件剪贴板失败：" + ex.Message);
+            }
+        }
+
         if (e.Key != Key.Enter) return;
         if (Keyboard.Modifiers == ModifierKeys.Shift) return;   // Shift+回车 = 换行（保留默认行为）
         e.Handled = true;
@@ -894,10 +917,13 @@ public partial class AIDialogWindow : Window
 
         try
         {
-            // 剪贴板被其他程序占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN，统一走 SafeClipboard 退避重试（失败不抛）
-            if (!SafeClipboard.TrySetText(text, Clipboard.SetText))
+            // 剪贴板被其他程序占用时统一走双程加固写入（OLE 失败 → Win32 固化退避重试，失败不抛）
+            if (!SafeClipboard.TrySetTextHardened(text, WpfClipboard.SetText, Win32.WriteClipboardText))
             {
-                AppLog.Error("AI", "复制选区失败：内容为空或剪贴板被其他程序占用（已退避重试）");
+                AppLog.Error("AI", "复制选区失败：内容为空或剪贴板被持续占用（OLE + Win32 双程均已退避重试）");
+                System.Windows.MessageBox.Show(this,
+                    "复制失败：剪贴板可能正被其他程序占用（如远程工具）。\n请稍后重试；若持续失败，可暂时关闭远程工具的剪贴板同步。",
+                    "复制失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             else
             {
@@ -923,10 +949,15 @@ public partial class AIDialogWindow : Window
         e.CancelCommand();
         try
         {
-            if (SafeClipboard.TrySetText(InputBox.Selection.Text, Clipboard.SetText))
+            if (SafeClipboard.TrySetTextHardened(InputBox.Selection.Text, WpfClipboard.SetText, Win32.WriteClipboardText))
                 ClipboardHookService.MarkSelfCopy();
             else
-                AppLog.Error("AI", "复制兜底处理失败：内容为空或剪贴板被其他程序占用（已退避重试）");
+            {
+                AppLog.Error("AI", "复制兜底处理失败：内容为空或剪贴板被持续占用（OLE + Win32 双程均已退避重试）");
+                System.Windows.MessageBox.Show(this,
+                    "复制失败：剪贴板可能正被其他程序占用（如远程工具）。\n请稍后重试；若持续失败，可暂时关闭远程工具的剪贴板同步。",
+                    "复制失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         catch (Exception ex)
         {
@@ -1069,7 +1100,7 @@ public partial class AIDialogWindow : Window
                 if (data.GetDataPresent(DataFormats.Bitmap)
                     && data.GetData(DataFormats.Bitmap) is BitmapSource bs
                     && EnsureFrozen(bs) is { } frozen)
-                    return frozen;
+                    return EnsureOpaqueIfBlankAlpha(frozen);
 
                 var pngName = DataFormats.GetDataFormat("PNG").Name;
                 if (data.GetDataPresent(pngName)
@@ -1083,11 +1114,54 @@ public partial class AIDialogWindow : Window
             AppLog.Warn("AI", "从粘贴数据取图失败：" + ex.Message);
         }
 
-        try { return WpfClipboard.GetImage(); }
+        try
+        {
+            return WpfClipboard.GetImage() is { } sysImg ? EnsureOpaqueIfBlankAlpha(sysImg) : null;
+        }
         catch (Exception ex)
         {
             AppLog.Warn("AI", "从系统剪贴板取图失败：" + ex.Message);
             return null;
+        }
+    }
+
+    /// <summary>
+    /// alpha 体检：微信截图等工具写进剪贴板的位图 alpha 通道无效（全 0），WPF 解出来
+    /// 是一张全透明图，预览白底上就是"白板"（PrintScreen / 企业微信截图不带这种坏 alpha，正常）。
+    /// 整图扫一遍 alpha：全 0 则判定宿主根本没写 alpha，强制转不透明；只要有一个非 0 像素
+    /// 就原样返回，不碰正常的半透明截图。
+    /// </summary>
+    private static BitmapSource EnsureOpaqueIfBlankAlpha(BitmapSource src)
+    {
+        try
+        {
+            // 无 alpha 通道的格式（Bgr32 等）不存在这个问题，零成本放行
+            if (src.Format != PixelFormats.Bgra32 && src.Format != PixelFormats.Pbgra32) return src;
+
+            var bgra = new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
+            int w = bgra.PixelWidth, h = bgra.PixelHeight;
+            var pixels = new byte[w * h * 4];
+            bgra.CopyPixels(pixels, w * 4, 0);
+
+            var hasAlpha = false;
+            for (var i = 3; i < pixels.Length; i += 4)
+            {
+                if (pixels[i] == 0) continue;
+                hasAlpha = true;
+                break;
+            }
+            if (hasAlpha) return src;
+
+            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+            var opaque = BitmapSource.Create(w, h, src.DpiX, src.DpiY, PixelFormats.Bgra32, null, pixels, w * 4);
+            opaque.Freeze();
+            AppLog.Info("AI", $"粘贴图片：位图 alpha 全 0（微信截图等工具的写法），已强制不透明，{w}×{h}");
+            return opaque;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("AI", "alpha 体检失败，按原图处理：" + ex.Message);
+            return src;
         }
     }
 
@@ -1742,7 +1816,14 @@ public partial class AIDialogWindow : Window
                 Cursor = Cursors.Hand,
                 ToolTip = "移除该附件",
             };
-            remove.MouseLeftButtonUp += (_, _) => RemoveAttachmentChip(att);
+            // 必须用 Down：chip 在 RichTextBox 里，左键按下即被文本编辑器捕获鼠标，
+            // MouseLeftButtonUp 会被重定向、永远到不了小叉上（表现为"点了没反应"）；
+            // 同卡"双击打开"用 MouseLeftButtonDown 是同一原因。Handled 防止按下触发选区变化。
+            remove.MouseLeftButtonDown += (_, e) =>
+            {
+                e.Handled = true;
+                RemoveAttachmentChip(att);
+            };
             panel.Children.Add(remove);
         }
 
@@ -2308,6 +2389,16 @@ public partial class AIDialogWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Ctrl+B：收起/展开侧边栏（2026-10-01 用户需求）。VS Code / Cursor 的侧边栏惯例键，
+        // 与全局热键（Ctrl+Alt+*）和应用内 Ctrl+S（沉浸记录保存）无冲突。
+        // 必须 Handled：RichTextBox 里 Ctrl+B 默认是 EditingCommands.ToggleBold（加粗），不放行。
+        if (e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            if (!_drawerOpen) RefreshDrawer();
+            OpenDrawer(!_drawerOpen);
+            return;
+        }
         // Esc：先关搜索覆盖层（仅覆盖层打开时接管），再关会话内查找条 —— 都不碰输入框等处 Esc 的既有行为
         if (e.Key == Key.Escape && SearchOverlay.Visibility == Visibility.Visible)
         {
@@ -3745,7 +3836,36 @@ public partial class AIDialogWindow : Window
         registry.Register(new LoadSkillTool(_skillCatalog, _skillDeps));
         registry.Register(new RunSkillScriptTool(scriptRunner));
 
+        // 本地文件工具（2026-10-01，授权目录制）：总开关默认关 —— 关着时**根本不注册**，模型看不见。
+        // 这是有意对上面"没有路径参数"红线的受控突破：模型直接给路径，边界由
+        // FsGuard 白名单（两路添加：设置手动 / 访问时弹窗确认）+ 删除必进 Windows 回收站 + 覆盖写自动 .bak 守住。
+        // 弹窗实现经 UiThread 封送（工具体跑在线程池线程，B-16 红线④），且独立于写确认弹窗开关、不可被关掉。
+        if (_settings.AiFsToolsEnabled)
+        {
+            registry.Register(new ListDirTool(_settings, AskAllowDirAsync));
+            registry.Register(new ReadFileTool(_settings, AskAllowDirAsync));
+            registry.Register(new WriteFileTool(_settings, AskAllowDirAsync));
+            registry.Register(new MovePathTool(_settings, AskAllowDirAsync));
+            registry.Register(new DeletePathTool(_settings, AskAllowDirAsync));
+        }
+
         _registry = registry;
+    }
+
+    /// <summary>
+    /// AI 文件工具的目录授权弹窗（2026-10-01）：AI 要访问白名单外的目录时问用户「是否加入白名单」。
+    /// ⚠ 被 FsGuard 在**工具线程**（线程池）上调用 —— 必须经 UiThread 封送回 UI 线程（同 Skill 准入确认）；
+    /// 调度失败按「用户拒绝」处理（UiThread.AskAsync 的 fail-closed 方向）。
+    /// </summary>
+    private async Task<bool> AskAllowDirAsync(string dir)
+    {
+        return await UiThread.AskAsync(Dispatcher, () => System.Windows.MessageBox.Show(
+            this,
+            $"AI 请求访问以下目录（当前不在 AI 文件访问白名单中）：\n\n{dir}\n\n" +
+            "加入白名单后，AI 可读写该目录内的文件。\n" +
+            "（删除始终移入 Windows 回收站，可还原；读取的文件内容会随对话发送给大模型服务）\n\n是否加入白名单？",
+            "AI 文件访问授权", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK,
+            msg => AppLog.Warn("Agent", msg));
     }
 
     /// <summary>

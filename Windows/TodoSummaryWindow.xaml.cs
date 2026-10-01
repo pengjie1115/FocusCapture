@@ -603,7 +603,7 @@ public partial class TodoSummaryWindow : Window
         if (string.IsNullOrEmpty(text)) return;
 
         ClipboardHookService.MarkSelfCopy();
-        if (!SafeClipboard.TrySetText(text, WpfClipboard.SetText))
+        if (!SafeClipboard.TrySetTextHardened(text, WpfClipboard.SetText, Win32.WriteClipboardText))
             System.Windows.MessageBox.Show(this, "复制失败：剪贴板被其他程序占用，请稍后重试", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
     }

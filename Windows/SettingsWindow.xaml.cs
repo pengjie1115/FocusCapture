@@ -364,6 +364,8 @@ public partial class SettingsWindow : Window
         AiAssistantNameInput.Text = _settings.AiAssistantName;
         AgentEnabledCheck.IsChecked = _settings.AgentEnabled;
         AgentWriteConfirmCheck.IsChecked = _settings.AgentWriteConfirmPopup;
+        AiFsToolsEnabledCheck.IsChecked = _settings.AiFsToolsEnabled;
+        RebuildAiAllowedDirs();
         AgentMaxToolRoundsInput.Text = _settings.AgentMaxToolRounds.ToString();
         AiToolResultLimitInput.Text = _settings.AiToolResultLimit.ToString();
         AiImageQualityCombo.SelectedIndex = Math.Clamp(_settings.AiImageQualityLevel, 0, 2);
@@ -1372,6 +1374,78 @@ public partial class SettingsWindow : Window
         _settings.AgentWriteConfirmPopup = AgentWriteConfirmCheck.IsChecked == true;
         _settings.Save();
     }
+
+    // ── AI 本地文件工具（2026-10-01，授权目录制） ──
+
+    private void AiFsTools_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        _settings.AiFsToolsEnabled = AiFsToolsEnabledCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    /// <summary>白名单列表（样式与 RebuildTrustedSkillList 同款：一行一路径 + 右侧移除按钮）</summary>
+    private void RebuildAiAllowedDirs()
+    {
+        AiAllowedDirsPanel.Children.Clear();
+
+        var dirs = _settings.AiAllowedDirs.Where(d => !string.IsNullOrWhiteSpace(d)).ToList();
+        if (dirs.Count == 0)
+        {
+            AiAllowedDirsPanel.Children.Add(new TextBlock
+            {
+                Text = "（还没有授权任何目录 —— AI 无法读写任何本地文件）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize = 11,
+                Margin = new Thickness(0, 2, 0, 0),
+            });
+            return;
+        }
+
+        foreach (var dir in dirs)
+        {
+            var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
+
+            var remove = new Button { Content = "移除", Width = 56, Height = 24, Tag = dir };
+            remove.Click += BtnAiFsRemoveDir_Click;
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+
+            row.Children.Add(new TextBlock
+            {
+                Text = dir,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            AiAllowedDirsPanel.Children.Add(row);
+        }
+    }
+
+    private void BtnAiFsAddDir_Click(object sender, RoutedEventArgs e)
+    {
+        using var dlg = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "选择允许 AI 读写的目录（删除始终进 Windows 回收站）",
+            ShowNewFolderButton = false,
+        };
+        if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+        FocusCapture.Services.Agent.FsGuard.AllowDir(dlg.SelectedPath, _settings);   // 规范化 + 去重 + 落盘
+        RebuildAiAllowedDirs();
+    }
+
+    private void BtnAiFsRemoveDir_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string dir }) return;
+        _settings.AiAllowedDirs.Remove(dir);
+        _settings.Save();
+        AppLog.Info("Settings", $"AI 文件访问白名单已移除目录：{dir}");
+        RebuildAiAllowedDirs();
+    }
+
+    private void BtnAiFsReload_Click(object sender, RoutedEventArgs e) => RebuildAiAllowedDirs();
 
     // ── 得到大脑凭证（按钮「存到得到大脑」与对话推送共用，改即保存） ──
 
@@ -2657,8 +2731,8 @@ public partial class SettingsWindow : Window
         try
         {
             var path = FileRepository.NetAttachmentsDir;
-            // 剪贴板被其他程序占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN，统一走 SafeClipboard 退避重试
-            if (!SafeClipboard.TrySetText(path, System.Windows.Clipboard.SetText))
+            // 双程加固写入（OLE 失败 → Win32 固化退避重试，2026-10-01）
+            if (!SafeClipboard.TrySetTextHardened(path, System.Windows.Clipboard.SetText, Win32.WriteClipboardText))
             {
                 System.Windows.MessageBox.Show(this, "复制失败：剪贴板被其他程序占用，请稍后重试", "提示",
                     MessageBoxButton.OK, MessageBoxImage.Warning);

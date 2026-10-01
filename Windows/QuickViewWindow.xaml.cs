@@ -1112,8 +1112,8 @@ public partial class QuickViewWindow : Window
         if (string.IsNullOrEmpty(vm.Content)) return;
 
         ClipboardHookService.MarkSelfCopy();
-        // 与单击复制同一路径：失败只提示，不把 CLIPBRD_E_CANT_OPEN 抛到全局异常处理弹模态框
-        if (!SafeClipboard.TrySetText(vm.Content, WpfClipboard.SetText))
+        // 双程加固写入（OLE 失败 → Win32 固化退避重试，2026-10-01）；失败只提示，不抛到全局异常弹模态框
+        if (!SafeClipboard.TrySetTextHardened(vm.Content, WpfClipboard.SetText, Win32.WriteClipboardText))
             ShowSyncStatus("复制失败：剪贴板被其他程序占用，请稍后重试", error: true);
     }
 

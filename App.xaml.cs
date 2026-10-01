@@ -9,6 +9,12 @@ public partial class App : WpfApp
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        // WPF 原生复制（TextBox/RichTextBox 的 Ctrl+C/X）失败默认完全静默（catch 后 return）——
+        // 远程工具占用剪贴板时，用户在灵感输入框等处的复制"没反应"却无从察觉（2026-10-01 修复⑤）。
+        // 打开官方开关让失败抛出，由下面的全局 DispatcherUnhandledException 记日志并弹提示（不再静默）。
+        // 必须在首个窗口创建前设置。
+        System.Windows.FrameworkCompatibilityPreferences.ShouldThrowOnCopyOrCutFailure = true;
+
         // 数据根定位（2026-09-16）：必须排在所有落盘动作之前 —— AppLog 自己也住在数据根下。
         // 读的是默认根里的指针文件；自定义根不可用时只出提示，绝不偷换回默认根（防数据分裂成两套）。
         var rootWarning = FocusCapturePaths.LoadCustomRoot();

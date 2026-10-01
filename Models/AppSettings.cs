@@ -178,6 +178,13 @@ public class AppSettings
     public int AgentMaxToolRounds { get; set; } = 15;  // 工具调用往返轮数上限：原硬编码 5 偏低（多步工具易触顶），默认 15
     public double AiDrawerWidth { get; set; } = 240;   // AI 对话历史抽屉记忆宽度（拖拽后跨启动恢复；收起状态不记忆）
 
+    // ── AI 本地文件工具（2026-10-01，授权目录制）──
+    // 总开关默认关：关着时这组工具根本不注册，模型看不见，行为与关闭前完全一致。
+    public bool AiFsToolsEnabled { get; set; } = false;
+    // 授权目录白名单（规范化绝对路径）。两路添加：设置页手动添加 / AI 访问白名单外目录时弹窗确认。
+    // 空列表 = 没有任何目录可访问（即便总开关开着）。
+    public List<string> AiAllowedDirs { get; set; } = new();
+
     // ── Skill 运行时（2026-09-20）──
     /// <summary>
     /// 已被用户授权执行脚本的 Skill 名（首次执行某 Skill 的脚本时弹窗确认，允许后记在这里）。

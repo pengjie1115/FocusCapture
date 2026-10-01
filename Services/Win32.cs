@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace FocusCapture.Services;
 
@@ -79,6 +80,12 @@ public static class Win32
     [DllImport("user32.dll")]
     public static extern IntPtr GetClipboardData(uint uFormat);
 
+    [DllImport("user32.dll")]
+    public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
     /// <summary>获取剪贴板序列号，内容每次真正变化时递增</summary>
     [DllImport("user32.dll")]
     public static extern uint GetClipboardSequenceNumber();
@@ -91,17 +98,70 @@ public static class Win32
     [DllImport("kernel32.dll")]
     public static extern bool GlobalUnlock(IntPtr hMem);
 
-    public static string? GetClipboardText()
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalFree(IntPtr hMem);
+
+    public const uint GMEM_MOVEABLE = 0x0002;
+
+    /// <summary>
+    /// 读取剪贴板文本。占用时按指数退避重试（默认 3 次 / 15ms 起步，总窗口约 45ms ——
+    /// 调用方多在 WndProc / 监控回调里，不能久睡）。打开成功但没数据 / 锁不上不是占用，不重试。
+    /// 此前的单次尝试版本在远程工具占用期间会静默返回 null，表现为「剪贴板监控丢条目」。
+    /// </summary>
+    public static string? GetClipboardText(int attempts = 3, int baseDelayMs = 15)
     {
-        if (!OpenClipboard(IntPtr.Zero)) return null;
+        for (var attempt = 1; attempt <= Math.Max(1, attempts); attempt++)
+        {
+            if (OpenClipboard(IntPtr.Zero))
+            {
+                try
+                {
+                    var hData = GetClipboardData(CF_UNICODETEXT);
+                    if (hData == IntPtr.Zero) return null;
+                    var ptr = GlobalLock(hData);
+                    if (ptr == IntPtr.Zero) return null;
+                    try { return Marshal.PtrToStringUni(ptr); }
+                    finally { GlobalUnlock(hData); }
+                }
+                finally { CloseClipboard(); }
+            }
+            if (attempt < attempts) Thread.Sleep(baseDelayMs << Math.Min(attempt - 1, 2));
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Win32 经典路径写 CF_UNICODETEXT（单格式、**立即渲染**）。与 WPF 的 OLE 路径相比：
+    /// 持有剪贴板锁的只有几个微秒级 API 序列，数据立刻进内核、不依赖本进程存活。
+    /// 用途：OLE 写入失败（剪贴板被远程工具等占用）后的固化兜底 —— OleSetClipboard 成功而
+    /// OleFlushClipboard 被打断会留下「延迟渲染」中间态（剪贴板查看器看不到、稍后却能粘贴），
+    /// 本函数用 EmptyClipboard 把该中间态清掉换成真实数据。占用重试由调用方（SafeClipboard）负责。
+    /// </summary>
+    public static bool WriteClipboardText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+
+        var bytes = Encoding.Unicode.GetBytes(text);
+        var hMem = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(bytes.Length + 2));
+        if (hMem == IntPtr.Zero) return false;
+        var ptr = GlobalLock(hMem);
+        if (ptr == IntPtr.Zero) { GlobalFree(hMem); return false; }
         try
         {
-            var hData = GetClipboardData(CF_UNICODETEXT);
-            if (hData == IntPtr.Zero) return null;
-            var ptr = GlobalLock(hData);
-            if (ptr == IntPtr.Zero) return null;
-            try { return Marshal.PtrToStringUni(ptr); }
-            finally { GlobalUnlock(hData); }
+            Marshal.Copy(bytes, 0, ptr, bytes.Length);
+            Marshal.WriteInt16(ptr, bytes.Length, 0);   // UTF-16 终止符
+        }
+        finally { GlobalUnlock(hMem); }
+
+        if (!OpenClipboard(IntPtr.Zero)) { GlobalFree(hMem); return false; }
+        try
+        {
+            var ok = SetClipboardData(CF_UNICODETEXT, hMem) != IntPtr.Zero;
+            if (!ok) GlobalFree(hMem);   // 交系统接管失败要自己释放；成功后 hMem 归系统，不得再 Free
+            return ok;
         }
         finally { CloseClipboard(); }
     }

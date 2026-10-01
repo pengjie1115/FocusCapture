@@ -122,6 +122,8 @@ public static class AiTidyFlow
                 todoDrafts = preview.TodoItems;
                 var result = Apply(notes, entry, choice, finalText, todoDrafts);
                 if (result != null) onDone?.Invoke(result);
+                else if (choice == TidyChoice.Copy)
+                    Warn(owner, "复制失败：剪贴板可能正被其他程序占用（如远程工具），请稍后重试。");
             }
             catch (Exception ex)
             {
@@ -160,9 +162,15 @@ public static class AiTidyFlow
         switch (choice)
         {
             case TidyChoice.Copy:
-                ClipboardHookService.MarkSelfCopy();
-                SafeClipboard.TrySetText(text, WpfClipboard.SetText);
-                return new FlowResult(choice, text, DataChanged: false);
+                // 双程加固写入：OLE 失败 → Win32 固化退避重试（2026-10-01，远程工具占用场景）。
+                // 失败返回 null，由 RunAsync 的关窗回调弹可见提示 —— 此前静默，用户感知为「点了复制没反应」
+                if (SafeClipboard.TrySetTextHardened(text, WpfClipboard.SetText, Win32.WriteClipboardText))
+                {
+                    ClipboardHookService.MarkSelfCopy();
+                    return new FlowResult(choice, text, DataChanged: false);
+                }
+                AppLog.Error("AiTidy", "AI 整理复制失败：剪贴板被持续占用（OLE + Win32 双程均已退避重试）");
+                return null;
 
             case TidyChoice.SaveAsNew:
                 return notes.SaveNote(text, "AI 整理") != null

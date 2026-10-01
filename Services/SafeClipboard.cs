@@ -27,6 +27,12 @@ public static class SafeClipboard
     /// <summary>默认退避基数（毫秒），间隔依次 25 / 50；实测剪贴板占用多为毫秒级</summary>
     public const int DefaultBaseDelayMs = 25;
 
+    /// <summary>加固写入第二程（Win32 固化）的默认重试参数：10 次尝试、15ms 起步、单次封顶 150ms，
+    /// 总退避窗口约 1.1 秒，覆盖远程工具（向日葵 / ToDesk 等）对剪贴板的典型占用时长</summary>
+    public const int HardenedWin32Attempts = 10;
+    public const int HardenedWin32BaseDelayMs = 15;
+    public const int HardenedWin32MaxDelayMs = 150;
+
     /// <summary>
     /// 尝试写入剪贴板，失败按指数退避重试。返回是否成功，**绝不抛异常**。
     /// </summary>
@@ -69,6 +75,45 @@ public static class SafeClipboard
             }
         }
 
+        return false;
+    }
+
+    /// <summary>
+    /// 双程加固写入（2026-10-01，剪贴板被远程工具长期占用场景的接近根治方案）。
+    ///
+    /// 第一程：OLE 路径（生产传 WpfClipboard.SetText，多格式 + flush 固化语义），只试 1 次 ——
+    /// WPF 内部对 OleSetClipboard / OleFlushClipboard 自带 10 次 × 100ms 重试（为远程/终端会话设计），
+    /// 外层叠加重试只会拉长卡顿、不会提高成功率。失败含一种**中间态**：OleSetClipboard 已把数据
+    /// 挂上剪贴板（延迟渲染）而 OleFlushClipboard 被占用打断 —— 表现为「剪贴板查看器里看不到、
+    /// 稍后却能粘贴出来」，且数据依赖本进程存活。
+    ///
+    /// 第二程：Win32 经典路径强制固化（生产传 Win32.WriteClipboardText：单格式 CF_UNICODETEXT、
+    /// 持锁微秒级、立即渲染），带 10 次指数退避（15ms 起步、单次封顶 150ms）。EmptyClipboard
+    /// 会顺带把第一程留下的延迟渲染中间态清掉。
+    ///
+    /// 两程都失败才返回 false —— **此时调用方必须给用户可见提示，不得静默**。
+    /// 约束同 TrySetText：本文件不引用 WPF 类型，两程写入都由调用方注入；
+    /// 生产调用形如 TrySetTextHardened(text, WpfClipboard.SetText, Win32.WriteClipboardText)。
+    /// </summary>
+    public static bool TrySetTextHardened(string? text, Action<string> oleWrite, Func<string, bool> rawWrite,
+        Action<int>? sleep = null)
+    {
+        if (oleWrite is null) throw new ArgumentNullException(nameof(oleWrite));
+        if (rawWrite is null) throw new ArgumentNullException(nameof(rawWrite));
+        if (string.IsNullOrEmpty(text)) return false;
+
+        if (TrySetText(text, oleWrite, 1, 0)) return true;
+
+        for (var attempt = 1; attempt <= HardenedWin32Attempts; attempt++)
+        {
+            try
+            {
+                if (rawWrite(text)) return true;
+            }
+            catch { /* 第二程同样绝不把异常抛给调用方 */ }
+            if (attempt < HardenedWin32Attempts)
+                sleep?.Invoke(Math.Min(HardenedWin32BaseDelayMs << Math.Min(attempt - 1, 4), HardenedWin32MaxDelayMs));
+        }
         return false;
     }
 }
