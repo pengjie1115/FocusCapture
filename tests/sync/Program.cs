@@ -953,6 +953,10 @@ print(json.dumps({
         Check(aiCs.Contains("_registryBuiltWithFsTools")
               && aiCs.Contains("_registryBuiltWithFsTools == _settings.AiFsToolsEnabled"),
               "工具注册表必须按文件工具开关快照自愈重建（窗口单例常驻：先开窗后勾开关，缓存永远停在「无文件工具」，模型只能如实答没有 —— 2026-10-01 实测）");
+        Check(aiCs.Contains("new ReadDocxTool(_settings, AskAllowDirAsync)")
+              && aiCs.Contains("new ReadPdfTool(_settings, AskAllowDirAsync)")
+              && aiCs.Contains("new ReadSpreadsheetTool(_settings, AskAllowDirAsync)"),
+              "文档工具必须注入授权上下文（有它 path 来源才过 FsGuard 门禁；不注入则 path 无从授权，只许 handle/file_id）");
         Check(settingsCs.Contains("Content = \"移除\", Width = 56, MinHeight = 24")
               && settingsCs.Contains("Content = \"撤销\", Width = 56, MinHeight = 24"),
               "设置页动态行按钮必须用 MinHeight 而非固定 Height=24（隐式样式 Padding=12,6 + 13px 字内容高约 30px，固定 24 把「移除/撤销」文字下半截掉）");
@@ -3253,6 +3257,65 @@ print(json.dumps({
         Check(writeTool.DescribeAction(
               $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "x.txt"))}\",\"mode\":\"overwrite\"}}").Contains("备份"),
               "覆盖写的 DescribeAction 必须写明「自动备份 .bak」");
+
+        // ── ⑦ 文档工具 path 来源（2026-10-01：read_pdf / read_spreadsheet / read_docx 受控放开） ──
+
+        var sDoc = new AppSettings();
+        FsGuard.AllowDir(allowed, sDoc);
+        var docxTool = new ReadDocxTool(sDoc, _ => Task.FromResult(true));
+        var pdfTool2 = new ReadPdfTool(sDoc, _ => Task.FromResult(true));
+        var sheetTool = new ReadSpreadsheetTool(sDoc, _ => Task.FromResult(true));
+
+        var docxPath = Path.Combine(allowed, "方案.docx");
+        CreateMinimalDocx(docxPath, "验收正文内容XYZ");
+        var sheetPath = Path.Combine(allowed, "账目.xlsx");
+        BuildTestXlsx(sheetPath);
+        var pdfPath2 = Path.Combine(allowed, "报告.pdf");
+        BuildTestPdf(pdfPath2, "PdfPathSource ABC");
+
+        var off = docxTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(docxPath)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(off.StartsWith("错误") && off.Contains("总开关"),
+              "文档工具 path 来源在总开关关闭时必须整体拒绝（否则用户关掉开关却发现还能按路径读，白名单防线成摆设）", off);
+
+        sDoc.AiFsToolsEnabled = true;
+        var docxOut = docxTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(docxPath)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(docxOut.Contains("验收正文内容XYZ"), "read_docx path：白名单内 docx 抽文本成功（补齐「找得到 Word 读不了」的能力洞）",
+              docxOut[..Math.Min(150, docxOut.Length)]);
+        var sheetOut = sheetTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(sheetPath)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(!sheetOut.StartsWith("错误") && sheetOut.Contains("工作表"),
+              "read_spreadsheet path：白名单内 xlsx 读取成功", sheetOut[..Math.Min(150, sheetOut.Length)]);
+        var pdfOut2 = pdfTool2.ExecuteAsync($"{{\"path\":\"{JsonEscape(pdfPath2)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(pdfOut2.Contains("PdfPathSource"), "read_pdf path：白名单内 PDF 抽文字成功", pdfOut2[..Math.Min(150, pdfOut2.Length)]);
+
+        var docPath = Path.Combine(allowed, "老格式.doc");
+        File.WriteAllBytes(docPath, new byte[] { 0xD0, 0xCF, 0x11, 0xE0 });   // OLE 复合文档魔数
+        var docOut = docxTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(docPath)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(docOut.StartsWith("错误") && docOut.Contains("另存为"),
+              "老版 .doc 必须明确拒绝并指引「另存为 .docx」（解析 OLE 不做，但绝不让模型对读不出的内容自圆其说）", docOut);
+
+        var mdPath = Path.Combine(allowed, "说明.md");
+        File.WriteAllText(mdPath, "x");   // 不能复用「笔记.txt」—— 它在⑤段已被删进回收站，会先撞存在性检查
+        var badExt = docxTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(mdPath)}\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(badExt.StartsWith("错误") && badExt.Contains("read_file"),
+              "read_docx 对非 Word 扩展名给出指路文案（不让模型拿工具乱试）", badExt);
+
+        var sDoc2 = new AppSettings { AiFsToolsEnabled = true };
+        var askedDirs = new List<string>();
+        var outsideDocx = Path.Combine(root, "outside3", "x.docx");
+        var docxTool2 = new ReadDocxTool(sDoc2, dir => { askedDirs.Add(dir); return Task.FromResult(false); });
+        var denied2 = docxTool2.ExecuteAsync($"{{\"path\":\"{JsonEscape(outsideDocx)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(denied2.StartsWith("错误") && askedDirs.Count == 1 && sDoc2.AiAllowedDirs.Count == 0,
+              "read_docx 白名单外 path 必须过弹窗闸（拒绝弹一次、白名单保持空、绝不静默绕过）", denied2);
+
+        var granted2 = new ReadDocxTool(sDoc2, dir => { FsGuard.AllowDir(dir, sDoc2); return Task.FromResult(true); })
+            .ExecuteAsync($"{{\"path\":\"{JsonEscape(outsideDocx)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(granted2.StartsWith("错误：文件不存在") && sDoc2.AiAllowedDirs.Contains(Path.GetFullPath(Path.Combine(root, "outside3"))),
+              "read_docx 弹窗同意后：目录入白名单 + 门禁放行（走到文件存在性检查才算过闸）", granted2[..Math.Min(80, granted2.Length)]);
+
+        Check(pdfTool2.Description.Contains("path") && sheetTool.Description.Contains("path")
+              && docxTool.Description.Contains("path") && docxTool.Description.Contains(".doc"),
+              "三个文档工具的描述必须写明 path 来源与 .doc 边界（模型不知道来源存在就永远不会用）");
 
         static string JsonEscape(string p) => p.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
