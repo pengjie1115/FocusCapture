@@ -3,10 +3,12 @@
 > **谁干活谁覆盖更新；并行开发按分支分节；旧状态被覆盖即自动作废。** 硬上限 40 行。
 > 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-10-01（AI 问答四项优化已合并推送，分支已删）
 
-## 当前：main = `b733d74`，工作区干净，双远程同步
+## 当前：AI 问答四项优化已进 main，工作区干净，双远程同步
 
-- **AI 问答四项优化已并入 main 并推双远程**（Gitee `5608847..b733d74` / GitHub `64f38aa..b733d74`，
-  `ls-remote` 三端均为 `b733d74`）。分支 `feature/ai-chat-ux` 已按「合并即删」删除
+- **四项优化的功能提交 = `b733d74`，已并入 main 并推双远程**（Gitee `5608847..b733d74` /
+  GitHub `64f38aa..b733d74`，其后的记忆提交也已推送，`ls-remote` 三端一致）。
+  分支 `feature/ai-chat-ux` 已按「合并即删」删除（`experiment/baidu-listall-verify`、
+  `experiment/netdisk-semantic-eval` 两个已合并分支一并删除）
 - 四项：① 分组指令默认折叠 + 按钮三态（添加 / 查看 / 收起）② 附件-only 会话标题回退「文件：<附件名>」
   ③ Agent 规则分层（分组指令可覆盖默认行为、不可覆盖安全红线，见 DECISIONS D17）
   ④ 会话列表实时刷新（接线 `SessionChanged`/`GroupsChanged` + 合并防抖 + 关窗退订）
