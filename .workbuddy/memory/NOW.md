@@ -1,27 +1,33 @@
 # NOW — 当前状态（唯一活文件）
 
 > **谁干活谁覆盖更新；并行开发按分支分节；旧状态被覆盖即自动作废。** 硬上限 40 行。
-> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-09-27（官网 v0.3.0 已上线并推送 Gitee）
+> 维护规则见根目录 `AGENTS.md`「三、开发记忆」。更新：2026-10-01（AI 问答四项优化已交付，待验收合并）
 
-## 当前：官网 v0.3.0 已上线 + README 校对 + embed_icon 清账（均已提交）
+## 当前：AI 问答四项优化已完成（分支 `feature/ai-chat-ux`，`868fac2`，未合并未推送）
 
-- 官网 https://focuscapture.app.workbuddy.host/ 实测已更新：首页含「AI 整理」、FAQ 含联系邮箱、
-  下载页 `2026-09-27 / 约 249 MB`；线上 exe `Content-Length: 261460291`（≈249 MB）与本地
-  `bin/Release/net8.0-windows/win-x64/publish/` 产物**逐字节一致**（`e0bba50` / tag `v0.3.0`）
-- 后续三提交：`aa7130e` README 校对（新能力表 / 补 Ctrl+Alt+S 与 Ctrl+T / 条数 148+740 /
-  官网入口替代 Releases / 反馈改邮箱）、`d91e248` 清掉 `embed_icon.py` + csproj `EmbedAppIcon`
-  target（清理后 `dev.ps1 build` 0 警告 0 错误，MSB3073 假警告消失）、`90e7d42` 记忆
-- 联系方式 = **邮箱 3097199704@qq.com**，全站 10 处（5 页脚 + 5 页 md 文末）；**用户 09-27 确认不补微信号**
-- ⚠ 百度网盘与云端核对已按要求上站，但该功能**人工验收项仍未做**（REGRESSION.md B-14 末 7 条，需真机 + 真网盘）
+- 四项：① 分组指令默认折叠 + 按钮三态（添加 / 查看 / 收起）② 附件-only 会话标题回退「文件：<附件名>」
+  ③ Agent 规则分层（分组指令可覆盖默认行为、不可覆盖安全红线，见 DECISIONS D17）
+  ④ 会话列表实时刷新（接线 `SessionChanged`/`GroupsChanged` + 合并防抖 + 关窗退订）
+- 自检：build 0 警告 0 错误 / 快层 **157** / 慢层 **740** / `ready` 总检通过（文档引用 20 处有效、条数一致）
+- 快照证据：`10b` 侧边栏见「文件：季度报告.pdf」；`10c` 分组视图按钮为「查看指令」且指令正文默认折叠
+- ⚠ **人工验收未跑**：REGRESSION 新增 3 条 ⚠（分组指令改版 / 只发文件标题 / 列表实时刷新），需真实环境
+- ⚠ 优化3 只是**提示词层**的优先级声明，模型服从度高但**非 100% 硬拦截**；结构化硬拦截留作后续
+- ⚠ 存量 Agent 会话的旧规则块靠「标记 v2 + 加载时清旧块」迁移，**未实机验证**
+
+## 上一状态：官网 v0.3.0 已上线（均已提交）
+
+- 官网 https://focuscapture.app.workbuddy.host/ 已更新；线上 exe ≈249 MB 与本地 publish 产物逐字节一致
+  （`e0bba50` / tag `v0.3.0`）；README 校对 `aa7130e`；清 `embed_icon.py` `d91e248`
+- 联系方式 = 邮箱 3097199704@qq.com（用户 09-27 确认不补微信号）
+- ⚠ 百度网盘与云端核对的 B-14 末 7 条人工验收仍未做（需真机 + 真网盘）
 
 ## 待办
 
-- **GitHub 推送待补**：连续两次 `CONNECT tunnel failed, response 502`（纯网络层，非凭据），
-  落后 4 提交（`e0bba50`..`90e7d42`），网络恢复后 `git push github main v0.3.0`。**Gitee 已到位**
-  （`90e7d42` = 本地 HEAD，tag `v0.3.0` 已推）
-- 慢层实测 ~35 秒 vs 锚点「约 170 秒」差异未查证；2 个 flaky（`[8]` 子进程流式读、Agent 工具时间前提）未隔离
+- **`feature/ai-chat-ux` 待合并推送**：用户验收后 `dev.ps1 merge` + `dev.ps1 push`（双远程）
+- **GitHub 推送待补**：`502` 网络层连续失败，落后若干提交；网络恢复后补推（Gitee 已到位）
+- 慢层耗时与锚点差异未查证；2 个 flaky（`[8]` 子进程流式读、Agent 工具时间前提）未隔离
 
 ## 分支
 
-- main（含官网 v0.3.0、云端核对、语义检索评估）；`feature/chat-restore-cross-device`、
-  `experiment/baidu-listall-verify`、`experiment/netdisk-semantic-eval` 保留未删
+- main（含官网 v0.3.0、云端核对、语义检索评估）；**`feature/ai-chat-ux`（AI 问答四项优化，待验收）**；
+  `feature/chat-restore-cross-device`、`experiment/baidu-listall-verify`、`experiment/netdisk-semantic-eval` 保留未删

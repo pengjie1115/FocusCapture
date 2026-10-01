@@ -98,3 +98,11 @@ Git Bash（MSYS）把含 `:` 的参数当路径转换：`git show feature/x:.wor
   纯 Python 解析 PE 资源目录（DOS 头 `e_lfanew` → OptionalHeader DataDirectory[2] → 节表换算文件偏移 → `IMAGE_RESOURCE_DIRECTORY`）。
   坑中坑：目录条目总数 = **`NumberOfNamedEntries`(off+12) + `NumberOfIdEntries`(off+14)**，只读 off+12 会得到空列表、看起来像"资源表是空的"。
   只想判断「有没有图标」用 `ExtractIconEx`（返回 1 即有），但它区分不了「我们的图标」与「SDK 默认图标」，要区分必须列 RT_ICON 各帧字节数。
+
+## 改「写进会话历史的提示词规则块」必须同时升标记版本 + 清旧块（2026-10-01 实测）
+
+- 机制：Agent 规则块（`[Agent 工具规则]`）是**每会话只注入一次并持久化进会话文件**的 —— `AppendSystemRules` 改首条 system 消息，靠**标记字符串**判断"这个会话注入过没"。
+- 坑：改了规则**正文**却没改标记 → 存量会话检测到标记、跳过注入 → 永远用旧规则，表现就是"改了没生效"（比报错更难发现）。
+- 修法（**两件都要做**）：① 升版本号（v1 → v2），让判断失效；② 加载会话时**先把旧块清掉再注入新块**（`ChatSessionService.RemoveSystemRuleBlock(marker)`，约定规则块一律追在 system 消息末尾，按标记截断）。只做①会变成**新旧两套规则同时在场**（旧版「写操作必须先问」vs 新版「分组指令可覆盖」），模型两头都听，行为不可预测。
+- 判据：改这类"写进历史 + 靠字符串标记去重"的注入内容时，先自问「标记改了没？旧块清了没？」两个都做才算改完。
+- 同类风险面：`AppendSystemRules` 是全项目唯一往 system 消息里追加规则文本的入口，将来再有别的规则块复用这条通道，同样适用。
