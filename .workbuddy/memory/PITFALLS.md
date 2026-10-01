@@ -10,7 +10,7 @@
 - bash coreutils 不可靠 → 一律 PowerShell 原生 cmdlet；命令输出落 %TEMP% 文件再 Read
 - PowerShell 执行策略 Restricted → 同一条命令里先 `Set-ExecutionPolicy -Scope Process Bypass -Force`
 - 沙箱不把 `$env:PATH` 修改传子进程；中文路径进环境变量会乱码 → 探针纯 ASCII、路径进程内拼
-- 联网 git（push/ls-remote）走 bash；PowerShell git 出网 128+零输出 = 沙箱限制，别动凭据
+- 联网 git（push/ls-remote）走 bash；PowerShell git 出网 128+零输出 = 沙箱限制，别动凭据。**`dev.ps1 push` 同样中招**（它内部就是 PowerShell 调系统 git，2026-10-01 复现）：脚本会自己打出「改用 bash」的建议，照做即可 —— `git push origin main` + `git push github main` 在 bash 里一次成功，别在 PowerShell 里重试第三遍
 - shell 里用 `cat > 文件 <<EOF`（heredoc 写文件）会被安全策略判为 **LOLBin** 拦下 → 改用文件写入工具（例：写 `.git/FC_COMMIT_MSG`）
 - **（DSH 的 `pwsh` 工具）本项目中文路径上沙箱初始化失败**：任何命令一律返回 `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<项目根>)`，跑不起来。绕法：该条命令带 `sandbox_permissions=danger-full-access` 重试即成功（2026-09-26 实测 build / test / test -Slow / ready / git add / commit 全通）。**是沙箱给工作区设 ACL 失败，不是命令或项目问题** —— 别去改代码或路径来"修"它
 
