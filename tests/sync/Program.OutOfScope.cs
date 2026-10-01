@@ -106,7 +106,38 @@ internal static partial class Program
     Check(SafeClipboard.DefaultAttempts == 3 && SafeClipboard.DefaultBaseDelayMs == 25,
           "默认参数必须是 3 次尝试 / 25ms 退避基数（改动会同时改变所有调用点行为）",
           $"实际 {SafeClipboard.DefaultAttempts} 次 / {SafeClipboard.DefaultBaseDelayMs}ms");
-    
+
+    // ── [5b] 双程加固写入（2026-10-01）：远程工具占用剪贴板的接近根治方案 ──
+    // 第一程 OLE（WPF 内部已自带 10×100ms 重试）→ 失败 → 第二程 Win32 固化（立即渲染 + 清掉延迟渲染中间态）
+
+    var oleOnlyCalls = 0;
+    var rawNeverCalled = true;
+    Check(SafeClipboard.TrySetTextHardened("内容", _ => oleOnlyCalls++, _ => { rawNeverCalled = false; return true; }),
+          "Hardened：第一程 OLE 成功时不得走第二程（多格式优先，Win32 单格式只是兜底）");
+    Check(oleOnlyCalls == 1 && rawNeverCalled,
+          "Hardened：第一程只尝试 1 次（WPF 内部已重试 10×100ms，外层叠加只会拉长卡顿）");
+
+    var hardenedOleFails = 0;
+    Check(SafeClipboard.TrySetTextHardened("内容", _ => { hardenedOleFails++; throw new COMException("占用", unchecked((int)0x800401D0)); },
+              _ => true),
+          "Hardened：第一程失败（含 flush 被打断的延迟渲染中间态）→ 第二程 Win32 固化兜底成功");
+
+    var hardenedSleeps = new List<int>();
+    Check(!SafeClipboard.TrySetTextHardened("内容", _ => throw new COMException("占用", unchecked((int)0x800401D0)),
+              _ => false, ms => hardenedSleeps.Add(ms)),
+          "Hardened：两程都失败必须返回 false —— 调用方必须给用户可见提示，不得静默");
+    Check(hardenedSleeps.SequenceEqual(new[] { 15, 30, 60, 120, 150, 150, 150, 150, 150 }),
+          "Hardened：第二程退避 15ms 起步、封顶 150ms、共 10 次（总窗口约 1.1s，覆盖远程工具典型占用时长）",
+          $"实际 {string.Join("/", hardenedSleeps)}ms");
+    Check(hardenedSleeps.Count == SafeClipboard.HardenedWin32Attempts - 1,
+          "Hardened：最后一次尝试后不得再等一拍（等待只在尝试之间）");
+
+    Check(!SafeClipboard.TrySetTextHardened("", _ => { }, _ => true)
+          && !SafeClipboard.TrySetTextHardened(null, _ => { }, _ => true),
+          "Hardened：空内容 / null 不得写入");
+    Check(SafeClipboard.HardenedWin32Attempts == 10 && SafeClipboard.HardenedWin32MaxDelayMs == 150,
+          "Hardened 默认参数必须是 10 次 / 封顶 150ms（改动会同时改变所有调用点行为）");
+
     }
 
     // ══════════════════ [6] Skill 目录扫描与解析 SkillCatalog ══════════════════

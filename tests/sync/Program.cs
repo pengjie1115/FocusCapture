@@ -101,6 +101,7 @@ internal static partial class Program
             Run("文件仓库", TestFileRepository);           // 句柄红线 / 合并规则 / 淘汰保护 / 数据目录校验（2026-09-16）
             Run("拖放保存", TestDragDropSave);             // 判定顺序 / 取值口径 / 命名规则 / 零副作用（2026-09-16）
             Run("Agent 工具", TestAgentTools);             // 原地改行 / 回收站兜底 / 表格解析 / PDF 边界 / 时间上下文（2026-09-17）
+            Run("AI 文件工具", TestAgentFsTools);          // 白名单守护 / 读写闭环 / .bak 备份 / 回收站删除 / 弹窗加白（2026-10-01）
             Run("修改时间+重复检测", TestModifiedTimeAndDuplicate); // 改标记落盘/解析 / 历史与未到期不写 / FindDuplicate（2026-09-22）
             Run("标记行挂靠", TestMarkerAttach);           // 跨文件 ref 挂靠 / 孤儿卡删除 / 编辑=替换（2026-09-20）
             await RunAsync("Skill 执行", TestSkillRunner);  // 路径越界拒绝 / 真实执行 / 同目录 import / 防假成功（2026-09-20）
@@ -904,6 +905,43 @@ print(json.dumps({
         Check(settingsXaml.Contains("x:Name=\"ChatShadeSlider\"") && settingsCs.Contains("ChatThemeService.Apply"),
               "设置「显示」板块必须有「AI 问答界面明暗」滑块且拖动实时 Apply（DynamicResource 全窗跟随）",
               "滑块缺失或拖动不生效 = 明暗调节没接通");
+
+        var appSrc = File.ReadAllText(Path.Combine(repoRoot, "App.xaml.cs"));
+        var win32Src = File.ReadAllText(Path.Combine(repoRoot, "Services", "Win32.cs"));
+
+        // ── 4b+. Chat_ 引用全覆盖（2026-10-01 补：Chat_BBBBBB 漏网导致加号不渲染、
+        //         Chat_E08080 漏网让右键菜单 Brush() 抛 KeyNotFoundException —— 对账必须机器做）──
+        var allChatRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var src in new[] { aiXaml, sideXaml, aiCs })
+            foreach (System.Text.RegularExpressions.Match m
+                     in System.Text.RegularExpressions.Regex.Matches(src, "Chat_[0-9A-Fa-f]{6}"))
+                allChatRefs.Add(m.Value);
+        var missingKeys = allChatRefs.Where(k => !ChatThemeService.Palette.ContainsKey(k)).ToList();
+        Check(missingKeys.Count == 0,
+              "XAML/CS 引用的每个 Chat_ 角色都必须在 Palette 有条目（DynamicResource 解析失败=图标不渲染；Brush() 直接索引=抛异常）",
+              $"缺条目：{string.Join("、", missingKeys)}");
+
+        // ── 4b++. AI 问答修复五项 + 剪贴板加固 + 文件工具接线（2026-10-01）──
+        Check(aiCs.Contains("Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.V")
+              && aiCs.Contains("TryGetClipboardFiles(data) is { Length: > 0 } files"),
+              "Ctrl+V 必须在 PreviewKeyDown 接管 FileDrop（RichTextBox 对纯文件判 CanExecute=false，粘贴事件根本不触发）");
+        Check(aiCs.Contains("EnsureOpaqueIfBlankAlpha"),
+              "粘贴取图必须做 alpha 体检（微信截图写进剪贴板的位图 alpha 全 0，不解出来就是白板）");
+        Check(aiCs.Contains("remove.MouseLeftButtonDown") && !aiCs.Contains("remove.MouseLeftButtonUp"),
+              "附件小叉必须用 MouseLeftButtonDown（RichTextBox 按下即捕获鼠标，Up 事件永远到不了小叉 = 点了没反应）");
+        Check(aiCs.Contains("e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.Control")
+              && aiCs.Contains("OpenDrawer(!_drawerOpen);"),
+              "Ctrl+B 必须切换侧边栏且在 PreviewKeyDown 拦下（RichTextBox 里 Ctrl+B 是加粗命令）");
+        Check(appSrc.Contains("ShouldThrowOnCopyOrCutFailure = true"),
+              "原生复制失败必须抛出而非静默（远程工具占用剪贴板时「复制没反应」要能被感知）");
+        Check(win32Src.Contains("WriteClipboardText") && win32Src.Contains("CF_UNICODETEXT"),
+              "Win32 必须有剪贴板文本固化写入（OLE 失败后的第二程兜底；立即渲染不依赖宿主进程存活）");
+        Check(new AppSettings().AiFsToolsEnabled == false && new AppSettings().AiAllowedDirs != null
+              && new AppSettings().AiAllowedDirs.Count == 0,
+              "AI 文件工具必须默认关 + 白名单默认空（关着时工具不注册，行为与没有这组工具完全一致）");
+        Check(aiCs.Contains("if (_settings.AiFsToolsEnabled)") && aiCs.Contains("new DeletePathTool")
+              && aiCs.Contains("AskAllowDirAsync") && aiCs.Contains("UiThread.AskAsync"),
+              "文件工具必须挂总开关注册 + 加白弹窗必须经 UiThread 封送（工具体在线程池线程，直接弹窗必炸）");
 
         // ── 4c. 快捷选项协议（2026-09-27：[[OPTIONS:a|b]] 标记 → 气泡胶囊按钮 + 起手页胶囊）──
         var o1 = QuickOptions.Parse("好的，记下了。\n[[OPTIONS:去|不去|再想想]]", out var c1);
@@ -3035,6 +3073,174 @@ print(json.dumps({
               "既没给 handle 也没给 file_id 时，要给出可执行的指引（让用户去点『选择文件』）", noSource);
 
         FileHandleStore.Clear();
+    }
+
+    // ══════════════════ AI 本地文件工具（2026-10-01，授权目录制） ══════════════════
+    private static void TestAgentFsTools()
+    {
+        Console.WriteLine("[AI 文件工具] 白名单守护 / 读写闭环 / .bak 备份 / 回收站删除 / 弹窗加白");
+
+        var root = Path.Combine(_sandbox, "agent-fstools");
+        var allowed = Path.Combine(root, "allowed");
+        Directory.CreateDirectory(allowed);
+
+        var settings = new AppSettings();
+
+        // ── ① FsGuard：白名单边界（安全闸，最重要） ──
+
+        var empty = FsGuard.Check(Path.Combine(allowed, "a.txt"), settings);
+        Check(!empty.Ok && empty.Error.Length == 0,
+              "白名单为空时：不直接报错、交给弹窗加白流程（Ok=false 且 Error 为空）");
+        Check(empty.SuggestDir == Path.GetFullPath(allowed), "白名单外路径的 SuggestDir 必须指向所属目录（弹窗授权范围）",
+              empty.SuggestDir);
+
+        FsGuard.AllowDir(allowed, settings);
+        Check(FsGuard.Check(Path.Combine(allowed, "a.txt"), settings).Ok, "白名单内的路径必须放行");
+        Check(settings.AiAllowedDirs.Contains(Path.GetFullPath(allowed)), "AllowDir 必须把目录写进设置（内存态）");
+        Check(File.Exists(FocusCapturePaths.Combine("settings.json"))
+              && File.ReadAllText(FocusCapturePaths.Combine("settings.json")).Contains("agent-fstools"),
+              "AllowDir 必须触发 settings.Save 持久化（沙箱设置文件里能读到授权目录；否则弹窗加白重启即失效）");
+
+        var outside = Path.Combine(root, "outside", "x.txt");
+        Check(!FsGuard.Check(outside, settings).Ok, "白名单外的路径必须被拒");
+
+        var escape = Path.Combine(allowed, "..", "outside2", "x.txt");
+        Check(!FsGuard.Check(escape, settings).Ok, ".. 逃逸出白名单的路径必须被拒（GetFullPath 规范化后不在任何授权目录内）");
+
+        Check(!FsGuard.Check(@"C:\Windows\System32", settings).Ok, "系统目录（白名单外）必须被拒");
+
+        // 分隔符边界：授权 C:\a 不能放行 C:\ab（前缀撞车）
+        var dirA = Path.Combine(root, "a");
+        Directory.CreateDirectory(dirA);
+        var dirAb = Path.Combine(root, "ab");
+        var s2 = new AppSettings();
+        FsGuard.AllowDir(dirA, s2);
+        Check(!FsGuard.Check(Path.Combine(dirAb, "f.txt"), s2).Ok, "前缀撞车：授权「a」不得放行「ab」子目录（分隔符边界对齐）");
+        Check(FsGuard.Check(Path.Combine(dirA, "sub", "f.txt"), s2).Ok, "授权目录的子路径必须放行");
+
+        // ── ② list_dir + read_file + write_file：真做事闭环 ──
+
+        Func<string, Task<bool>> askAllow = _ => Task.FromResult(true);   // 白名单已就绪，本段直接放行
+        var listTool = new ListDirTool(settings, askAllow);
+        var readTool = new ReadFileTool(settings, askAllow);
+        var writeTool = new WriteFileTool(settings, askAllow);
+        var moveTool = new MovePathTool(settings, askAllow);
+        var deleteTool = new DeletePathTool(settings, askAllow);
+
+        Check(listTool.IsReadOnly && readTool.IsReadOnly,
+              "list_dir / read_file 必须是只读工具（不触发写确认闸；白名单外由 FsGuard 弹窗把关）");
+        Check(!writeTool.IsReadOnly && !moveTool.IsReadOnly && !deleteTool.IsReadOnly,
+              "write/move/delete 必须是非只读（过 AgentRunService 写确认闸的前提）");
+
+        var newOut = writeTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\",\"content\":\"第一行中文\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(!newOut.StartsWith("错误"), "write_file new：新文件写入成功", newOut);
+        Check(File.ReadAllText(Path.Combine(allowed, "笔记.txt")) == "第一行中文", "写入内容必须原样落盘");
+
+        var newAgain = writeTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\",\"content\":\"覆盖\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(newAgain.StartsWith("错误") && newAgain.Contains("overwrite"),
+              "write_file new 撞已存在文件必须报错并指引 overwrite（防 AI 默默覆盖）", newAgain);
+        Check(File.ReadAllText(Path.Combine(allowed, "笔记.txt")) == "第一行中文", "报错时原文件必须原封不动");
+
+        var appendOut = writeTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\",\"content\":\"\\n第二行\",\"mode\":\"append\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(!appendOut.StartsWith("错误") && File.ReadAllText(Path.Combine(allowed, "笔记.txt")).Contains("第二行"),
+              "write_file append：追加生效", appendOut);
+
+        var overwriteOut = writeTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\",\"content\":\"全新内容\",\"mode\":\"overwrite\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        var bak = Directory.GetFiles(allowed, "笔记.txt.bak-*");
+        Check(!overwriteOut.StartsWith("错误") && bak.Length == 1
+              && File.ReadAllText(bak[0]).Contains("第二行"),
+              "write_file overwrite：覆盖生效且原文件自动备份 .bak（回收站兜不了覆盖，备份补的就是这个洞）", overwriteOut);
+        Check(overwriteOut.Contains("备份"), "覆盖成功的返回文本必须告诉模型备份路径", overwriteOut);
+
+        var readOut = readTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(readOut.Contains("全新内容"), "read_file：读回覆盖后的内容", readOut);
+
+        var binPath = Path.Combine(allowed, "blob.bin");
+        File.WriteAllBytes(binPath, new byte[] { 0x50, 0x00, 0x4B, 0x00 });
+        var binOut = readTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(binPath)}\"}}", CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check(binOut.StartsWith("错误") && binOut.Contains("二进制"),
+              "read_file：二进制文件（含 NUL）必须拒绝读内容", binOut);
+
+        var listOut = listTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(allowed)}\"}}", CancellationToken.None).GetAwaiter().GetResult();
+        Check(listOut.Contains("笔记.txt") && listOut.Contains("blob.bin") && listOut.Contains(".bak-"),
+              "list_dir：能列出目录内容（名称 / 大小 / 修改时间）", listOut);
+
+        var bigPath = Path.Combine(allowed, "big.txt");
+        File.WriteAllText(bigPath, new string('x', FsGuard.MaxReadBytes + 1));
+        var bigOut = readTool.ExecuteAsync($"{{\"path\":\"{JsonEscape(bigPath)}\"}}", CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check(bigOut.StartsWith("错误") && bigOut.Contains("1MB"), "read_file：超过 1MB 必须拒绝", bigOut);
+
+        // ── ③ move_path ──
+
+        var moveOut = moveTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "笔记.txt"))}\",\"to\":\"{JsonEscape(Path.Combine(allowed, "改名.txt"))}\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(!moveOut.StartsWith("错误") && File.Exists(Path.Combine(allowed, "改名.txt"))
+              && !File.Exists(Path.Combine(allowed, "笔记.txt")),
+              "move_path：重命名生效", moveOut);
+
+        var moveConflict = moveTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "blob.bin"))}\",\"to\":\"{JsonEscape(Path.Combine(allowed, "改名.txt"))}\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(moveConflict.StartsWith("错误") && File.Exists(Path.Combine(allowed, "blob.bin")),
+              "move_path：目标已存在必须报错且不动源文件（不覆盖）", moveConflict);
+
+        // ── ④ delete_path：confirm 闸 + 真删除进回收站 ──
+
+        var noConfirm = deleteTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "blob.bin"))}\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(noConfirm.StartsWith("错误") && noConfirm.Contains("confirm") && File.Exists(Path.Combine(allowed, "blob.bin")),
+              "delete_path：缺 confirm 必须拒绝（破坏性动作的双保险之一）", noConfirm);
+
+        var delOut = deleteTool.ExecuteAsync(
+            $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "blob.bin"))}\",\"confirm\":true}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(delOut.Contains("回收站") && !File.Exists(Path.Combine(allowed, "blob.bin")),
+              "delete_path：真删除走 SHFileOperation 进 Windows 回收站（绝不物理删除）", delOut);
+
+        // ── ⑤ 弹窗加白（用户拍板的第二路添加方式） ──
+
+        var s3 = new AppSettings();
+        var askedAgain = new List<string>();
+        var otherDir = Path.Combine(root, "other");
+        Directory.CreateDirectory(otherDir);
+        var w3 = new WriteFileTool(s3, dir => { askedAgain.Add(dir); return Task.FromResult(false); });
+        var denied = w3.ExecuteAsync($"{{\"path\":\"{JsonEscape(Path.Combine(otherDir, "f.txt"))}\",\"content\":\"x\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(denied.StartsWith("错误") && askedAgain.Count == 1 && askedAgain[0] == Path.GetFullPath(otherDir),
+              "白名单外访问必须弹窗（注入委托被调一次，且弹窗范围=所属目录）", denied);
+        Check(s3.AiAllowedDirs.Count == 0, "用户拒绝后白名单必须保持为空（绝不静默绕过）");
+
+        var w4 = new WriteFileTool(s3, dir => { FsGuard.AllowDir(dir, s3); return Task.FromResult(true); });
+        var granted = w4.ExecuteAsync($"{{\"path\":\"{JsonEscape(Path.Combine(otherDir, "f.txt"))}\",\"content\":\"x\"}}",
+            CancellationToken.None).GetAwaiter().GetResult();
+        Check(!granted.StartsWith("错误") && s3.AiAllowedDirs.Contains(Path.GetFullPath(otherDir))
+              && File.Exists(Path.Combine(otherDir, "f.txt")),
+              "用户同意后：目录入白名单 + 操作继续执行（第二路添加闭环）", granted);
+
+        // ── ⑥ DescribeAction 人话（确认弹窗给用户看的就是它） ──
+
+        Check(deleteTool.DescribeAction($"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "x.txt"))}\"}}").Contains("回收站"),
+              "delete 的 DescribeAction 必须写明「移入 Windows 回收站」（写确认弹窗里用户看到的是它）");
+        Check(writeTool.DescribeAction(
+              $"{{\"path\":\"{JsonEscape(Path.Combine(allowed, "x.txt"))}\",\"mode\":\"overwrite\"}}").Contains("备份"),
+              "覆盖写的 DescribeAction 必须写明「自动备份 .bak」");
+
+        static string JsonEscape(string p) => p.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
     /// <summary>v3.10 检查点：修改时间改标记（落盘/解析/规则）+ 添加前重复检测 FindDuplicate。</summary>

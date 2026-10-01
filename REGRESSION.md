@@ -14,7 +14,7 @@
 > **别通读本文件。** 按三步走，只读你要的那几段。
 
 1. **判级 + 定层** → §一 枢纽清单（L0/L1/L2）+ §二 触发表（这次要不要跑慢层）。
-2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（157 条，秒级）/ 慢层 `test -Slow`（740 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
+2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（157 条，秒级）/ 慢层 `test -Slow`（789 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
 3. **人工清单** → 按改动位置查下表；若动了 §一 里的 **L2** 文件，再走 §三 A 级全量。
 
 | 动了什么 | 人工清单 |
@@ -42,6 +42,7 @@
 | AI 整理（笔记 / 待办一键整理 + 规则化（预置 4 条 + 自定义）+ 提取待办建真待办 + 预览窗非模态 + 待办汇总「点编辑框以外自动保存」） | §四 B-23 |
 | 会话分组与侧边栏 / 分组视图 | §四 B-21 |
 | AI 问答搜索 / 标题栏两态 / 会话级模型 | §四 B-22 |
+| **AI 本地文件工具（授权目录制 / 回收站删除）+ 剪贴板加固 + AI 问答五项修复** | §四 B-24 ← **改前先读段首「三道闸」** |
 | 改本文档本身、重扫枢纽引用数 | §五 维护约定 |
 
 **两条读法约定**（省得误判）：
@@ -110,7 +111,7 @@
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
 | **快层** | `tests/` | **157** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-27 规则化 +11 条、云端核对判定 +12 条；**2026-10-01 会话列表展示规则 +9 条**后实测 **0.58 秒**） | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **740** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Models/TidyRule.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatSessionService.cs`、`Services/ChatListRules.cs`、`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`** 时**；交付前 |
+| **慢层** | `tests/sync/` | **789** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Models/TidyRule.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatSessionService.cs`、`Services/ChatListRules.cs`、`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`、**`Services/Agent/`（含 2026-10-01 AI 文件工具）、`Services/SafeClipboard.cs`、`Services/Win32.cs`、`Services/ChatThemeService.cs`** 时**；交付前 |
 
 > **2026-09-25 物理分层（读本节前必知）**：原快层住着 6 个「真做事」的检查组 —— `[5]` 剪贴板容错、`[6]` Skill 目录扫描、
 > `[7]` 运行时部件候选目录、`[8]` 子进程流式读、`[9]` 内置技能落地与恢复、`[10]` 运行时下载流程。
@@ -1295,7 +1296,55 @@
 **必须真实环境手动验证**：**整理质量本身**（是否真的条理清楚、有没有漏要点、有没有自作主张改写）。
 自动化只能守「闸门」与「清洗」，整理得好不好是模型能力问题，只能人看。
 
+### B-24 AI 本地文件工具 + 剪贴板加固 + AI 问答五项修复（Services/Agent/FileSystemTools.cs + SafeClipboard + Win32 + ChatThemeService + AIDialogWindow + SettingsWindow「AI 功能」板块 + App.xaml.cs，2026-10-01 新增）
 
+> 设计依据：三道闸与工具能力边界见 `Services/Agent/FileSystemTools.cs` 类注释；
+> 剪贴板双程加固机制见 `Services/SafeClipboard.cs` 的 `TrySetTextHardened` 注释。决策记录见 2026-10-01 会话（用户逐项拍板）。
+
+> **三道闸（改这块之前必读）**：
+> ① **总开关 `AiFsToolsEnabled` 默认关，关着时文件工具根本不注册、模型看不见** —— 白名单再怎么配都没用。
+> ② **路径边界只由 `FsGuard` 守**：白名单前缀校验（分隔符对齐防 `C:\a` 放行 `C:\ab`）、GetFullPath 规范化防 `..` 逃逸、
+>    UNC/网络盘一律拒绝（SHFileOperation 在网络路径上不进回收站会变物理删除）。**白名单外 ≠ 直接失败**：
+>    走「弹窗问用户是否加入白名单」流程（用户拍板的第二路添加方式），拒绝即取消；该弹窗经 `UiThread.AskAsync` 封送
+>    （B-16 红线④）且**独立于写确认弹窗开关、不可被设置关掉**。
+> ③ **删除一律 `SHFileOperation + FOF_ALLOWUNDO` 进 Windows 回收站**（`RecycleBin.Delete`，STA 线程执行），
+>    绝不物理删除；**覆盖写先自动备份 `.bak-时间戳`** —— 回收站只兜「删除」兜不了「覆盖」，备份补的就是这个洞。
+>    ⚠ 注意项目里有两个「回收站」：应用内回收站（`RecycleBinService`，笔记行 JSON，B-7/B-16）与本组新增的
+>    **Windows 回收站**（`FileSystemTools.cs` 内 `RecycleBin` 类）—— 同名不同物，别混。
+
+> **隐私边界（红线 12 的受控突破）**：`read_file` 读到的内容会进对话上下文、随请求发给大模型提供商 ——
+> 该边界已写进设置页警告文案与工具描述；授权目录的动作 = 用户背书。`read_file` 拒绝二进制（NUL 探测）、上限 1MB。
+
+**本轮同时交付的剪贴板加固（修复⑤）**：`SafeClipboard.TrySetTextHardened`（双程：OLE 1 次失败 → Win32
+`CF_UNICODETEXT` 立即渲染固化，退避 15ms 起步封顶 150ms×10）；**第二程顺带清掉「OleSetClipboard 成功而
+OleFlushClipboard 被远程工具打断」的延迟渲染中间态** —— 那正是「剪贴板查看器看不到、粘贴却出得来」的病根。
+6 处写入点全部换加固入口 + 失败可见；`Win32.GetClipboardText` 读取加 3 次重试；App 启动开
+`ShouldThrowOnCopyOrCutFailure`（原生 Ctrl+C/X 失败不再静默）。**剪贴板互斥是系统设计，本方案是「接近根治」
+（拉长重试窗口覆盖远程工具占用时长 + 失败可感知），不是 100% 根治** —— 操作面缓解：关远程工具的剪贴板同步。
+
+**本轮 AI 问答五项修复**：①加号不渲染（`Chat_BBBBBB` 漏进色板）→ 顺手对账出第二个漏网 `Chat_E08080`
+（`Brush()` 直接索引会抛 KeyNotFoundException），慢层有「Chat_ 引用全覆盖」断言防复发；
+③附件小叉 `MouseLeftButtonUp` 在 RichTextBox 里永远收不到（按下即被捕获鼠标）→ 改 `MouseLeftButtonDown`；
+④资源管理器复制文件后 Ctrl+V 无反应（WPF 对纯 FileDrop 判 CanExecute=false，Pasting 事件根本不触发）
+→ `InputBox_PreviewKeyDown` 接管 FileDrop；②微信截图粘贴白板（位图 alpha 全 0）→ `EnsureOpaqueIfBlankAlpha` 体检强制不透明；
+新功能：Ctrl+B 收起/展开侧边栏（PreviewKeyDown 拦下，RichTextBox 里 Ctrl+B 是加粗命令）。
+
+**机器可验**：慢层「AI 文件工具」组 32 条（白名单边界 / 读写 move 真闭环 / .bak / confirm 闸 / 弹窗加白两态 /
+DescribeAction）、「剪贴板容错」组扩至 18 条（+7 条 Hardened 契约）、「AI 分组与批量 UI」组 +8 条
+（Chat_ 引用全覆盖 + 五项修复源码断言）；慢层总数 740 → **789**。
+
+| 验收动作 | 期望现象 |
+|---|---|
+| 开着远程工具（向日葵/ToDesk 等）在灵感速览、AI 输入框各复制一次 ⚠ | 复制成功（或失败时有提示），剪贴板查看器立即可见内容；**不再是「看不到但能粘出来」** |
+| 用微信截图 → 到 AI 输入框 Ctrl+V ⚠ | 附件为**正常图片**而非白板；日志出现「alpha 全 0…已强制不透明」 |
+| 资源管理器复制任意文件 → AI 输入框 Ctrl+V ⚠ | 文件进附件（白名单格式）；不支持的格式弹「不支持的格式」 |
+| AI 输入框 Ctrl+B | 侧边栏 180ms 动画收起/展开；光标处不会出现加粗 |
+| 点附件卡片上的 × | 附件立即移除（此前点了没反应） |
+| 设置开「允许 AI 读写本地文件」→ 让 AI「列出 D:\某目录 的文件」（首次） ⚠ | 弹「AI 文件访问授权」窗；同意后能列出，且目录出现在设置的白名单列表 |
+| 拒绝上述弹窗 | AI 明确说被取消，且不反复重试 |
+| 让 AI「把某文件删了」 ⚠ | 文件出现在 **Windows 回收站**（可还原），不是永久删除 |
+| 让 AI「覆盖改某文件内容」 ⚠ | 同目录出现 `.bak-时间戳` 备份文件，原内容可找回 |
+| 设置里移除某授权目录 | AI 立即无法访问该目录（工具报错指引重新授权） |
 
 ### 谁更新、什么时候更新
 
