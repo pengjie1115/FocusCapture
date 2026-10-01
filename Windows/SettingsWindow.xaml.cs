@@ -733,7 +733,8 @@ public partial class SettingsWindow : Window
         {
             var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
 
-            var revoke = new Button { Content = "撤销", Width = 56, Height = 24, Tag = name };
+            // 不用固定 Height：窗口隐式按钮样式 Padding=12,6 + 13px 字，固定 24 会把文字下半截掉（2026-10-01 实测）
+            var revoke = new Button { Content = "撤销", Width = 56, MinHeight = 24, Tag = name };
             revoke.Click += BtnSkillRevoke_Click;
             DockPanel.SetDock(revoke, Dock.Right);
             row.Children.Add(revoke);
@@ -1406,7 +1407,7 @@ public partial class SettingsWindow : Window
         {
             var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
 
-            var remove = new Button { Content = "移除", Width = 56, Height = 24, Tag = dir };
+            var remove = new Button { Content = "移除", Width = 56, MinHeight = 24, Tag = dir };
             remove.Click += BtnAiFsRemoveDir_Click;
             DockPanel.SetDock(remove, Dock.Right);
             row.Children.Add(remove);

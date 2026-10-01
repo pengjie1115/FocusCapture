@@ -26,6 +26,17 @@ public partial class App : WpfApp
         // 记录日志 + 弹窗提示 + Handled 继续运行，避免"报错→点确定→闪退"（回收站窗口教训）。
         DispatcherUnhandledException += (_, args) =>
         {
+            // 剪贴板被占用（0x800401D0 CLIPBRD_E_CANT_OPEN）不弹框：WPF 内置 Copy/Cut 在
+            // OleSetClipboard 成功后才走到 Clipboard.Flush() 固化 —— 抛这个异常时数据已进剪贴板
+            // （延迟渲染态），粘贴照常可用，弹"界面错误"是虚惊（2026-10-01 远程工具共开时实测）。
+            // 记 crash.log 便于统计发生频率；AI 问答输入框的 Ctrl+C/X 已自己接管，这里是其他窗口的兜底。
+            if (args.Exception is System.Runtime.InteropServices.COMException ce
+                && ce.ErrorCode == unchecked((int)0x800401D0))
+            {
+                LogCrash("UI-剪贴板占用", args.Exception);
+                args.Handled = true;
+                return;
+            }
             LogCrash("UI", args.Exception);
             args.Handled = true;
             try

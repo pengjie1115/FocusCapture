@@ -862,10 +862,12 @@ public partial class AIDialogWindow : Window
 
     private void InputBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        // Ctrl+C / Ctrl+X：选区含附件卡片时自己接管，原因见 HandleSelectionCopyForAttachment
+        // Ctrl+C / Ctrl+X：自己接管（含附件卡片的选区降级纯文本；纯文本选区走双程加固写入），
+        // 不放行 WPF 内置 Copy/Cut —— 内置命令在 OleSetClipboard 成功后还要 Clipboard.Flush() 固化，
+        // 远程工具占用剪贴板时 Flush 抛 CLIPBRD_E_CANT_OPEN，直接弹「界面错误」crash 框（2026-10-01 实测）。
         if (Keyboard.Modifiers == ModifierKeys.Control && (e.Key == Key.C || e.Key == Key.X))
         {
-            if (HandleSelectionCopyForAttachment(e.Key == Key.X)) e.Handled = true;
+            if (HandleSelectionCopy(e.Key == Key.X)) e.Handled = true;
             return;
         }
 
@@ -901,16 +903,18 @@ public partial class AIDialogWindow : Window
     // ══════════════════ 复制 / 粘贴（2026-09-14 二版加固） ══════════════════
 
     /// <summary>
-    /// 选区里含附件卡片时，复制/剪切走"只放纯文本"的简化路径。
+    /// 输入框复制/剪切统一走这里（Ctrl+C/X 在 PreviewKeyDown 接管）：选区含附件卡片时降级"只放纯文本"，
+    /// 纯文本选区也走双程加固写入。空选区返回 false 放行（默认命令对空选区本就无操作）。
     ///
-    /// 为什么：卡片是 UIElement，默认复制会把整棵可视化树塞进剪贴板的富文本格式
-    /// （实测选区里的卡片在纯文本里只留两个空格，图片本身跨应用传不出去）。
-    /// 用户在输入框里按 Ctrl+C 想复制那段内容时，得到的要么是拿不到、要么是拿到一堆
-    /// 别处认不出的格式 —— 表现就是"复制不出来"。主动降级成纯文本，行为可预期。
+    /// 为什么纯文本也不放行：卡片是 UIElement，默认复制会把整棵可视化树塞进剪贴板的富文本格式
+    /// （实测选区里的卡片在纯文本里只留两个空格，图片本身跨应用传不出去）；而 WPF 内置 Copy/Cut 在
+    /// OleSetClipboard 成功后还要 Clipboard.Flush() 固化，剪贴板被远程工具占用时 Flush 抛
+    /// CLIPBRD_E_CANT_OPEN（2026-10-01 实测 crash 弹窗）。自己走 hardened 写入：有退避重试、失败可见、不抛。
     /// </summary>
-    private bool HandleSelectionCopyForAttachment(bool cut)
+    private bool HandleSelectionCopy(bool cut)
     {
-        if (!SelectionHasAttachment()) return false;
+        var hasAttachment = SelectionHasAttachment();
+        if (!hasAttachment && string.IsNullOrEmpty(InputBox.Selection.Text)) return false;   // 空选区放行
 
         var text = InputBox.Selection.Text;
         if (cut) InputBox.Selection.Text = string.Empty;   // 剪切语义：原文变空
@@ -928,7 +932,10 @@ public partial class AIDialogWindow : Window
             else
             {
                 ClipboardHookService.MarkSelfCopy();   // 别让"剪贴板监控自动存笔记"把这次当成用户复制
-                AppLog.Info("AI", $"复制选区（含附件卡片）：已降级为纯文本，{text.Length} 字");
+                if (hasAttachment)
+                    AppLog.Info("AI", $"复制选区（含附件卡片）：已降级为纯文本，{text.Length} 字");
+                else
+                    AppLog.Info("AI", $"复制选区：{text.Length} 字");
             }
         }
         catch (Exception ex)
@@ -3775,10 +3782,18 @@ public partial class AIDialogWindow : Window
         runtime.AgentRulesAdded = true;
     }
 
+    /// <summary>注册表构建时的文件工具开关快照 —— 开关翻转后缓存作废重建（见 EnsureAgentRegistry）</summary>
+    private bool _registryBuiltWithFsTools;
+
     /// <summary>装配工具注册表：本地工具 + 各外发目的地能力（新增目的地在此注册一行）</summary>
     private void EnsureAgentRegistry()
     {
-        if (_registry != null) return;
+        // 缓存自愈（2026-10-01 实测）：窗口单例常驻，注册表构建后「允许 AI 读写本地文件」开关的
+        // 翻转不会反映进来 —— 用户先开窗口后勾开关，registry 永远停在"无文件工具"的状态，
+        // 模型只能如实答"没有工具"。发现快照与当前开关不一致就作废重建。
+        // 白名单增删不需要重建：工具持有 settings 引用，每次执行时实时读。
+        if (_registry != null && _registryBuiltWithFsTools == _settings.AiFsToolsEnabled) return;
+        _registryBuiltWithFsTools = _settings.AiFsToolsEnabled;
         var registry = new AgentToolRegistry();
         registry.Register(new SearchNotesTool(_noteService));
         registry.Register(new ListTodosTool(_noteService));
