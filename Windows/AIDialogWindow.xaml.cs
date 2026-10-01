@@ -3828,8 +3828,12 @@ public partial class AIDialogWindow : Window
         // 文件记录维护 + 文档读取（2026-09-17）：read_cloud_file 已支持 docx/xlsx/pdf；
         // update_file_meta 只改本机显示名/标签，**不动云端文件名**（描述里已写明，防模型谎报"已改名"）。
         registry.Register(new UpdateFileMetaTool());
-        registry.Register(new ReadSpreadsheetTool());
-        registry.Register(new ReadPdfTool());
+        // 文档读取（2026-09-17 handle/file_id；2026-10-01 注入授权上下文 + 新增 read_docx）：
+        // path 来源受「允许 AI 读写本地文件」总开关 + FsGuard 白名单双重约束（用户拍板的受控放开）；
+        // read_docx 补齐「AI 找得到 Word 却读不了」的能力洞，老版 .doc 明确不支持（工具内如实拒绝）。
+        registry.Register(new ReadSpreadsheetTool(_settings, AskAllowDirAsync));
+        registry.Register(new ReadPdfTool(_settings, AskAllowDirAsync));
+        registry.Register(new ReadDocxTool(_settings, AskAllowDirAsync));
 
         var getNote = new GetNoteDestination(_settings);
         foreach (var capability in getNote.Capabilities)

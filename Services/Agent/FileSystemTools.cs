@@ -95,6 +95,34 @@ public static class FsGuard
         settings.Save();
         AppLog.Info("Agent", $"AI 文件访问白名单已加入目录：{full}");
     }
+
+    /// <summary>
+    /// 路径门禁（从 FsToolBase.ExecuteAsync 抽出的公共流程，文档工具的 path 来源同走这一道，
+    /// 2026-10-01）：FsGuard 校验 → 白名单外弹窗问用户（拒绝即取消）→ 加白后复查。
+    /// 返回 Guard = 通过后的校验结果；Error 非空 = 直接返回给模型的错误文案。
+    /// </summary>
+    public static async Task<(FsGuardResult Guard, string? Error)> GateAsync(
+        string path, AppSettings settings, Func<string, Task<bool>> askAllowDir)
+    {
+        var guard = Check(path, settings);
+        if (!guard.Ok && guard.Error.Length > 0) return (guard, guard.Error);   // 路径非法 / 网络路径：弹窗无意义
+
+        if (!guard.Ok)
+        {
+            // 目录不在白名单：按用户拍板的第二路添加方式，弹窗问是否加入（拒绝即取消，绝不绕过）
+            bool allowed;
+            try { allowed = await askAllowDir(guard.SuggestDir).ConfigureAwait(false); }
+            catch (Exception ex) { AppLog.Warn("Agent", "目录授权弹窗异常（按拒绝处理）：" + ex.Message); allowed = false; }
+            if (!allowed)
+                return (guard, $"错误：用户拒绝将「{guard.SuggestDir}」加入 AI 文件访问白名单，操作已取消。不要对同一目录反复请求。");
+            AllowDir(guard.SuggestDir, settings);
+            guard = Check(path, settings);
+            if (!guard.Ok)
+                return (guard, $"错误：目录「{guard.SuggestDir}」加入白名单后仍未通过校验，操作取消。");
+        }
+
+        return (guard, null);
+    }
 }
 
     /// <summary>本组工具共用骨架：参数取路径 → FsGuard 校验 → 白名单外弹窗问用户 → 校验通过后执行。</summary>
@@ -118,22 +146,8 @@ public abstract class FsToolBase : AgentTool
         if (!ToolArgs.TryGetString(argumentsJson, "path", out var path))
             return "错误：缺少参数 path。";
 
-        var guard = FsGuard.Check(path, Settings);
-        if (!guard.Ok && guard.Error.Length > 0) return guard.Error;   // 路径非法 / 网络路径：弹窗无意义
-
-        if (!guard.Ok)
-        {
-            // 目录不在白名单：按用户拍板的第二路添加方式，弹窗问是否加入（拒绝即取消，绝不绕过）
-            var allowed = false;
-            try { allowed = await AskAllowDir(guard.SuggestDir).ConfigureAwait(false); }
-            catch (Exception ex) { AppLog.Warn("Agent", "目录授权弹窗异常（按拒绝处理）：" + ex.Message); }
-            if (!allowed)
-                return $"错误：用户拒绝将「{guard.SuggestDir}」加入 AI 文件访问白名单，操作已取消。不要对同一目录反复请求。";
-            FsGuard.AllowDir(guard.SuggestDir, Settings);
-            guard = FsGuard.Check(path, Settings);
-            if (!guard.Ok)
-                return $"错误：目录「{guard.SuggestDir}」加入白名单后仍未通过校验，操作取消。";
-        }
+        var (guard, gateError) = await FsGuard.GateAsync(path, Settings, AskAllowDir).ConfigureAwait(false);
+        if (gateError != null) return gateError;
 
         return await RunAsync(guard, argumentsJson, ct).ConfigureAwait(false);
     }
