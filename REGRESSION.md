@@ -14,7 +14,7 @@
 > **别通读本文件。** 按三步走，只读你要的那几段。
 
 1. **判级 + 定层** → §一 枢纽清单（L0/L1/L2）+ §二 触发表（这次要不要跑慢层）。
-2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（157 条，秒级）/ 慢层 `test -Slow`（789 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
+2. **机器能验的先跑** → §二。快层 `dev.ps1 test`（157 条，秒级）/ 慢层 `test -Slow`（793 条）/ 交付点 `ready`（编译 + 快 + 慢 + 文档引用 + **条数核对**）。
 3. **人工清单** → 按改动位置查下表；若动了 §一 里的 **L2** 文件，再走 §三 A 级全量。
 
 | 动了什么 | 人工清单 |
@@ -111,7 +111,7 @@
 | 层 | 位置 | 条数 | 特征 | 什么时候必须跑 |
 |---|---|---|---|---|
 | **快层** | `tests/` | **157** | 纯逻辑，秒级（2026-09-25 物理分层后实测 **0.65 秒**；2026-09-27 规则化 +11 条、云端核对判定 +12 条；**2026-10-01 会话列表展示规则 +9 条**后实测 **0.58 秒**） | **每次代码改动后** |
-| **慢层** | `tests/sync/` | **789** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Models/TidyRule.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatSessionService.cs`、`Services/ChatListRules.cs`、`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`、**`Services/Agent/`（含 2026-10-01 AI 文件工具）、`Services/SafeClipboard.cs`、`Services/Win32.cs`、`Services/ChatThemeService.cs`** 时**；交付前 |
+| **慢层** | `tests/sync/` | **793** | 需引用主项目（编译较慢）；含 6 个「真做事」组（原快层 `[5]`~`[10]`，2026-09-25 迁入）；**每组耗时直接输出** | **改动涉及 `Services/Sync/`、`Services/AI/`、`Services/NoteService.cs`、`Models/SyncNote.cs`、`Models/NoteEntry.cs`、`Models/TidyRule.cs`、`Services/TodoEditService.cs`、`Windows/AIDialogWindow*`、`Services/Skills/`、`Services/UiThread.cs`、`Windows/SkillAuthWindow*`、`Windows/SettingsWindow*`、`Models/AppSettings.cs`、`Services/Files/`、`Services/Baidu/`、`Services/DragDropSaveService.cs`、`Services/AppIconService.cs`、`Windows/FloatBall*`、`Windows/DropAction*`、`builtin-skills/`、`FocusCapture.csproj`、`App.xaml`、`App.xaml.cs`、`Services/DarkTitleBar.cs`、**`Services/ChatSessionService.cs`、`Services/ChatListRules.cs`、`Services/ChatGroup*.cs`、`Services/ChatSearch*.cs`、`Services/Sync/ChatGroupMerge.cs`、`Windows/Controls/ChatSidebar.xaml*`、`Windows/Controls/ChatHistoryTypes.cs`、`Windows/MainWindow.xaml*`、`Windows/ChatSearchPanel*`、`Windows/QuickViewWindow*`、`Windows/TodoSummaryWindow*`、`Windows/NoteEditWindow*`、`Windows/AiTidy*`、**`Services/Agent/`（含 2026-10-01 AI 文件工具）、`Services/SafeClipboard.cs`、`Services/Win32.cs`、`Services/ChatThemeService.cs`** 时**；交付前 |
 
 > **2026-09-25 物理分层（读本节前必知）**：原快层住着 6 个「真做事」的检查组 —— `[5]` 剪贴板容错、`[6]` Skill 目录扫描、
 > `[7]` 运行时部件候选目录、`[8]` 子进程流式读、`[9]` 内置技能落地与恢复、`[10]` 运行时下载流程。
@@ -1331,7 +1331,7 @@ OleFlushClipboard 被远程工具打断」的延迟渲染中间态** —— 那�
 
 **机器可验**：慢层「AI 文件工具」组 32 条（白名单边界 / 读写 move 真闭环 / .bak / confirm 闸 / 弹窗加白两态 /
 DescribeAction）、「剪贴板容错」组扩至 18 条（+7 条 Hardened 契约）、「AI 分组与批量 UI」组 +8 条
-（Chat_ 引用全覆盖 + 五项修复源码断言）；慢层总数 740 → **789**。
+（Chat_ 引用全覆盖 + 五项修复源码断言）；慢层总数 740 → 789 → **793**（2026-10-01 二轮验收修复 +4）。
 
 | 验收动作 | 期望现象 |
 |---|---|

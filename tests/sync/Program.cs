@@ -943,6 +943,20 @@ print(json.dumps({
               && aiCs.Contains("AskAllowDirAsync") && aiCs.Contains("UiThread.AskAsync"),
               "文件工具必须挂总开关注册 + 加白弹窗必须经 UiThread 封送（工具体在线程池线程，直接弹窗必炸）");
 
+        // ── 4b+++. 二轮验收修复（2026-10-01）：复制崩溃收尾 / 开关自愈 / 按钮截字 ──
+        Check(aiCs.Contains("private bool HandleSelectionCopy(bool cut)")
+              && aiCs.Contains("string.IsNullOrEmpty(InputBox.Selection.Text)) return false")
+              && !aiCs.Contains("HandleSelectionCopyForAttachment"),
+              "Ctrl+C/X 必须全量接管：纯文本选区也走 hardened 写入，不放行 WPF 内置 Copy/Cut（那条链路的 Clipboard.Flush 在剪贴板被占用时直接抛 CLIPBRD_E_CANT_OPEN 弹 crash 框）");
+        Check(appSrc.Contains("0x800401D0") && appSrc.Contains("UI-剪贴板占用"),
+              "全局异常兜底必须特判 CLIPBRD_E_CANT_OPEN 不弹框（异常发生时数据已进剪贴板延迟渲染态、粘贴照常可用，弹「界面错误」是虚惊；此处是其他窗口的兜底）");
+        Check(aiCs.Contains("_registryBuiltWithFsTools")
+              && aiCs.Contains("_registryBuiltWithFsTools == _settings.AiFsToolsEnabled"),
+              "工具注册表必须按文件工具开关快照自愈重建（窗口单例常驻：先开窗后勾开关，缓存永远停在「无文件工具」，模型只能如实答没有 —— 2026-10-01 实测）");
+        Check(settingsCs.Contains("Content = \"移除\", Width = 56, MinHeight = 24")
+              && settingsCs.Contains("Content = \"撤销\", Width = 56, MinHeight = 24"),
+              "设置页动态行按钮必须用 MinHeight 而非固定 Height=24（隐式样式 Padding=12,6 + 13px 字内容高约 30px，固定 24 把「移除/撤销」文字下半截掉）");
+
         // ── 4c. 快捷选项协议（2026-09-27：[[OPTIONS:a|b]] 标记 → 气泡胶囊按钮 + 起手页胶囊）──
         var o1 = QuickOptions.Parse("好的，记下了。\n[[OPTIONS:去|不去|再想想]]", out var c1);
         Check(o1.Count == 3 && o1[0] == "去" && o1[2] == "再想想"
