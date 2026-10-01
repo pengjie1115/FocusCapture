@@ -1818,9 +1818,10 @@ print(json.dumps({
 
             var instructionContext = ChatGroupService.BuildInstructionContext(instructionGroup.Id);
             Check(instructionContext.Contains("分组指令") && instructionContext.Contains("得到大脑")
-                  && instructionContext.Contains("不能覆盖") && instructionContext.Contains("系统规则"),
-                  "分组指令的注入文本必须标出来源与从属关系",
-                  "不标从属 = 模型会把用户写的分组指令当成最高命令，等于开了一条绕过系统红线的后门");
+                  && instructionContext.Contains("不能覆盖") && instructionContext.Contains("安全红线")
+                  && instructionContext.Contains("默认行为"),
+                  "分组指令的注入文本必须标出「来源 + 优先级分层」（2026-10-01 改：从「从属」改为「分层」）",
+                  "分层写不清 = 要么红线被当成最高命令绕过，要么用户要的「实时指令优先」落空，两种都静默不报错");
             Check(instructionContext.Contains("我的一切指令默认对象都是得到大脑"),
                   "注入文本必须原样带上用户的指令正文");
 

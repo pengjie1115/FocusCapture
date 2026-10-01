@@ -305,6 +305,9 @@ public partial class AIDialogWindow : Window
     /// <summary>剪贴板诊断日志的节流：同一轮粘贴不刷屏</summary>
     private DateTime _lastClipboardLog = DateTime.MinValue;
 
+    /// <summary>侧边栏刷新是否已排队：把同一批数据变更事件合并成一次重扫（见 OnChatDataChanged）</summary>
+    private bool _drawerRefreshPending;
+
     public AIDialogWindow(NoteService noteService, AppSettings settings)
     {
         _noteService = noteService;
@@ -359,6 +362,12 @@ public partial class AIDialogWindow : Window
         }));
         Deactivated += (_, _) => _preview.HoverLeave();   // 窗口失焦时鼠标可能已不在卡片上，预览要跟着收
         Closed += OnWindowClosed;
+
+        // 会话 / 分组数据变更 → 侧边栏实时刷新（2026-10-01 用户实测：以前新建或删除会话后，
+        // 列表要"关掉侧边栏再打开"才更新）。这两个静态事件同样必须成对解绑（见 OnWindowClosed）——
+        // 窗口会被 AIDialogHelper 重建、快照链路每场景一个窗口，不退订就是实例泄漏 + 串场景刷新。
+        ChatSessionService.SessionChanged += OnChatDataChanged;
+        ChatGroupStore.GroupsChanged += OnChatDataChanged;
 
         // 云文件交付（2026-09-16）：工具在后台线程取回文件后，把卡片挂到当前气泡上。
         // 静态事件必须成对解绑（窗口会被 AIDialogHelper 重建），否则旧窗口实例泄漏。
@@ -2599,19 +2608,44 @@ public partial class AIDialogWindow : Window
         _settings.Save();
     }
 
-    /// <summary>刷新抽屉列表（展开中才刷新；启动下拉/操作完成后宿主调用）</summary>
+    /// <summary>刷新抽屉列表 + 分组视图（启动下拉/操作完成后宿主调用，数据变更事件也会调）</summary>
     private void RefreshDrawer()
     {
-        if (!_drawerOpen) return;
-        Sidebar.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
-        // 昵称与头像跟着设置走：在设置里改完，下次刷新侧边栏就同步（不必重开窗口）
-        Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
-        // 分组视图开着的话一并刷（在组里新建会话、删会话之后要立刻反映出来）
+        if (_drawerOpen)
+        {
+            Sidebar.Load(ChatSessionService.ListSessions(), ChatGroupStore.Load());
+            // 昵称与头像跟着设置走：在设置里改完，下次刷新侧边栏就同步（不必重开窗口）
+            Sidebar.SetUser(_settings.ChatUserNickname, ChatAssetsService.LoadUserAvatar());
+        }
+        // 分组视图与侧边栏的显隐**无关**（侧边栏收起时它照样占着主区）——
+        // 以前这两件事被同一个 `if (!_drawerOpen) return` 捆着，导致「收起侧边栏后停在分组里」
+        // 时新建/删会话看不到变化。RefreshGroupView 自己在不在分组视图时会短路，不受影响。
         RefreshGroupView();
     }
 
     /// <summary>同步周期完成后的外部刷新入口（MainWindow 经 AIDialogHelper 调用，拉到新会话立即上列表）</summary>
     internal void RefreshDrawerIfOpen() => RefreshDrawer();
+
+    /// <summary>
+    /// 会话 / 分组数据变更 → 刷新侧边栏（2026-10-01 用户要求"实时更新"）。
+    ///
+    /// 为什么必须**合并**：事件可能在后台线程触发（Agent 工具落盘、批量删分组会逐个会话 Save，几十次），
+    /// 每次都全量重扫磁盘会让界面卡；这里用一个"已排队"标志把同一批事件收成一次刷新，
+    /// 排在 Background 优先级 —— 等界面把手头的事做完再跑。
+    ///
+    /// 收起态不刷是既有的正确行为（列表根本不在图上），由 RefreshDrawer 自己的短路兜住；
+    /// 这里不重复判断，免得同一条规则两处各写一半、将来改一处漏一处。
+    /// </summary>
+    private void OnChatDataChanged()
+    {
+        if (_closed || _drawerRefreshPending) return;
+        _drawerRefreshPending = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _drawerRefreshPending = false;
+            if (!_closed) RefreshDrawerIfOpen();
+        }), DispatcherPriority.Background);
+    }
 
     // ── 历史会话管理（阶段二）：条目操作 / 批量操作 / 分组管理 / 回收站 ──
 
@@ -2744,8 +2778,9 @@ public partial class AIDialogWindow : Window
         GroupViewTitle.Text = isFavorite ? "★  " + groupName : groupName;
 
         var instruction = ChatGroupService.GetInstruction(groupId);
-        GroupInstructionText.Text = instruction.Length > 0 ? "分组指令：" + instruction : "";
-        GroupInstructionText.Visibility = instruction.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // 指令默认**折叠**（2026-10-01 用户要求）：每次进分组都收起，要看点「查看指令」。
+        // 刻意每次 OpenGroupView 都复位，而不是记住上次的展开态 —— 用户明确要的是「默认隐藏」。
+        SetGroupInstructionPanel(instruction, expanded: false);
 
         // 收藏是**视图**不是真分组：不能改名 / 删除 / 加指令。按钮直接隐藏，不给"点了没反应"的假入口。
         var editable = isFavorite ? Visibility.Collapsed : Visibility.Visible;
@@ -3197,20 +3232,55 @@ public partial class AIDialogWindow : Window
     private List<HistoryItemViewModel> GroupPickedItems() =>
         GroupListItems().Where(vm => _groupBatchSelected.Contains(vm.Id)).ToList();
 
-    /// <summary>添加 / 修改分组指令（多行输入）</summary>
+    /// <summary>
+    /// 指令面板三处状态一处管（2026-10-01 用户要求）：文本内容 + 展开与否 + 按钮文案。
+    /// 收敛成一个方法是因为三者必须同步 —— 散开写就会出现「按钮写着查看、其实已经展开」这类对不上。
+    /// 无指令 → 按钮「添加指令」（点了直接进弹窗）；有指令 → 「查看指令 / 收起指令」（点了切换只读区）。
+    /// </summary>
+    private void SetGroupInstructionPanel(string instruction, bool expanded)
+    {
+        var hasInstruction = instruction.Length > 0;
+        var shown = expanded && hasInstruction;
+
+        GroupInstructionText.Text = hasInstruction ? "分组指令：" + instruction : "";
+        GroupInstructionPanel.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        // 文案由纯函数给（ChatListRules.InstructionButtonText）—— 三态对应三个文案，快层检查点守着它
+        BtnGroupInstruction.Content = ChatListRules.InstructionButtonText(hasInstruction, shown);
+    }
+
+    /// <summary>点「添加指令」直接进编辑弹窗；已有指令时点「查看指令」只展开只读区（再点收起）</summary>
     private void BtnGroupInstruction_Click(object sender, RoutedEventArgs e)
     {
+        var instruction = ChatGroupService.GetInstruction(_activeGroupId);
+        if (instruction.Length == 0)
+        {
+            EditGroupInstruction();     // 还没指令 → 直接进弹窗
+            return;
+        }
+        // 已有指令 → 只切换只读区显隐，不直接进弹窗（用户要求「先查看，再决定改不改」）
+        SetGroupInstructionPanel(instruction, GroupInstructionPanel.Visibility != Visibility.Visible);
+    }
+
+    /// <summary>展开区里的「编辑」按钮 → 进编辑弹窗</summary>
+    private void BtnGroupInstructionEdit_Click(object sender, RoutedEventArgs e) => EditGroupInstruction();
+
+    /// <summary>添加 / 修改分组指令（多行输入）。保存后展开只读区，让用户看到结果</summary>
+    private void EditGroupInstruction()
+    {
         var current = ChatGroupService.GetInstruction(_activeGroupId);
-        var text = PromptDialog.Show(this, "添加指令",
+        var text = PromptDialog.Show(this, current.Length > 0 ? "编辑指令" : "添加指令",
             "在这个分组里，你说的话默认是对谁说的？\n" +
             "例：我的一切指令默认对象都是得到大脑（于是你说「上传笔记」即可，不必每次带「到得到大脑」）。\n" +
-            "注意：它每次发消息都会附给模型，但**不能覆盖**系统规则，两者冲突时以系统规则为准。",
+            "优先级：它可以**覆盖系统的默认行为**（例如「写操作前先问一句」这类默认习惯），\n" +
+            "但**不能覆盖安全红线**（不许谎报成功、不许泄露密钥、不许让用户去敲命令行、不可恢复的删除等），冲突时一律以红线为准。",
             current, multiline: true);
         if (text == null) return;               // 取消
 
         ChatGroupService.SetInstruction(_activeGroupId, text);
         RefreshDrawer();
-        OpenGroupView(_activeGroupId, ChatGroupService.GetGroupName(_activeGroupId));   // 重刷标题与指令展示
+        OpenGroupView(_activeGroupId, ChatGroupService.GetGroupName(_activeGroupId));   // 重刷标题
+        // 保存后展开（OpenGroupView 会复位成折叠）—— 否则「弹窗确定完什么都没变」，像没保存上
+        SetGroupInstructionPanel(ChatGroupService.GetInstruction(_activeGroupId), expanded: true);
     }
 
     private void BtnGroupRename_Click(object sender, RoutedEventArgs e)
@@ -3293,6 +3363,20 @@ public partial class AIDialogWindow : Window
         MakeSession("灵感：银发经济的专题要不要做", false, null);
         MakeSession("把这份资料归档到项目里", true, devGroup?.Id);
         MakeSession("上传笔记", false, brainGroup?.Id);
+
+        // 只发文件、不打字的会话（2026-10-01 优化2）：不塞这一条，快照里就看不见「文件：<文件名>」这档标题 ——
+        // 而"标题显示成空白行"正是用户实测到的那个问题。图上没有 = 没守护，所以必须造出来。
+        var fileOnly = new ChatSessionService(ExplainMode.Ask);
+        fileOnly.AddUser("", new List<ChatAttachment>
+        {
+            new()
+            {
+                FileName = "季度报告.pdf", StoredName = "snapshot-quarterly.pdf",
+                Kind = ChatAttachmentKind.Document, SizeBytes = 1024,
+            },
+        });
+        fileOnly.AddAssistant("收到，已经看到这份文件了。");
+        fileOnly.Save();
 
         _settings.ChatUserNickname = "彭杰";
 
@@ -3537,12 +3621,22 @@ public partial class AIDialogWindow : Window
             return;
         }
 
+        // 规则**版本升级**（2026-10-01 v1 → v2）：旧块先清掉，再让 AppendAgentRulesOnce 按新版本重新注入。
+        // 只追加不清理的话，新旧两套规则同时在场（旧版「写操作必须先问」vs 新版「分组指令可覆盖」），
+        // 模型两头都听 —— 这正是改完规则"看起来没生效"的那类坑。
+        if (loaded.Messages.Count > 0 && loaded.Messages[0].Role == ChatRoles.System
+            && !loaded.Messages[0].Content.Contains(AgentRulesMarker)
+            && loaded.Messages[0].Content.Contains(LegacyAgentRulesMarker))
+        {
+            loaded.RemoveSystemRuleBlock(LegacyAgentRulesMarker);
+        }
+
         var runtime = new ConversationRuntime(loaded, loaded.Mode, null)
         {
             // Agent 会话的 system 消息里已含规则文本，避免继续对话时重复注入
             AgentRulesAdded = loaded.Messages.Count > 0
                 && loaded.Messages[0].Role == ChatRoles.System
-                && loaded.Messages[0].Content.Contains("[Agent 工具规则]")
+                && loaded.Messages[0].Content.Contains(AgentRulesMarker)
         };
         _runtimes[loaded.SessionId] = runtime;
         foreach (var m in loaded.Messages)
@@ -3557,17 +3651,36 @@ public partial class AIDialogWindow : Window
     // 2026-09-24：BtnNewSession_Click 已删 —— 标题栏「+ 新会话」按钮随标题栏精简移除，
     // 新会话入口交给侧边栏「新对话」（Sidebar.NewChatRequested → CloseGroupView + StartNewSession）。
 
-    /// <summary>Agent 模式系统规则（每个会话只注入一次）：以工具结果为事实来源 + 写操作先在对话中征询</summary>
+    // Agent 规则块的标记。**改规则正文时必须同步改这里的版本号** —— 见 LoadHistorySession 与
+    // ChatSessionService.RemoveSystemRuleBlock：存量会话带着旧标记，不升版本就不会重新注入，等于改了没生效
+    // （2026-10-01 v1 → v2 就是走的这条路）。
+    private const string AgentRulesMarker = "[Agent 工具规则 v2]";
+    private const string LegacyAgentRulesMarker = "[Agent 工具规则]";
+
+    /// <summary>
+    /// Agent 模式系统规则（每个会话只注入一次）。**分两层**（2026-10-01 用户拍板）：
+    /// 【安全红线】任何来源的指令（含分组指令）都覆盖不了；【默认行为】可被分组指令覆盖。
+    ///
+    /// 为什么必须分层而不是"用户指令最大"：分组指令会**跨端同步**，若连防幻觉 / 防泄露的红线也能被它覆盖，
+    /// 等于把安全开关交给了任何能写这条指令的地方。用户要的"实时指令优先"落在【默认行为】层即可满足
+    /// （典型就是 D1 的「写操作前先问一句」），红线一根不松。
+    /// </summary>
     private void AppendAgentRulesOnce(ConversationRuntime runtime)
     {
         if (runtime.AgentRulesAdded) return;
         runtime.Session.AppendSystemRules(
-            "[Agent 工具规则]\n" +
-            "1. 工具执行返回的结果是唯一事实来源：工具返回成功才可以说完成；返回失败必须如实告知。严禁在没有调用工具、或工具未返回成功的情况下宣称已完成任何操作。\n" +
-            "2. 执行任何写操作（新增/修改/删除笔记或待办）之前，必须先在回复中列出将要执行的具体动作，等用户明确同意后再调用工具执行。\n" +
-            "3. 没有对应工具的能力就直说做不到，不要编造替代方案的结果。\n" +
-            "4. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。\n" +
-            "5. 只根据工具真正返回的内容作答：文件读不出文字时（如扫描件 PDF、图片）必须如实说读不了，绝不许编造文件里没有的内容；工具返回的是部分数据（只列了前 N 行/条）时要说明这是部分。");
+            AgentRulesMarker + "\n" +
+            "本节分两层：**【安全红线】**任何来源的指令（包括分组指令）都不能覆盖；**【默认行为】**可被分组指令覆盖。\n" +
+            "── 安全红线（不可覆盖）──\n" +
+            "R1. 工具执行返回的结果是唯一事实来源：工具返回成功才可以说完成；返回失败必须如实告知。严禁在没有调用工具、或工具未返回成功的情况下宣称已完成任何操作。\n" +
+            "R2. 没有对应工具的能力就直说做不到，不要编造替代方案的结果。\n" +
+            "R3. 只根据工具真正返回的内容作答：文件读不出文字时（如扫描件 PDF、图片）必须如实说读不了，绝不许编造文件里没有的内容；工具返回的是部分数据（只列了前 N 行/条）时要说明这是部分。\n" +
+            "R4. 删除类操作（删笔记 / 删待办等）动手前必须先征得用户明确同意 —— 这条是红线，分组指令也不能免除。\n" +
+            "── 默认行为（可被分组指令覆盖）──\n" +
+            "D1. 一般写操作（新增/修改笔记或待办、保存内容、上传文件等）执行前，先在回复中列出将要执行的具体动作，等用户明确同意后再调用工具执行。**若当前分组指令已明确要求某类条件成立时直接执行，则按分组指令直接执行，不再逐次征询。**\n" +
+            "D2. 引用或修改某条笔记/待办时，用列表/搜索工具输出中方括号里的时间戳作为 ref_time 定位。\n" +
+            "── 优先级 ──\n" +
+            "分组指令与【默认行为】冲突时，以分组指令为准；与【安全红线】冲突时，一律以安全红线为准。");
         runtime.AgentRulesAdded = true;
     }
 
@@ -3809,6 +3922,9 @@ public partial class AIDialogWindow : Window
         FileDeliveryHub.Delivered -= OnFileDelivered;
         FileDeliveryHub.OpenRequested -= OnFileOpenRequested;
         FileDeliveryHub.LocateRequested -= OnFileLocateRequested;
+        // 与订阅成对（构造函数里挂、这里摘）—— 漏摘 = 旧窗口被静态事件钉住，永不回收
+        ChatSessionService.SessionChanged -= OnChatDataChanged;
+        ChatGroupStore.GroupsChanged -= OnChatDataChanged;
         try { _preview.Dispose(); } catch { /* 预览浮层释放失败不影响关闭 */ }
         AIDialogHelper.NotifyClosed();
     }

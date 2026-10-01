@@ -68,6 +68,23 @@ public class ChatSessionService
         _messages[0] = _messages[0] with { Content = _messages[0].Content + "\n\n" + rules };
     }
 
+    /// <summary>
+    /// 移除首条 system 消息里以 <paramref name="marker"/> 开头的那一段（含它前面的分隔空行），返回是否命中。
+    ///
+    /// 用途：规则**版本升级**（2026-10-01 v1 → v2）。旧规则块必须**先清掉再写新块** ——
+    /// 只追加不清理的话新旧两套规则同时在场（旧版要求「写操作必须先问」，新版允许分组指令覆盖），
+    /// 模型两头都听，行为变得不可预测。约定：规则块一律追加在 system 消息**末尾**，故这里直接截断。
+    /// </summary>
+    public bool RemoveSystemRuleBlock(string marker)
+    {
+        if (_messages.Count == 0 || _messages[0].Role != ChatRoles.System) return false;
+        var content = _messages[0].Content ?? "";
+        var idx = content.IndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0) return false;
+        _messages[0] = _messages[0] with { Content = content[..idx].TrimEnd() };
+        return true;
+    }
+
     public void AddUser(string content) => AddUser(content, null);
 
     /// <summary>
@@ -239,7 +256,8 @@ public class ChatSessionService
                     var nonSysCount = messages.Count(m => m.Role != ChatRoles.System);
                     if (nonSysCount == 0) continue;   // 空会话（仅 system）不进历史列表
 
-                    var firstUser = messages.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    var firstUserMsg = messages.FirstOrDefault(m => m.Role == ChatRoles.User);
+                    var firstUser = firstUserMsg?.Content ?? "";
                     result.Add(new SessionSummary(
                         file,
                         string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
@@ -248,7 +266,7 @@ public class ChatSessionService
                         payload.Title ?? "",
                         payload.Pinned,
                         payload.GroupId ?? "",
-                        BuildPreview(payload.Title, firstUser),
+                        BuildPreview(payload.Title, firstUser, firstUserMsg?.Attachments),
                         nonSysCount));
                 }
                 catch (Exception ex) when (ex is JsonException or IOException)
@@ -271,12 +289,16 @@ public class ChatSessionService
         return result;
     }
 
-    /// <summary>列表预览：重命名标题优先，无标题回退首条用户消息前 40 字</summary>
-    private static string BuildPreview(string? title, string firstUser)
-    {
-        if (!string.IsNullOrWhiteSpace(title)) return title;
-        return firstUser.Length > 40 ? firstUser[..40] + "…" : firstUser;
-    }
+    /// <summary>
+    /// 列表标题 / 预览。**规则本体在 <see cref="ChatListRules.BuildPreview"/>** ——
+    /// 那是零依赖纯函数，所以能被秒级的快层检查点直接守住（列表规则错了全是静默的，只能靠断言拦）。
+    /// 这里只做一层「附件对象 → 文件名」的转换。
+    /// </summary>
+    private static string BuildPreview(string? title, string firstUser, List<ChatAttachment>? firstUserAttachments)
+        => ChatListRules.BuildPreview(title, firstUser,
+            firstUserAttachments is { Count: > 0 }
+                ? firstUserAttachments.Select(a => a.FileName).ToList()
+                : null);
 
     /// <summary>按会话 Id 定位本地文件路径（GUID 文件名优先，兼容未回写的旧时间戳文件名）。找不到返回 null。</summary>
     public static string? LoadByAnyId(string sessionId)
@@ -330,7 +352,8 @@ public class ChatSessionService
                     var messages = payload.Messages ?? new List<ChatMessage>();
                     var nonSysCount = messages.Count(m => m.Role != ChatRoles.System);
                     if (nonSysCount == 0) continue;   // 空会话不进回收站列表
-                    var firstUser = messages.FirstOrDefault(m => m.Role == ChatRoles.User)?.Content ?? "";
+                    var firstUserMsg = messages.FirstOrDefault(m => m.Role == ChatRoles.User);
+                    var firstUser = firstUserMsg?.Content ?? "";
                     result.Add(new SessionSummary(
                         file,
                         string.IsNullOrEmpty(payload.Id) ? Path.GetFileNameWithoutExtension(file) : payload.Id,
@@ -339,7 +362,7 @@ public class ChatSessionService
                         payload.Title ?? "",
                         payload.Pinned,
                         payload.GroupId ?? "",
-                        BuildPreview(payload.Title, firstUser),
+                        BuildPreview(payload.Title, firstUser, firstUserMsg?.Attachments),
                         nonSysCount));
                 }
                 catch (Exception ex) when (ex is JsonException or IOException)

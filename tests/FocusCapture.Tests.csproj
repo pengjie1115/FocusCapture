@@ -68,6 +68,10 @@
          它错了的后果**全是静默的**：本该标「云端已不存在」的记录漏标（用户以为文件还在网盘上，
          取回时才发现空了），或把「还没传上去」误标成「被删了」（用户白折腾一轮）。两种都不报错。 -->
     <Compile Include="..\Services\Files\CloudVerify.cs" Link="Src\CloudVerify.cs" />
+    <!-- 会话列表展示规则（2026-10-01）：ChatListRules 刻意零项目依赖（只吃 string / bool），所以能在这层秒级测。
+         它错了的后果**全是静默的**：只贴文件不打字的会话在列表上显示成一行没有文字的条目（点进去才知道是哪个文件）、
+         分组指令按钮的文案与点击行为对不上（写着"查看指令"点下去却是别的动作）。两种都不报错。 -->
+    <Compile Include="..\Services\ChatListRules.cs" Link="Src\ChatListRules.cs" />
   </ItemGroup>
 
 </Project>

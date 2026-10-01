@@ -820,6 +820,45 @@ Check(v12.ClearMissing.Count == 1 && v12.ClearMissing[0] == "a",
 
 Mark("[19] 云端核对判定 CloudVerify");
 
+// ── [20] 会话列表展示规则 ChatListRules（2026-10-01）──
+// 这块错了的后果**全是静默的**：
+//   · 只贴文件不打字的会话，列表上变成一行**没有文字**的条目（用户点进去才知道是哪个文件）；
+//   · 分组指令按钮的文案与点击行为对不上（写着「查看指令」点下去却是别的动作）。
+// 两者都不报错，只让用户觉得"功能坏了" —— 所以必须有断言守着。
+Console.WriteLine("[20] 会话列表展示规则 ChatListRules");
+
+Check(ChatListRules.BuildPreview("", "", new[] { "报告.pdf" }) == "文件：报告.pdf",
+      "只发文件不打字 → 标题回退「文件：<文件名>」（2026-10-01 用户实测的空标题根因）",
+      $"实际「{ChatListRules.BuildPreview("", "", new[] { "报告.pdf" })}」");
+
+Check(ChatListRules.BuildPreview("", "", new[] { "a.png", "b.png", "c.png" }) == "文件：a.png 等 3 个",
+      "多个附件 → 「文件：第一个 等 N 个」（不逐条罗列，列表标题要短）",
+      $"实际「{ChatListRules.BuildPreview("", "", new[] { "a.png", "b.png", "c.png" })}」");
+
+Check(ChatListRules.BuildPreview("我改过的标题", "", new[] { "报告.pdf" }) == "我改过的标题",
+      "重命名过的标题优先级最高（不能被附件名盖掉）");
+
+Check(ChatListRules.BuildPreview("", "用户打的字", new[] { "报告.pdf" }) == "用户打的字",
+      "有正文时用正文，不走附件名兜底");
+
+Check(ChatListRules.BuildPreview("", "", null) == "",
+      "既无标题、也无正文、也无附件 → 仍返回空串（兜底文案「（空会话）」由 UI 层负责，不在服务层硬编码）");
+
+var longUserText = new string('字', 60);
+var longPreview = ChatListRules.BuildPreview("", longUserText, null);
+Check(longPreview.Length == 41 && longPreview.EndsWith("…"),
+      "正文超 40 字截断并加省略号（40 字 + 省略号 1 字）",
+      $"长度 {longPreview.Length}、结尾「{(longPreview.Length > 0 ? longPreview[^1] : ' ')}」");
+
+Check(ChatListRules.InstructionButtonText(false, false) == "添加指令",
+      "没有指令 → 按钮文案「添加指令」（点了直接进编辑弹窗）");
+Check(ChatListRules.InstructionButtonText(true, false) == "查看指令",
+      "已有指令且收起 → 「查看指令」（点了展开只读区）");
+Check(ChatListRules.InstructionButtonText(true, true) == "收起指令",
+      "已有指令且展开 → 「收起指令」（否则按钮写着「查看」其实已经展开，再点像没反应）");
+
+Mark("[20] 会话列表展示规则 ChatListRules");
+
 Console.WriteLine();
 Console.WriteLine($"=== 各组耗时（按耗时降序）| 纯逻辑集 | 墙钟 {swTotal.ElapsedMilliseconds} ms | 测量段之和 {groupMs.Sum(g => g.Ms)} ms ===");
 foreach (var g in groupMs.OrderByDescending(x => x.Ms))
