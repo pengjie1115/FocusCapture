@@ -7,7 +7,7 @@
 
 ## 零、AI 模型多供应商改造（2026-09-23 完成，已并入 main 并推双远程）
 
-- **合并与推送**：main = `6bc191e`，Gitee（origin）与 GitHub 均已同步到同一提交（`ls-remote` 核实）。分支 `feature/ai-model-providers` **按用户要求保留未删**；`feature/chat-restore-cross-device` 亦保留、未并入
+- **合并与推送**：早已合并进 main 并推双远程。**分支状态（2026-10-01 `git branch` 实测）**：本地只剩 `main` 与 `feature/chat-restore-cross-device`（未并入、保留）；`feature/ai-model-providers`、`feature/ai-chat-ui-revamp`、`feature/ai-chat-ux` **均已被删**（按「合并即删」规矩 ⇒ 判断为合并后删除）。旧记忆里「按用户要求保留未删」**已过期**。当前分支状态一律查 `NOW.md`
 - **设计稿** `docs/2026-09-23-AI模型板块重构设计稿.md`（§12 = 调研结论 + 3 处设计修正 + 检查点分层）；**调研** `docs/2026-09-23-供应商models端点调研.md`；**人工验收** REGRESSION.md **B-20**（13 条，全需真实环境手跑）
 - **新结构**：设置拆成「AI 模型」（只管供应商 × 模型）与「AI 功能」（其余 AI 设置，索引 2）
 - **代码入口**：`Services/AI/AiModelResolver.cs` = **配置→provider 的唯一映射点**（三级回退；末级读旧扁平字段兜底 —— 那是迁移的保命机制，别删）
@@ -18,14 +18,16 @@
 - 注：`builtin-skills/` 的文案改动**只影响全新落地**的技能（落地即归用户，不自动更新）
 - 时间线细节见 `.workbuddy/memory/2026-09-23.md`
 
-## 零之二、AI 问答界面重构（进行中，2026-09-23 起）
+## 零之二、AI 问答界面重构（2026-09-23 起；**本节是过程记录，成果已全部并入 main**）
+
+> ⚠ **阅读提醒（2026-10-01 补）**：本节写于 09-24 施工中，文中的「未合并未推送」「进行中」「待办」等字样**均已过期**；分支 `feature/ai-chat-ui-revamp` 本地已删。**当前状态一律看 `NOW.md`**，本节只作过程与踩坑参考。
 
 - 分支 `feature/ai-chat-ui-revamp`（base `6bc191e`）；设计稿 `docs/2026-09-23-AI问答界面重构设计稿.md`（§0~§11）
 - **进度**（分支 `feature/ai-chat-ui-revamp`，**9 提交，未合并未推送，ready 全绿**）：…→ 批 3a `9c6d148` → **批 A `d74a531`（悬停 Trigger SourceName / 分组置顶 `ChatGroup.Pinned` / MenuItem 深色模板 / 菜单父项不绑 Click / PromptDialog Loaded 后全选）→ 批 B `fc59446`（分组删除墓碑：`DeletedAt` + `Load`/`LoadAll` 口径分离 + 删除即终态永久保留）→ 批 C `30fe56c`（`StartNewSession` 加 groupId 修"分组内会话不归组" + 组内搜索 UI + 图标工具行 + 无返回按钮 + 点分组/发消息收侧边栏）→ 批 D `0f36d23`（批量操作找回：三点菜单入口+底部操作条；输入区按钮进框 + 圆形向上箭头 + 「选择分组」）→ 交接 `45b97a7`（`docs/2026-09-24-AI问答重构交接文档.md`）**。快层 175 / 慢层「会话分组」63 条全绿
 - **剩余**（详见交接文档）：① REGRESSION 条数与触发表同步 ② 失效检查点（B-9/B-13、标题栏断言、SettingsWindow:440 文案）③ 设置项 UI（昵称/图标/头像/侧边栏默认展开）④ 侧边栏全局搜索 UI ⑤ 会话级模型下拉（先核实发送路径是否已消费 `SessionFile.ModelKey`）⑥ `GroupsChanged` 接线（**必须先给 ChatSyncEngine 加 Dispose**）
 - **三条新铁律**：① DataTemplate 条目自身状态用 `Trigger SourceName`，`RelativeSource AncestorType` 会绑到外层共享元素（悬停全员高亮事故）② 带子菜单的父项**绝不绑 Click**（context=null 会被宿主解释成动作，"分组到…"清空分组事故）③ 同步里表达"删除"必须墓碑，并集必复活
 - **快照教训**：Seeder 必须幂等 —— 每个场景 new 一个窗口但**沙箱是共享的**，不清数据第二张图里会重复两套；且 `dev.ps1 snap` **不先编译**，改完代码必须先 `build`
-- **分组指令注入通道**：Agent 路径走 `AgentRunService.ExtraSystemContext`（每轮求值）；普通问答路径在请求时临时追加一条 system 消息，**不写回会话历史**。注入文本生成放在 `ChatGroupService.BuildInstructionContext` —— 放服务层才守得住"必须标来源与从属关系"这条安全要求
+- **分组指令注入通道**：Agent 路径走 `AgentRunService.ExtraSystemContext`（每轮求值）；普通问答路径在请求时临时追加一条 system 消息，**不写回会话历史**。注入文本生成放在 `ChatGroupService.BuildInstructionContext` —— 放服务层才守得住"必须标来源与**优先级分层**"这条安全要求（2026-10-01 由「从属」改为「分层」，见下方「零之三」与 `DECISIONS.md` D17）
 - **新增文件**：`Services/ChatGroupService.cs`（分组业务唯一入口）、`Services/Sync/ChatGroupMerge.cs`、`Services/ChatSearchService.cs`、`Services/AI/ChatSearchMatcher.cs`、`Services/ChatAssetsService.cs`
 - **用户 9-23 追加 3 条决策**：侧边栏宽度**可拖拽**；欢迎语图标 / 应用图标 / 用户头像**三套彻底隔离**；搜索 = **消息正文全文搜索**（推翻初版"只搜标题"，规格见设计稿 §4.10）
 - **待办**：批 1 数据层（`SessionFile.ModelKey` + 分组指令注入）→ 批 2 侧边栏（`ChatSidebar`）→ 批 3 起手页与输入区 → 收尾（`GroupsChanged` 接线 + `Dispose` + ready）
@@ -43,6 +45,14 @@
 - **本次会导致失效、必须同步改的检查点**：`REGRESSION.md` B-13:317/320、B-9:564-575、`tests/sync/Program.cs:679`（标题栏绿色下划线断言）、`SettingsWindow.xaml:440`
 - **已实现、勿重复做**：输入框滚动条（`AIDialogWindow.xaml:487`，样式走全局隐式样式且慢层禁止重定义）、删分组回未分组（`ChatGroupsWindow.cs:132`）
 - 用户已拍板 12 条决策 + 代定 10 条（设计稿 §0 / §0.1）
+
+## 零之三、AI 问答四项优化（2026-10-01 交付，已合并 main 并推双远程）
+
+- **功能提交 `b733d74`**（分支 `feature/ai-chat-ux`，ff 合并进 main 后按「合并即删」删除分支）
+- 四项：① 分组指令**默认折叠** + 按钮三态（添加 / 查看 / 收起）② 附件-only 会话标题回退「文件：<附件名>」（多附件「文件：首名 等 N 个」）③ **Agent 规则分层**（分组指令可覆盖默认行为、不可覆盖安全红线 —— 决策见 `DECISIONS.md` **D17**）④ **会话列表实时刷新**（接线 `SessionChanged`/`GroupsChanged` + 合并防抖 + 关窗成对退订）
+- **「二次确认」的真身（别再找弹窗）**：不是弹窗 —— `AgentWriteConfirmPopup` 默认 false；真身是首条 system 消息里 `[Agent 工具规则]` 的**规则 2**「写操作前必须先在回复里列出动作、等用户明确同意」。改它**必须把标记升到 v2**（`[Agent 工具规则 v2]`）：靠标记字符串判断"已注入"，不升级则**存量会话永远用旧规则，改了等于没改**
+- **新增零依赖纯函数** `Services/ChatListRules.cs`（列表标题回退 + 按钮三态文案），快层 `[20]` 组 9 条守住 —— 这类规则错了是**静默**的，只能靠断言拦
+- 人工验收：`REGRESSION.md` B-21 段 **✅ 2026-10-01 结案**；交付时快层 **157** / 慢层 **740** / `ready` 总检通过
 
 ## 一、环境坑
 1. 沙箱 PowerShell 执行策略=Restricted：.ps1 一律加载失败且被吞成零输出 → 每次调用前同一条命令里 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`（不跨调用）；dev.ps1 的 Write-Host 要 `6>&1` 才抓得到
